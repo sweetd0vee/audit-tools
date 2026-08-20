@@ -6,6 +6,8 @@
 
 Это не «ещё один чат с LLM». Чат — поверхность. Ядро продукта — **Audit Tool Server**: кейс проверки, библиотека НПА, тесты, рабочие бумаги (WP), правила.
 
+Коробка (минимум своего кода, качество как у Cursor): [`docs/VISION.md`](docs/VISION.md) · [архитектура](docs/ARCHITECTURE.md) · [план](docs/PLAN.md) · [идеи](docs/IDEAS.md).
+
 ---
 
 ## Зачем это нужно
@@ -140,8 +142,8 @@ Open WebUI Pipelines + Functions: цикл «фаза проверки → tool 
 | Часть | Путь | Статус |
 |---|---|---|
 | Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, sync Open WebUI |
-| Рабочий UI шагов 1–2 | `frontend/` | React + Vite: создание проверки, валидация списка, архив, саммари, вопрос к базе |
-| Документация RAG | `docs/RAG_для_разработчика.md` | как устроен retrieval в Open WebUI и как стыковать НПА |
+| Лабораторный UI шагов 1–2 | `frontend/` | React + Vite для отладки API, **не** витрина продукта (см. [архитектуру](docs/ARCHITECTURE.md)) |
+| Документация продукта | `docs/` | коробка, архитектура, план, идеи, RAG |
 | API библиотеки | `backend/README.md` | эндпоинты и пример PowerShell |
 
 Хранение кейса (без БД на текущем шаге):
@@ -233,6 +235,6 @@ UI: http://localhost:5174
 ```
 audit-tools/
   backend/     Audit Tool Server (FastAPI) — главный custom
-  frontend/    UI сборки библиотеки и базы знаний
-  docs/        устройство RAG и стыковка с Open WebUI
+  frontend/    лабораторный UI шагов 1–2 (не продукт)
+  docs/        видение, архитектура, план, идеи, RAG
 ```

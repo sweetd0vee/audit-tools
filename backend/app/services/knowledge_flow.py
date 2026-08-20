@@ -504,23 +504,28 @@ async def sync_openwebui(case_id: str, api_key: str | None = None) -> dict:
     name = f"Аудит: {state.inspection_name}"[:80]
     desc = f"НПА кейса {case_id}. Ключевые слова: {', '.join(state.keywords)}"
     collection = await ensure_collection(name, desc, key)
-    kid = collection.get("id")
+    kid = collection.get("id") if isinstance(collection, dict) else collection
     if not kid:
         raise OpenWebUIError("Open WebUI не вернул id коллекции")
+    kid = str(kid)
 
     uploaded = []
     text_dir = _text_dir(case_id)
-    for path in sorted(text_dir.glob("*.txt")):
+    paths = sorted(text_dir.glob("*.txt"))
+    if not paths:
+        raise OpenWebUIError("Нет .txt для отправки. Сначала соберите базу знаний.")
+
+    for path in paths:
         info = await upload_file(path, key)
-        fid = info.get("id")
+        fid = info.get("id") if isinstance(info, dict) else None
         if not fid:
+            uploaded.append({"file": path.name, "status": "error", "error": "нет file id"})
             continue
         try:
-            await add_file_to_knowledge(kid, fid, key)
-        except OpenWebUIError:
-            # file may still be processing; keep id
-            pass
-        uploaded.append({"file": path.name, "file_id": fid})
+            await add_file_to_knowledge(kid, str(fid), key)
+            uploaded.append({"file": path.name, "file_id": fid, "status": "ok"})
+        except OpenWebUIError as exc:
+            uploaded.append({"file": path.name, "file_id": fid, "status": "error", "error": str(exc)})
 
     state.meta["openwebui_knowledge_id"] = kid
     state.meta["openwebui_knowledge_name"] = name
