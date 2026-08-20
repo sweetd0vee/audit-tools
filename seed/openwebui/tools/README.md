@@ -1,7 +1,5 @@
-# Tools (ещё не подключены)
+# Tools
 
-Сюда пойдёт `audit_case.py`: тонкие HTTP-обёртки над уже существующим API, без своего UI.
+[`audit_case.py`](audit_case.py) — руки для native function calling. Главный агент — Pipe: [`../functions/audit_agent.py`](../functions/audit_agent.py), инструкция: [`../AGENT.md`](../AGENT.md).
 
-Эндпоинты: `POST /api/v1/cases`, `.../propose`, `.../select`, `.../download`, `GET /api/v1/cases/{id}`, `POST /api/v1/cases/{id}/knowledge/openwebui/sync`.
-
-Пока файл не написан — поток библиотеки только через Swagger или лабораторный `docker compose --profile lab up`.
+Workspace → Tools → вставить файл → привязать к Ollama-модели. 35B часто ломает HITL; для продукта используйте Pipe.

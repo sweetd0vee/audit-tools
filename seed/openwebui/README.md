@@ -4,9 +4,10 @@
 
 | Файл | Куда |
 |---|---|
-| `SYSTEM_AUDITOR.txt` | Workspace → Models → модель «Аудитор» → System Prompt |
+| `SYSTEM_AUDITOR.txt` | только если цепляете Tools к Ollama-модели, не к Pipe |
 | `RAG_TEMPLATE.txt` | Admin → Settings → Documents → RAG template. Плейсхолдер `{{CONTEXT}}` обязателен |
-| `tools/` | следующий шаг: Functions, которые дергают Audit Tool Server |
+| `functions/audit_agent.py` | **главный агент.** Workspace → Functions. Как ставить: [AGENT.md](AGENT.md) |
+| `tools/audit_case.py` | запасной путь: Workspace → Tools + native FC |
 
 ## После `docker compose up`
 
@@ -18,8 +19,8 @@
    - Full context: off.
    - Вставьте `RAG_TEMPLATE.txt`, если шаблон пустой или дефолтный.
 3. Модель чата → Advanced: **context length 32k+**, не 2048.
-4. Function calling: пока **классический RAG** (чанки сами попадают в промпт). Native не делать дефолтом.
-5. Workspace → Models → New: имя «Аудитор», base = ваша Ollama-модель, system = `SYSTEM_AUDITOR.txt`.
+4. Function calling: Native, если используете Tools; Pipe «Аудитор» tools не нужны.
+5. Агент: Workspace → Functions, вставить `functions/audit_agent.py` — см. [AGENT.md](AGENT.md).
 6. Веб-поиск в чате **выключен**. SearXNG только для добычи актов через backend.
 
 `RAG_*` в compose — PersistentConfig: срабатывают при **первом** создании volume. Если `open-webui-data` уже был — правьте Admin вручную или `docker compose down` и удалите volume (сотрёт чаты).

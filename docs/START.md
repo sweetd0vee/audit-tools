@@ -33,45 +33,11 @@
 
 Исходники: `seed/openwebui/`. Чеклист: [`seed/openwebui/README.md`](../seed/openwebui/README.md).
 
-### Коммит C. Первый свой код недели: tools, не UI
+### Коммит C. Первый агент — Pipe, не UI
 
-Цель: в чате пройти поток, который сейчас делает React.
+Файлы: [`seed/openwebui/AGENT.md`](../seed/openwebui/AGENT.md), `functions/audit_agent.py`, `tools/audit_case.py`.
 
-Не писать второе API. Обернуть то, что есть:
-
-| Tool | Уже существующий эндпоинт |
-|---|---|
-| `create_case` | `POST /api/v1/cases` |
-| `propose_npa` | `POST /api/v1/cases/{id}/propose` |
-| `select_npa` | `POST /api/v1/cases/{id}/select` |
-| `download_npa` | `POST /api/v1/cases/{id}/download` |
-| `case_status` | `GET /api/v1/cases/{id}` |
-| `sync_knowledge` | sync в Open WebUI (роутер knowledge) |
-
-Как писать (минимум кода):
-
-1. Один Python-файл Open WebUI Tool (Workspace → Tools) **или** OpenAPI Tool Server на `http://audit-tool-server:8100/openapi.json`, если хватит описаний в FastAPI.
-2. В каждом tool — `httpx` на backend, без бизнес-логики.
-3. В docstring tool явно: «не вызывай download, пока аудитор не утвердил id».
-4. HITL остаётся в сервере: `/download` без select не должен качать. Если сейчас качает — это баг сервера, чинить там, не во фронте.
-
-Класть tool-скрипт в репозиторий:
-
-```
-seed/openwebui/tools/audit_case.py
-```
-
-Проверка (сценарий, не unit-тест):
-
-```
-«Проверка аренды коммерческой недвижимости, 2025, аренда, валюта, НДС»
- → модель создала кейс и показала список
- → вы: «утверждаю 1, 2, 4»
- → скачалось, sync в Knowledge
- → вопрос по пункту акта → цитата
-```
-
-Если список из 15 актов в чате нестерпим — **тогда** одна HTMX/Streamlit-страница только на select. Не раньше. Не React-портал.
+Вставить Pipe в Workspace → Functions. Продуктовый вход — модель **Аудитор**. Tools — запасной native FC.
 
 ---
 

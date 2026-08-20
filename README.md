@@ -185,7 +185,7 @@ cd c:\Users\audit\Work\Arina\2026\audit-tools
 docker compose up -d --build
 ```
 
-Засев чата (модель «Аудитор», RAG-шаблон): [`seed/openwebui/README.md`](seed/openwebui/README.md).
+Засев чата и агент: [`seed/openwebui/README.md`](seed/openwebui/README.md), как устроен агент — [`seed/openwebui/AGENT.md`](seed/openwebui/AGENT.md).
 
 Модели (см. `backend/.env.example`):
 
