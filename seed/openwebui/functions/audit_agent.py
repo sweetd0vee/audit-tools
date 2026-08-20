@@ -45,13 +45,7 @@ class Pipe:
         TIMEOUT_SEC: int = Field(default=300, description="Таймаут propose/download")
 
     def __init__(self) -> None:
-        self.type = "pipe"
-        self.id = "auditor"
-        self.name = "Аудитор"
         self.valves = self.Valves()
-
-    def pipes(self) -> list[dict[str, str]]:
-        return [{"id": "auditor", "name": "Аудитор"}]
 
     async def pipe(
         self,
