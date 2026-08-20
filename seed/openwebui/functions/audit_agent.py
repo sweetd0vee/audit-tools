@@ -33,6 +33,7 @@ HELP = """Я агент внутренней проверки: собираю б
 Дальше: «утверждаю 1, 2, 4» или «утверждаю все обязательные».
 Ссылку pravo.by можно сразу: «к пункту 3 url https://pravo.by/...»
 Когда библиотека готова — спрашивайте норму. Нет фрагмента — скажу, что в библиотеке этого нет.
+Посмотреть скачанное: напишите «документы».
 """
 
 
@@ -41,6 +42,10 @@ class Pipe:
         AUDIT_API: str = Field(
             default="http://backend:8100",
             description="Audit Tool Server. Compose: http://backend:8100. С хоста: http://localhost:8100",
+        )
+        PUBLIC_API: str = Field(
+            default="http://localhost:8100",
+            description="Ссылка для браузера аудитора (zip и JSON библиотеки)",
         )
         TIMEOUT_SEC: int = Field(default=300, description="Таймаут propose/download")
 
@@ -57,6 +62,7 @@ class Pipe:
         text = _last_user_text(body)
         case_id = _case_id_from_messages(body.get("messages") or [])
         api = self.valves.AUDIT_API.rstrip("/")
+        public = (self.valves.PUBLIC_API or "http://localhost:8100").rstrip("/")
         timeout = float(self.valves.TIMEOUT_SEC)
 
         if not text.strip() or text.strip().lower() in {"помощь", "help", "/help", "?"}:
@@ -68,7 +74,12 @@ class Pipe:
             if _is_approve(text):
                 if not case_id:
                     return "Нет кейса в этом чате. Сначала опишите проверку."
-                return await self._approve(api, timeout, case_id, text, __event_emitter__)
+                return await self._approve(api, public, timeout, case_id, text, __event_emitter__)
+
+            if _is_library(text):
+                if not case_id:
+                    return "Нет кейса в этом чате. Сначала опишите проверку."
+                return await self._library(api, public, timeout, case_id)
 
             if _is_status(text):
                 if case_id:
@@ -135,6 +146,7 @@ class Pipe:
     async def _approve(
         self,
         api: str,
+        public: str,
         timeout: float,
         case_id: str,
         text: str,
@@ -190,6 +202,8 @@ class Pipe:
         return (
             f"Кейс `{case_id}`: скачано {ok}, ошибок {failed}. {sync_note}\n"
             f"{extra}\n"
+            f"{_library_links(public, case_id)}\n"
+            "Или в чате: `документы`.\n"
             "Можно спрашивать норму. Нет фрагмента в библиотеке — скажу, что этого нет.\n"
             f"<!--audit-case:{case_id}-->"
         )
@@ -230,6 +244,35 @@ class Pipe:
             f"**Откуда:**\n{cite_block}\n"
             f"<!--audit-case:{case_id}-->"
         )
+
+    async def _library(self, api: str, public: str, timeout: float, case_id: str) -> str:
+        data = await _req("GET", f"{api}/api/v1/cases/{case_id}/library", timeout)
+        lines = [
+            f"Кейс `{case_id}` — скачанные акты (первоисточники).",
+            "",
+        ]
+        for doc in data.get("documents") or []:
+            if not doc.get("selected") and doc.get("download_status") in (None, "skipped"):
+                continue
+            status = doc.get("download_status") or "—"
+            url = doc.get("found_url") or ""
+            name = _file_name(doc.get("local_path"))
+            lines.append(f"- **{doc.get('title')}** — {status}")
+            if url:
+                lines.append(f"  источник: {url}")
+            if name:
+                lines.append(f"  файл: `{name}`")
+        files = data.get("files") or []
+        if files:
+            lines.append("")
+            lines.append("Файлы в папке кейса: " + ", ".join(f"`{f}`" for f in files))
+        lines.append("")
+        lines.append(_library_links(public, case_id))
+        lines.append(
+            "В Open WebUI Knowledge файлов нет, пока не задан API-ключ (это не мешает спрашивать норму в этом чате)."
+        )
+        lines.append(f"<!--audit-case:{case_id}-->")
+        return "\n".join(lines)
 
     async def _status_case(self, api: str, timeout: float, case_id: str) -> str:
         state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
@@ -280,6 +323,37 @@ def _is_approve(text: str) -> bool:
     return bool(APPROVE_RE.search(text))
 
 
+def _is_library(text: str) -> bool:
+    t = text.strip().lower()
+    keys = (
+        "документ",
+        "библиотек",
+        "скача",
+        "файлы",
+        "архив",
+        "посмотреть акты",
+        "покажи акты",
+        "/library",
+    )
+    return any(k in t for k in keys)
+
+
+def _file_name(path: Optional[str]) -> str:
+    if not path:
+        return ""
+    return str(path).replace("\\", "/").rstrip("/").split("/")[-1]
+
+
+def _library_links(public: str, case_id: str) -> str:
+    base = f"{public}/api/v1/cases/{case_id}"
+    return (
+        "Открыть в браузере:\n"
+        f"- zip всех файлов: {base}/library/archive\n"
+        f"- список JSON: {base}/library\n"
+        f"- карточка кейса: {base}"
+    )
+
+
 def _is_status(text: str) -> bool:
     t = text.strip().lower()
     return t in {"статус", "status", "кейсы", "проверки", "/status"} or t.startswith("статус ")
@@ -301,7 +375,7 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
     raw = text.strip()
     if len(raw) < 8:
         return None
-    if _is_approve(raw) or _is_status(raw):
+    if _is_approve(raw) or _is_status(raw) or _is_library(raw):
         return None
     period_match = YEAR_RE.search(raw)
     period = period_match.group(1).replace(" ", "") if period_match else None
