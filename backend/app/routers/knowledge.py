@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import traceback
 import zipfile
 from collections.abc import AsyncIterator
 
@@ -24,6 +26,7 @@ from app.services.openwebui_client import OpenWebUIError
 from app.storage import store
 
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
+logger = logging.getLogger(__name__)
 
 
 def _sse(event: dict) -> str:
@@ -167,4 +170,12 @@ async def owui_sync(case_id: str, body: Optional[OpenWebUISyncRequest] = None):
     except OpenWebUIError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as extra:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Open WebUI sync failed: {extra}") from extra
+        loc = ""
+        tb = traceback.extract_tb(extra.__traceback__)
+        if tb:
+            frame = tb[-1]
+            loc = f" ({frame.name}:{frame.lineno})"
+        logger.exception("Open WebUI sync failed")
+        raise HTTPException(
+            status_code=502, detail=f"Open WebUI sync failed: {extra}{loc}"
+        ) from extra

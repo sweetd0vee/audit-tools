@@ -1,3 +1,5 @@
+name: ai-auditor
+
 # Audit Tools — локальный стек.
 # Ollama на хосте (не в Compose): http://localhost:11434
 # На Windows в настройках Ollama включите «Expose Ollama to the network»
@@ -7,9 +9,6 @@
 #           http://localhost:3000  (Open WebUI)
 # API:      http://localhost:8100/docs
 # Поиск:    http://localhost:8080  (внутренний, не для аудитора)
-#
-# Лабораторный React: docker compose --profile lab up -d
-#                     http://localhost:5174
 #
 # Засев чата: seed/openwebui/README.md
 # Если volume open-webui-data уже жил — env RAG ниже мог не примениться,
@@ -91,19 +90,6 @@ services:
     networks:
       - ai-auditor
 
-  frontend:
-    profiles: ["lab"]
-    build:
-      context: ./frontend
-    container_name: audit-tools-frontend
-    restart: unless-stopped
-    ports:
-      - "5174:80"
-    depends_on:
-      - backend
-    networks:
-      - ai-auditor
-
 networks:
   ai-auditor:
     name: ai-auditor
@@ -111,3 +97,4 @@ networks:
 
 volumes:
   open-webui-data:
+    name: audit-tools_open-webui-data
