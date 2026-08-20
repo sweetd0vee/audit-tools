@@ -23,10 +23,13 @@
 Работает как стенд разработчика, не как продукт:
 
 - FastAPI: кейс, propose / select / download, extract, саммари, свой ask, sync в Open WebUI;
-- React-мастер шагов 1–2 на Vite;
-- RAG описан, но Open WebUI **не засеян** из репозитория;
-- compose-коробки нет: сервисы ставятся руками;
+- React-мастер шагов 1–2 на Vite — **заморожен, не развиваем**;
+- `docker-compose.yml` поднимает SearXNG + Open WebUI + backend; frontend только `--profile lab`;
+- заготовки засева: `seed/openwebui/` (промпт, RAG-шаблон); Admin ещё руками;
+- tools в чате нет — аудиторский поток пока Swagger или lab-UI;
 - данных клиента, тестов, WP, pipeline фаз — нет.
+
+Как сесть писать на этой неделе: [START.md](START.md).
 
 ---
 
@@ -36,7 +39,7 @@
 Цель: все, кто трогает репо, знают, что мы собираем коробку, а не пишем платформу.
 
 - [ ] Считать [VISION.md](VISION.md) и этот план источником истины.
-- [ ] Пометить `frontend/` в README как лабораторный UI, не продукт.
+- [x] Пометить `frontend/` в README как лабораторный UI, не продукт.
 - [ ] Зафиксировать: один вход для аудитора = Open WebUI; сервер = система записи.
 - [ ] Составить список «не делать» из §10 архитектуры и не нарушать его без явного решения.
 
@@ -49,9 +52,8 @@
 
 Цель: `compose up` (или один скрипт на Windows) → открыл URL → чат с уже настроенным RAG. Без вики из шести сервисов.
 
-- [ ] Корневой `compose.yaml`: Open WebUI, Ollama, SearXNG, Audit Tool Server, Caddy (один origin).
-- [ ] `seed/searxng`: allowlist доменов РБ, `format=json`.
-- [ ] `seed/openwebui`: RAG-шаблон аудитора, hybrid on, embedding Ollama `qwen3-embedding`, `num_ctx` у модели, классический RAG (не native как дефолт).
+- [x] Корневой `compose.yaml`: Open WebUI, Ollama, SearXNG, Audit Tool Server; frontend — profile `lab`.
+- [x] `seed/openwebui`: RAG-шаблон аудитора, system prompt; hybrid/embedding в compose env (на чистом volume).
 - [ ] `.env.example` на корне: модели, порты, пути данных.
 - [ ] Документ «поставил → работает» на одну страницу (образы, pull моделей, первый кейс). Для банка — пометка про офлайн-бандл образов/весов.
 - [ ] Прогнать четыре золотых теста RAG из [RAG_для_разработчика.md](RAG_для_разработчика.md) на одной инструкции НБРБ.

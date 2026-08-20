@@ -6,7 +6,7 @@
 
 Это не «ещё один чат с LLM». Чат — поверхность. Ядро продукта — **Audit Tool Server**: кейс проверки, библиотека НПА, тесты, рабочие бумаги (WP), правила.
 
-Коробка (минимум своего кода, качество как у Cursor): [`docs/VISION.md`](docs/VISION.md) · [архитектура](docs/ARCHITECTURE.md) · [план](docs/PLAN.md) · [идеи](docs/IDEAS.md).
+Коробка (минимум своего кода, качество как у Cursor): [`docs/VISION.md`](docs/VISION.md) · [с чего писать](docs/START.md) · [архитектура](docs/ARCHITECTURE.md) · [план](docs/PLAN.md) · [идеи](docs/IDEAS.md).
 
 ---
 
@@ -142,7 +142,8 @@ Open WebUI Pipelines + Functions: цикл «фаза проверки → tool 
 | Часть | Путь | Статус |
 |---|---|---|
 | Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, sync Open WebUI |
-| Лабораторный UI шагов 1–2 | `frontend/` | React + Vite для отладки API, **не** витрина продукта (см. [архитектуру](docs/ARCHITECTURE.md)) |
+| Лабораторный UI шагов 1–2 | `frontend/` | заморожен; compose profile `lab`, не витрина продукта |
+| Засев Open WebUI | `seed/openwebui/` | system prompt, RAG-шаблон, чеклист Admin |
 | Документация продукта | `docs/` | коробка, архитектура, план, идеи, RAG |
 | API библиотеки | `backend/README.md` | эндпоинты и пример PowerShell |
 
@@ -174,21 +175,32 @@ backend/data/audit_cases/{case_id}/
 
 ## Локальный запуск
 
-Нужны заранее установленные сервисы (этот репозиторий их не содержит):
+Продукт — **один URL**: [http://localhost:3000](http://localhost:3000) (Open WebUI).  
+Swagger [http://localhost:8100/docs](http://localhost:8100/docs) — для разработки tools, не для аудитора.
 
-| Сервис | Зачем | Типичный адрес |
-|---|---|---|
-| Ollama | чат-модель + embedding | `http://localhost:11434` |
-| SearXNG | поиск актов (`format=json`) | `http://localhost:8080` |
-| Open WebUI | чат и Knowledge | `http://localhost:3000` |
-| Chroma (встроен в Open WebUI) или pgvector | индекс RAG | внутри Open WebUI / отдельно |
+Ollama на хосте (`http://localhost:11434`). На Windows включите «Expose Ollama to the network», иначе контейнеры не достучатся.
+
+```powershell
+cd c:\Users\audit\Work\Arina\2026\audit-tools
+docker compose up -d --build
+```
+
+Засев чата (модель «Аудитор», RAG-шаблон): [`seed/openwebui/README.md`](seed/openwebui/README.md).
 
 Модели (см. `backend/.env.example`):
 
 - чат: `qwen3.6:35b` (или другая сильная локальная с большим `num_ctx`)
 - embeddings: `qwen3-embedding:latest` — **не** MiniLM: юридический русский
 
-### Backend
+Лабораторный React (не продукт):
+
+```powershell
+docker compose --profile lab up -d
+```
+
+http://localhost:5174 — только отладка API, пока tools в чате не готовы. `frontend/` не развиваем.
+
+Без Docker backend можно поднять отдельно:
 
 ```powershell
 cd backend
@@ -198,21 +210,6 @@ pip install -r requirements.txt
 copy .env.example .env
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8100
 ```
-
-Swagger: http://localhost:8100/docs
-
-### Frontend (шаги 1–2)
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-UI: http://localhost:5174  
-Прокси `/api` → `http://127.0.0.1:8100`
-
-Дальше аудитор работает в Open WebUI: коллекция Knowledge по кейсу, чат с цитатами, позже — пайплайн фаз.
 
 Подробный API-flow библиотеки — в [`backend/README.md`](backend/README.md).
 
@@ -235,6 +232,7 @@ UI: http://localhost:5174
 ```
 audit-tools/
   backend/     Audit Tool Server (FastAPI) — главный custom
-  frontend/    лабораторный UI шагов 1–2 (не продукт)
-  docs/        видение, архитектура, план, идеи, RAG
+  frontend/    лабораторный UI (profile lab, не продукт)
+  seed/        засев Open WebUI: промпт, RAG, позже tools
+  docs/        видение, старт, архитектура, план, идеи, RAG
 ```
