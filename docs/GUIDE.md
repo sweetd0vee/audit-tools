@@ -440,7 +440,7 @@ LLM снова **не вызывается**. Pipe вырезает хвост �
 
 ### Под капотом
 
-`GET …/knowledge/brief/stream` (при `заново` — `?force=true`).
+`GET /api/v1/cases/{id}/knowledge/brief/stream` (при `заново` — `?force=true`).
 
 Для каждого скачанного акта:
 
@@ -638,13 +638,13 @@ Audit Tool Server       FastAPI :8100
 
 ```
 backend/data/audit_cases/{case_id}/
-  case.json              система записи: статус, кто выбран, URL
-  manifest.json          что скачали, sha256, источник URL
-  knowledge_raw/         первоисточники (html/pdf)
-  knowledge_text/        очищенный текст
-  summaries/             карточки актов + Word + brief.md
-  knowledge_index.json   чанки для вопросов
-  library.zip            архив сырых файлов
+  case.json               система записи: статус, кто выбран, URL
+  manifest.json           что скачали, sha256, источник URL
+  knowledge_raw/          первоисточники (html/pdf)
+  knowledge_text/         очищенный текст
+  summaries/              карточки актов + Word + brief.md
+  knowledge_index.json    чанки для вопросов
+  library.zip             архив сырых файлов
 ```
 
 ### Норма ≠ факт
