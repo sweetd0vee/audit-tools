@@ -203,6 +203,18 @@ class TestSequentialCoverage(unittest.TestCase):
                 f"статья {i} выпала из последовательного чтения",
             )
 
+    def test_windows_keep_article_boundary(self):
+        from app.services.chunker import sequential_windows
+
+        text = (
+            "Статья 1. Первая\n" + ("ааа " * 400) + "\n"
+            "Статья 2. Вторая\n" + ("ббб " * 400) + "\n"
+        )
+        windows = sequential_windows(text, size=2500, overlap=0)
+        self.assertGreaterEqual(len(windows), 2)
+        self.assertTrue(windows[0].startswith("Статья 1."))
+        self.assertTrue(any(w.startswith("Статья 2.") for w in windows))
+
     def test_article_outline_order(self):
         from app.services.citations import extract_article_outline
 
@@ -306,7 +318,11 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
 
             async def fake_chat(system, user, **kwargs):
                 prompts.append(user)
-                return "## Назначение и сфера действия\n- ст. 1 — аренда"
+                return (
+                    "## Назначение и сфера действия\n- аренда\n"
+                    "## Основные положения\n"
+                    "- ст. 1 — аренда\n- ст. 12 — расчёты\n- ст. 40 — неустойка"
+                )
 
             with patch("app.services.knowledge_flow.chat_complete", fake_chat):
                 result = await summarize_item(state, item)
@@ -316,6 +332,8 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Статья 1. Предмет", prompts[0])
             self.assertIn("Статья 40. Ответственность", prompts[0])
             self.assertIn("целиком", prompts[0].lower())
+            self.assertNotIn("Ключевые слова", prompts[0])
+            self.assertNotIn("валюта", prompts[0])
 
     async def test_long_document_is_read_in_ordered_windows(self):
         from app.services.knowledge_flow import summarize_item
@@ -341,7 +359,13 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
 
             async def fake_chat(system, user, **kwargs):
                 prompts.append(user)
-                return "- ст. тест"
+                found = []
+                for i in range(1, 8):
+                    if f"Статья {i}." in user and f"Статья {i}." not in found:
+                        found.append(f"Статья {i}.")
+                if found:
+                    return "\n".join(f"- {h} — норма из текста" for h in found)
+                return "- паспорт акта: кодекс"
 
             with patch("app.services.knowledge_flow.chat_complete", fake_chat):
                 result = await summarize_item(state, item)
@@ -352,6 +376,45 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Статья 1.", joined)
             self.assertIn("Статья 7.", joined)
             self.assertTrue(any("часть 1 из" in p.lower() for p in prompts))
+            self.assertFalse(any("собери единый" in p.lower() for p in prompts))
+            self.assertFalse(any("ключевые слова" in p.lower() for p in prompts))
+            self.assertIn("Основные положения", result.summary)
+            self.assertIn("Статья 1.", result.summary)
+            self.assertIn("Статья 7.", result.summary)
+            self.assertNotIn("валюта", result.summary.lower())
+
+
+class TestOverviewAndAskHelpers(unittest.TestCase):
+    def test_overview_lists_every_act_without_llm(self):
+        from app.services.brief_flow import _synthesize
+
+        state = CaseState(case_id="c1", inspection_name="Проверка аренды")
+        chapters = [
+            {
+                "title": "Инструкция № 1",
+                "body": "## Основные положения\n- ст. 1 — предмет\n- ст. 2 — сроки",
+            },
+            {
+                "title": "Кодекс",
+                "body": "## Основные положения\n- ст. 625 — аренда\n- ст. 626 — плата",
+            },
+        ]
+        overview = _synthesize(state, chapters)
+        self.assertIn("Инструкция № 1", overview)
+        self.assertIn("Кодекс", overview)
+        self.assertIn("ст. 1 — предмет", overview)
+        self.assertIn("ст. 625 — аренда", overview)
+
+    def test_diversify_covers_each_document(self):
+        from app.services.knowledge_flow import _diversify_chunks
+
+        ranked = [
+            (10.0, {"id": "a1", "item_id": "A", "title": "A"}),
+            (9.0, {"id": "a2", "item_id": "A", "title": "A"}),
+            (3.0, {"id": "b1", "item_id": "B", "title": "B"}),
+        ]
+        picked = _diversify_chunks(ranked, 2)
+        self.assertEqual({c["item_id"] for c in picked}, {"A", "B"})
 
 
 if __name__ == "__main__":

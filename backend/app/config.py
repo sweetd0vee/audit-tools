@@ -39,10 +39,12 @@ class Settings(BaseSettings):
     chunk_size: int = 1400
     chunk_overlap: int = 180
     summary_max_chars: int = 14000
-    summary_section_chars: int = 28000
-    summary_section_overlap: int = 600
+    # Small enough that the model actually reads the window; large enough
+    # that a typical instruction is a handful of sequential calls, not RAG.
+    summary_section_chars: int = 10000
+    summary_section_overlap: int = 300
     summary_timeout_sec: float = 420.0
-    rag_top_k: int = 8
+    rag_top_k: int = 12
     embed_timeout_sec: float = 120.0
     brief_chars_per_page: int = 1800
     brief_timeout_sec: float = 1800.0

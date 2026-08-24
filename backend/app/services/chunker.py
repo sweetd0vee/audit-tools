@@ -10,6 +10,10 @@ ARTICLE_RE = re.compile(
     r"(?=^(?:Статья|Ст\.|Глава|ГЛАВА|СТАТЬЯ)\s+\d+)",
     re.MULTILINE,
 )
+SECTION_RE = re.compile(
+    r"(?=^(?:Статья|Ст\.|Глава|ГЛАВА|СТАТЬЯ|Раздел|РАЗДЕЛ)\s+\d+)",
+    re.MULTILINE,
+)
 
 
 def tokenize(text: str) -> list[str]:
@@ -128,15 +132,52 @@ def even_sample(items: list, k: int) -> list:
     return out
 
 
+def split_sections(text: str) -> list[str]:
+    """Keep article/chapter blocks intact so a window never starts mid-article."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in SECTION_RE.split(text) if p and p.strip()]
+    return parts or [text]
+
+
 def sequential_windows(
     text: str,
     size: int | None = None,
     overlap: int | None = None,
 ) -> list[str]:
-    """Ordered windows covering the whole document. Never keyword-rank or skip the middle."""
+    """Ordered windows covering the whole document.
+
+    Packs whole articles/chapters until `size`. Never keyword-ranks, never
+    skips the middle. Overlap is used only when a single article is longer
+    than the window.
+    """
     size = size or settings.summary_section_chars
     overlap = overlap if overlap is not None else settings.summary_section_overlap
-    return chunk_text(text, size=size, overlap=overlap)
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts = split_sections(text)
+    if len(parts) <= 1:
+        return chunk_text(text, size=size, overlap=overlap)
+
+    windows: list[str] = []
+    buf = ""
+    for part in parts:
+        if len(part) > size:
+            if buf:
+                windows.append(buf.strip())
+                buf = ""
+            windows.extend(_window(part, size, overlap))
+            continue
+        if buf and len(buf) + 2 + len(part) > size:
+            windows.append(buf.strip())
+            buf = part
+        else:
+            buf = f"{buf}\n\n{part}" if buf else part
+    if buf.strip():
+        windows.append(buf.strip())
+    return windows
 
 
 def cosine(a: list[float], b: list[float]) -> float:

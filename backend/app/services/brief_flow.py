@@ -10,26 +10,37 @@ from pathlib import Path
 from app.config import settings
 from app.filenames import safe_stem
 from app.services.brief_docx import write_brief_docx
-from app.services.citations import extract_article_outline, pages_estimate
+from app.services.citations import pages_estimate
 from app.services.knowledge_flow import (
     FRAGMENTS_PER_ITEM,
     _fragments_from_item,
-    _item_text,
     ingest_library,
     summarize_item,
 )
 from app.models import CaseState
-from app.services.ollama_client import chat_complete
 from app.storage import store
 
-SYNTHESIS_SYSTEM = """Ты — старший аудитор банка в Республике Беларусь.
-По ПОЛНЫМ конспектам актов из библиотеки напиши навигационный обзор.
-Правила:
-1. Только то, что есть в конспектах. Не выдумывай статьи.
-2. Обзор — оглавление основных моментов по каждому акту, не замена карточек.
-3. Не подменяй право РБ нормами РФ/ЕС/IFRS.
-4. Это черновик для чтения глазами, не аудиторское суждение.
-"""
+BRIEF_SCHEMA = 2
+
+
+def _markdown_bullets(md: str) -> list[str]:
+    section = md or ""
+    marker = "## Основные положения"
+    idx = section.find(marker)
+    if idx >= 0:
+        section = section[idx:]
+        nxt = section.find("\n## ", 3)
+        if nxt > 0:
+            section = section[:nxt]
+    out: list[str] = []
+    for ln in section.splitlines():
+        s = ln.strip()
+        if s.startswith("- ") or s.startswith("* "):
+            item = s[2:].strip()
+            if item.startswith("…"):
+                continue
+            out.append(item)
+    return out
 
 
 def _brief_dir(case_id: str) -> Path:
@@ -103,6 +114,8 @@ def _brief_stale(state: CaseState) -> bool:
     ok_items = sum(1 for i in state.knowledge if i.extract_status == "ok")
     if meta.get("items") != ok_items:
         return True
+    if meta.get("schema") != BRIEF_SCHEMA:
+        return True
     return False
 
 
@@ -122,35 +135,41 @@ def collect_brief_sources(state) -> list[dict]:
     return sources
 
 
-async def _synthesize(state, chapters: list[dict]) -> str:
-    cards = "\n\n".join(f"# {ch['title']}\n{ch['body']}" for ch in chapters)
-    user = f"""Тема проверки: {state.inspection_name}
-Ключевые слова: {", ".join(state.keywords) or "не указаны"}
-Период: {state.period or "не указан"}
-
-Конспекты актов (каждый покрывает документ целиком):
-{cards}
-
-Напиши навигационный обзор — перечень основных моментов, чтобы можно было сразу перейти к нужной карточке ниже. Не сокращай карточки: они уже есть в файле.
-
-## Состав нормативной базы
-По каждому акту: одно предложение, о чём документ и зачем он в этой проверке.
-
-## Основные моменты по актам
-Для КАЖДОГО акта отдельный подзаголовок ### и маркированный список 6–15 главных положений с номерами статей/пунктов из конспекта. Не пропускай акт.
-
-## Пересечения норм
-Только если это явно следует из конспектов.
-
-Не выдумывай статьи. Нормы РФ/ЕС/IFRS не подставляй.
-"""
-    return await chat_complete(
-        SYNTHESIS_SYSTEM,
-        user,
-        timeout=settings.summary_timeout_sec,
-        num_ctx=settings.ollama_num_ctx,
-        num_predict=8192,
-    )
+def _synthesize(state, chapters: list[dict]) -> str:
+    n = len(chapters)
+    lines = [
+        f"К проверке «{state.inspection_name}» приложено {n} документ(ов) из базы знаний.",
+        "Каждая карточка ниже — перечень основных положений акта по порядку текста, "
+        "чтобы не читать первоисточник целиком.",
+        "",
+        "## Состав нормативной базы",
+    ]
+    for ch in chapters:
+        bullets = _markdown_bullets(ch.get("body") or "")
+        lines.append(f"- **{ch['title']}** — в конспекте {len(bullets)} положений.")
+    lines.append("")
+    lines.append("## Основные моменты по актам")
+    for ch in chapters:
+        lines.append(f"### {ch['title']}")
+        bullets = _markdown_bullets(ch.get("body") or "")
+        preview = bullets[:15]
+        if preview:
+            lines.extend(f"- {b}" for b in preview)
+            extra = len(bullets) - len(preview)
+            if extra > 0:
+                lines.append(f"- … ещё {extra} положений в карточке акта ниже")
+        else:
+            first = next(
+                (
+                    ln.strip()
+                    for ln in (ch.get("body") or "").splitlines()
+                    if ln.strip() and not ln.startswith("#")
+                ),
+                "",
+            )
+            lines.append(f"- {first[:240]}" if first else "- конспект в карточке акта ниже")
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def _write_markdown(
@@ -170,7 +189,7 @@ def _write_markdown(
         f"Период: {period or 'не указан'}. Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",
         "Номера статей — из текста актов. Официальный URL — страница скачивания. "
-        "Конспект покрывает документ целиком, не выборку по поиску.",
+        "Конспект — перечень основных положений по порядку всего акта, не выборка по поиску.",
         "",
         "## Обзор проверки",
         overview.strip(),
@@ -210,6 +229,7 @@ def _save_brief_meta(state, *, docx: Path, md: Path, sources: list[dict], body: 
         "docx_path": str(docx),
         "md_path": str(md),
         "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
+        "schema": BRIEF_SCHEMA,
         "citations": len(sources),
         "chars": len(body),
         "pages_estimate": pages_estimate(body, settings.brief_chars_per_page),
@@ -282,22 +302,10 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
                 f"Карточка не собрана ({failed}). "
                 f"Читайте первоисточник в библиотеке кейса."
             )
-        outline = extract_article_outline(_item_text(item))
-        if outline:
-            shown = outline[:100]
-            extra = f"\n- … ещё {len(outline) - 100} разделов в первоисточнике" if len(outline) > 100 else ""
-            toc = "### Оглавление акта (из текста)\n" + "\n".join(f"- {h}" for h in shown) + extra
-            body = toc + "\n\n" + body
         chapters.append({"title": item.title, "body": body, "item_id": item.id})
 
-    yield {"type": "status", "message": "Пишу сводку основных моментов по всем актам…", "elapsed_ms": elapsed()}
-    try:
-        overview = await _synthesize(state, chapters)
-    except Exception as exc:  # noqa: BLE001
-        overview = (
-            f"Обзор моделью не собран ({exc}). Ниже — карточки по актам из библиотеки. "
-            "Цитаты в приложении сохранены."
-        )
+    yield {"type": "status", "message": "Собираю оглавление основных моментов по актам…", "elapsed_ms": elapsed()}
+    overview = _synthesize(state, chapters)
 
     body_for_pages = overview + "\n\n" + "\n\n".join(ch["body"] for ch in chapters)
     md = _md_path(case_id)

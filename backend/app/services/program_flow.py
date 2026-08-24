@@ -182,8 +182,8 @@ def _existing_cards(state: CaseState) -> str:
     for item in state.knowledge:
         if item.summary_status == "ok" and (item.summary or "").strip():
             body = item.summary.strip()
-            if len(body) > 2500:
-                body = body[:2500] + "\n…"
+            if len(body) > 8000:
+                body = body[:8000] + "\n…"
             blocks.append(f"# {item.title}\n{body}")
     return "\n\n".join(blocks)
 
