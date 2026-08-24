@@ -1,9 +1,9 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.6
+version: 0.1.7
 license: MIT
-description: Агент проверки. Собирает документы, саммари Word, отвечает по базе знаний.
+description: Агент проверки. Собирает документы, саммари и программу проверки в Word, отвечает по базе знаний.
 requirements: httpx
 """
 
@@ -44,7 +44,8 @@ HELP = """Я помогаю собрать документы для прове�
 
 Когда документы скачаются:
 — задавайте вопросы по базе знаний (приложенным документам);
-— напишите «саммари» — получите краткий обзор в Word.
+— напишите «саммари» — получите краткий обзор актов в Word;
+— напишите «программа проверки» — получите программу аудиторской проверки в Word.
 
 Если в приложенных документах нет ответа — так и скажу.
 Посмотреть, что скачалось: напишите «документы».
@@ -64,7 +65,7 @@ class Pipe:
         TIMEOUT_SEC: int = Field(default=300, description="Таймаут propose/download")
         BRIEF_TIMEOUT_SEC: int = Field(
             default=900,
-            description="Таймаут сборки саммари Word (минуты на каждый акт)",
+            description="Таймаут сборки саммари и программы проверки в Word",
         )
         OPENWEBUI_API_KEY: str = Field(
             default="",
@@ -97,6 +98,18 @@ class Pipe:
         await _status(__event_emitter__, "Смотрю, на каком вы шаге…")
 
         try:
+            if _is_program(text):
+                if not case_id:
+                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
+                return await self._program(
+                    api,
+                    public,
+                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
+                    case_id,
+                    text,
+                    __event_emitter__,
+                )
+
             if _is_brief(text):
                 if not case_id:
                     return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
@@ -290,7 +303,8 @@ class Pipe:
             f"{added}{extra}\n"
             f"{_download_links(public, case_id, name, with_summary=False)}\n\n"
             "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
-            "Чтобы получить краткий обзор в Word, напишите `саммари`.\n"
+            "Чтобы получить краткий обзор актов в Word, напишите `саммари`.\n"
+            "Чтобы получить программу проверки в Word, напишите `программа проверки`.\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -396,6 +410,78 @@ class Pipe:
             f"{digest_block}\n"
             "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
             "Собрать обзор заново: `саммари заново`.\n"
+            "Чтобы получить программу проверки в Word, напишите `программа проверки`.\n"
+            f"<!--audit-case:{case_id}-->"
+        )
+
+    async def _program(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
+        await _status(
+            emitter,
+            "Готовлю программу аудиторской проверки в Word. Это может занять несколько минут…",
+        )
+        result: dict[str, Any] | None = None
+        url = f"{api}/api/v1/cases/{case_id}/knowledge/program/stream"
+        if force:
+            url += "?force=true"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("GET", url) as response:
+                    if response.status_code >= 400:
+                        detail = (await response.aread())[:400].decode("utf-8", "replace")
+                        raise RuntimeError(f"{response.status_code}: {detail}")
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        try:
+                            event = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            continue
+                        kind = event.get("type")
+                        if kind == "status":
+                            await _status(
+                                emitter, event.get("message") or "Готовлю программу проверки…"
+                            )
+                        elif kind == "error":
+                            raise RuntimeError(event.get("message") or "program error")
+                        elif kind == "result":
+                            result = event
+        except Exception as exc:  # noqa: BLE001
+            return (
+                f"Не получилось собрать программу проверки: {exc}\n"
+                "Сначала должна быть создана проверка. Лучше, если акты уже скачаны: "
+                "напишите `документы` или `утверждаю 1, 2`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        if not result:
+            return (
+                "Программа проверки не получилась. Напишите ещё раз: `программа проверки`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        name = result.get("inspection_name") or ""
+        if not name:
+            try:
+                state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
+                name = state.get("inspection_name") or "proverka"
+            except Exception:
+                name = "proverka"
+        digest = "\n".join(result.get("digest") or [])
+        digest_block = f"\nКратко по процедурам:\n{digest}\n" if digest else ""
+        return (
+            "Программа аудиторской проверки готова. Скачайте Word и правьте сами — "
+            "в чат полный текст не копирую. Это черновик, не утверждённая программа СВА.\n\n"
+            f"{_download_links(public, case_id, name, with_program=True)}\n"
+            f"{digest_block}\n"
+            "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
+            "Собрать программу заново: `программа проверки заново`.\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -415,7 +501,8 @@ class Pipe:
         lines.append(_download_links(public, case_id, name, with_summary=False))
         lines.append("")
         lines.append("Дальше можно задавать вопросы по базе знаний (приложенным документам).")
-        lines.append("Чтобы получить краткий обзор в Word, напишите `саммари`.")
+        lines.append("Чтобы получить краткий обзор актов в Word, напишите `саммари`.")
+        lines.append("Чтобы получить программу проверки в Word, напишите `программа проверки`.")
         lines.append(f"<!--audit-case:{case_id}-->")
         return "\n".join(lines)
 
@@ -509,6 +596,23 @@ def _has_explicit_picks(text: str) -> bool:
     )
 
 
+def _is_program(text: str) -> bool:
+    t = text.strip().lower()
+    if t in {"программа", "программу", "/program", "audit program"}:
+        return True
+    if re.search(r"(статья|ст\.)\s*\d+", t) and not re.search(r"программ", t):
+        return False
+    return bool(
+        re.search(
+            r"(программ\w*\s+(проверк|аудиторск|аудита)|"
+            r"аудиторск\w*\s+программ|"
+            r"(сделай|составь|подготовь|напиши)\s+программ|"
+            r"/program|audit\s+program)",
+            t,
+        )
+    )
+
+
 def _is_brief(text: str) -> bool:
     t = text.strip().lower()
     if t in {"саммари", "сводка", "бриф", "docx", "word", "/brief", "/summary"}:
@@ -543,7 +647,7 @@ def _is_approve(text: str) -> bool:
 
 def _is_library(text: str) -> bool:
     t = text.strip().lower()
-    if _is_brief(t):
+    if _is_brief(t) or _is_program(t):
         return False
     if re.search(r"скачай|скачать|скачивай", t):
         return False
@@ -570,7 +674,8 @@ def _download_links(
     case_id: str,
     inspection_name: str,
     *,
-    with_summary: bool,
+    with_summary: bool = False,
+    with_program: bool = False,
 ) -> str:
     stem = _file_stem(inspection_name)
     base = f"{public}/api/v1/cases/{case_id}"
@@ -581,6 +686,10 @@ def _download_links(
     if with_summary:
         lines.append(
             f"- обзор базы знаний (`{stem}_summary.docx`): {base}/knowledge/brief.docx"
+        )
+    if with_program:
+        lines.append(
+            f"- программа проверки (`{stem}_programma.docx`): {base}/knowledge/program.docx"
         )
     return "\n".join(lines)
 
@@ -606,7 +715,13 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
     raw = text.strip()
     if len(raw) < 8:
         return None
-    if _is_approve(raw) or _is_status(raw) or _is_library(raw) or _is_brief(raw):
+    if (
+        _is_approve(raw)
+        or _is_status(raw)
+        or _is_library(raw)
+        or _is_brief(raw)
+        or _is_program(raw)
+    ):
         return None
     parts = [p.strip(" .;") for p in re.split(r"[,;\n]", raw) if p.strip()]
     if not parts:

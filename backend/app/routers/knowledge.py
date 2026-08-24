@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
 import traceback
 import zipfile
-from collections.abc import AsyncIterator
-
 from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.http import require_case, sse_response
 from app.models import AskRequest, AskResponse, BriefRequest, OpenWebUISyncRequest
 from app.services.brief_flow import (
     brief_download_name,
@@ -19,6 +17,13 @@ from app.services.brief_flow import (
     build_brief,
     build_brief_events,
     resolve_brief_file,
+)
+from app.services.program_flow import (
+    build_program,
+    build_program_events,
+    program_download_name,
+    program_status,
+    resolve_program_file,
 )
 from app.services.knowledge_flow import (
     add_uploaded_file,
@@ -35,10 +40,6 @@ from app.storage import store
 
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
 logger = logging.getLogger(__name__)
-
-
-def _sse(event: dict) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @router.get("/cases/{case_id}/knowledge")
@@ -60,11 +61,7 @@ def get_knowledge(case_id: str):
 
 @router.post("/cases/{case_id}/knowledge/upload")
 async def upload_knowledge(case_id: str, files: list[UploadFile] = File(...)):
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
+    require_case(case_id)
     added = []
     errors = []
     for f in files:
@@ -99,10 +96,7 @@ def ingest(case_id: str):
 @router.post("/cases/{case_id}/knowledge/index")
 def index_knowledge(case_id: str):
     """Collect chunks from downloaded txt without summaries or Open WebUI."""
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    require_case(case_id)
     payload = rebuild_index(case_id)
     state = store.get(case_id)
     return {
@@ -114,36 +108,13 @@ def index_knowledge(case_id: str):
 
 @router.get("/cases/{case_id}/knowledge/build/stream")
 async def build_stream(case_id: str):
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    async def gen() -> AsyncIterator[str]:
-        try:
-            async for event in build_knowledge_events(case_id):
-                yield _sse(event)
-            yield _sse({"type": "done"})
-        except Exception as exc:  # noqa: BLE001
-            yield _sse({"type": "error", "message": str(exc)})
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    require_case(case_id)
+    return sse_response(build_knowledge_events(case_id))
 
 
 @router.post("/cases/{case_id}/knowledge/ask", response_model=AskResponse)
 async def ask_knowledge(case_id: str, body: AskRequest) -> AskResponse:
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    require_case(case_id)
     try:
         result = await ask(case_id, body.question, body.top_k)
     except ValueError as exc:
@@ -155,19 +126,13 @@ async def ask_knowledge(case_id: str, body: AskRequest) -> AskResponse:
 
 @router.get("/cases/{case_id}/knowledge/brief")
 def get_brief(case_id: str):
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    require_case(case_id)
     return brief_status(case_id)
 
 
 @router.post("/cases/{case_id}/knowledge/brief")
 async def post_brief(case_id: str, body: Optional[BriefRequest] = None):
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    require_case(case_id)
     force = bool(body and body.force)
     try:
         return await build_brief(case_id, force=force)
@@ -179,36 +144,13 @@ async def post_brief(case_id: str, body: Optional[BriefRequest] = None):
 
 @router.get("/cases/{case_id}/knowledge/brief/stream")
 async def brief_stream(case_id: str, force: bool = Query(default=False)):
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    async def gen() -> AsyncIterator[str]:
-        try:
-            async for event in build_brief_events(case_id, force=force):
-                yield _sse(event)
-            yield _sse({"type": "done"})
-        except Exception as exc:  # noqa: BLE001
-            yield _sse({"type": "error", "message": str(exc)})
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    require_case(case_id)
+    return sse_response(build_brief_events(case_id, force=force))
 
 
 @router.get("/cases/{case_id}/knowledge/brief.docx")
 def download_brief_docx(case_id: str):
-    try:
-        state = store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    state = require_case(case_id)
     path = resolve_brief_file(case_id, "docx")
     if not path:
         raise HTTPException(
@@ -224,10 +166,7 @@ def download_brief_docx(case_id: str):
 
 @router.get("/cases/{case_id}/knowledge/brief.md")
 def download_brief_md(case_id: str):
-    try:
-        state = store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    state = require_case(case_id)
     path = resolve_brief_file(case_id, "md")
     if not path:
         raise HTTPException(status_code=404, detail="Markdown саммари ещё нет.")
@@ -238,13 +177,62 @@ def download_brief_md(case_id: str):
     )
 
 
+@router.get("/cases/{case_id}/knowledge/program")
+def get_program(case_id: str):
+    require_case(case_id)
+    return program_status(case_id)
+
+
+@router.post("/cases/{case_id}/knowledge/program")
+async def post_program(case_id: str, body: Optional[BriefRequest] = None):
+    require_case(case_id)
+    force = bool(body and body.force)
+    try:
+        return await build_program(case_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as extra:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Program failed: {extra}") from extra
+
+
+@router.get("/cases/{case_id}/knowledge/program/stream")
+async def program_stream(case_id: str, force: bool = Query(default=False)):
+    require_case(case_id)
+    return sse_response(build_program_events(case_id, force=force))
+
+
+@router.get("/cases/{case_id}/knowledge/program.docx")
+def download_program_docx(case_id: str):
+    state = require_case(case_id)
+    path = resolve_program_file(case_id, "docx")
+    if not path:
+        raise HTTPException(
+            status_code=404,
+            detail="Программы проверки ещё нет. Напишите в чате «программа проверки».",
+        )
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=program_download_name(state.inspection_name, case_id, "docx"),
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/program.md")
+def download_program_md(case_id: str):
+    state = require_case(case_id)
+    path = resolve_program_file(case_id, "md")
+    if not path:
+        raise HTTPException(status_code=404, detail="Markdown программы проверки ещё нет.")
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=program_download_name(state.inspection_name, case_id, "md"),
+    )
+
+
 @router.get("/cases/{case_id}/knowledge/export")
 def export_knowledge(case_id: str):
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
+    require_case(case_id)
     files = export_pack_files(case_id)
     if not files:
         raise HTTPException(status_code=400, detail="Нет файлов для экспорта. Соберите базу знаний.")
@@ -269,10 +257,7 @@ async def owui_status():
 
 @router.post("/cases/{case_id}/knowledge/openwebui/sync")
 async def owui_sync(case_id: str, body: Optional[OpenWebUISyncRequest] = None):
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    require_case(case_id)
     key = (body.api_key if body else None) or None
     try:
         return await sync_openwebui(case_id, key)

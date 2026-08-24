@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
-from app.models import CaseState, KnowledgeItem, new_id
+from app.filenames import safe_stem
+from app.models import CaseState, KnowledgeItem
 from app.services.chunker import chunk_text, cosine, keyword_score, pick_relevant_chunks, tokenize
 from app.services.citations import excerpt_for_cite, extract_article_ref, origin_url
 from app.services.extract import TEXT_EXTS, extract_text
@@ -43,24 +43,18 @@ ASK_SYSTEM = """Ты — ассистент внутреннего аудито�
 """
 
 
-def _safe_stem(name: str) -> str:
-    base = Path(name).stem
-    base = re.sub(r"[^\w\u0400-\u04FF\-]+", "_", base, flags=re.UNICODE).strip("_")
-    return (base[:80] or "document")
-
-
 def _index_path(case_id: str) -> Path:
-    return store._case_dir(case_id) / "knowledge_index.json"
+    return store.case_dir(case_id) / "knowledge_index.json"
 
 
 def _text_dir(case_id: str) -> Path:
-    path = store._case_dir(case_id) / "knowledge_text"
+    path = store.case_dir(case_id) / "knowledge_text"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _summaries_dir(case_id: str) -> Path:
-    path = store._case_dir(case_id) / "summaries"
+    path = store.case_dir(case_id) / "summaries"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -134,7 +128,7 @@ def ingest_library(case_id: str) -> CaseState:
             )
             continue
 
-        text_path = text_dir / f"{_safe_stem(path.name)}.txt"
+        text_path = text_dir / f"{safe_stem(path.name)}.txt"
         text_path.write_text(text, encoding="utf-8")
         items.append(
             KnowledgeItem(
@@ -158,7 +152,7 @@ def ingest_library(case_id: str) -> CaseState:
 def add_uploaded_file(case_id: str, filename: str, content: bytes) -> KnowledgeItem:
     state = store.get(case_id)
     lib = store.library_dir(case_id)
-    safe = f"U_{len(state.knowledge)+1:02d}_{_safe_stem(filename)}{Path(filename).suffix.lower() or '.bin'}"
+    safe = f"U_{len(state.knowledge)+1:02d}_{safe_stem(filename)}{Path(filename).suffix.lower() or '.bin'}"
     dest = lib / safe
     dest.write_bytes(content)
 
@@ -367,7 +361,7 @@ async def summarize_item(
         )
         item.summary_status = "ok"
         item.summary_error = None
-        out = _summaries_dir(state.case_id) / f"{_safe_stem(item.filename)}.md"
+        out = _summaries_dir(state.case_id) / f"{safe_stem(item.filename)}.md"
         out.write_text(f"# {item.title}\n\n{item.summary}\n", encoding="utf-8")
         item.summary_path = str(out)
     except Exception as exc:  # noqa: BLE001
@@ -434,36 +428,6 @@ async def build_knowledge_events(case_id: str) -> AsyncIterator[dict]:
         "knowledge": [k.model_dump() for k in state.knowledge],
         "elapsed_ms": elapsed(),
     }
-
-
-def retrieve(case_id: str, question: str, top_k: int | None = None) -> list[dict]:
-    top_k = top_k or settings.rag_top_k
-    index = _load_index(case_id)
-    chunks = index.get("chunks") or []
-    if not chunks:
-        return []
-
-    q_tokens = set(tokenize(question))
-    scored: list[tuple[float, dict]] = []
-    q_emb: list[float] | None = None
-
-    for ch in chunks:
-        lex = keyword_score(ch["text"], list(q_tokens) + [question])
-        # extra: token overlap
-        ctok = set(tokenize(ch["text"]))
-        if q_tokens:
-            lex += 2.0 * len(q_tokens & ctok)
-        vec = 0.0
-        scored.append((lex, ch))
-
-    # optional vector rerank if query embed is cheap — skipped here to stay sync
-    scored.sort(key=lambda x: x[0], reverse=True)
-    # blend with cosine if embeddings exist
-    has_emb = any(c.get("embedding") for c in chunks)
-    if has_emb:
-        # lazy: score with dummy, then we'll embed query in ask()
-        pass
-    return [c for _, c in scored[: max(top_k * 3, top_k)]]
 
 
 async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
@@ -533,10 +497,10 @@ def export_pack_files(case_id: str) -> list[tuple[str, bytes]]:
     files: list[tuple[str, bytes]] = []
     for item in state.knowledge:
         if item.text_path and Path(item.text_path).exists():
-            name = f"docs/{_safe_stem(item.filename)}.txt"
+            name = f"docs/{safe_stem(item.filename)}.txt"
             files.append((name, Path(item.text_path).read_bytes()))
         if item.summary:
-            name = f"summaries/{_safe_stem(item.filename)}.md"
+            name = f"summaries/{safe_stem(item.filename)}.md"
             body = f"# {item.title}\n\n{item.summary}\n"
             files.append((name, body.encode("utf-8")))
 

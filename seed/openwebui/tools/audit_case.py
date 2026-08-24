@@ -187,6 +187,23 @@ class Tools:
             f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
         )
 
+    async def build_program(self, case_id: str, force: bool = False) -> str:
+        """
+        Собрать программу аудиторской проверки банка РБ в Word.
+        Вызывай, когда аудитор пишет «программа проверки». После download_npa.
+        """
+        path = f"/api/v1/cases/{case_id}/knowledge/program"
+        if force:
+            data = await self._req("POST", path, {"force": True})
+        else:
+            data = await self._req("POST", path, {})
+        pages = data.get("pages_estimate")
+        cites = data.get("citations")
+        return (
+            f"program ready pages={pages} citations={cites}. "
+            f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
+        )
+
     async def _req(self, method: str, path: str, json: Optional[dict] = None) -> dict:
         url = f"{self._base()}{path}"
         timeout = float(self.valves.TIMEOUT_SEC)

@@ -18,15 +18,9 @@ from app.services.searxng_client import find_best_url
 from app.storage import store
 
 
-async def run_propose(case_id: str) -> CaseState:
-    state = store.get(case_id)
-    result = await propose_documents(
-        inspection_name=state.inspection_name,
-        keywords=state.keywords,
-        period=state.period,
-    )
-
-    docs = [
+def _persist_propose(state: CaseState, result: dict) -> CaseState:
+    state.topics = result["topics"]
+    state.documents = [
         ProposedDocument(
             title=d["title"],
             doc_type=d["doc_type"],
@@ -37,9 +31,6 @@ async def run_propose(case_id: str) -> CaseState:
         )
         for d in result["documents"]
     ]
-
-    state.topics = result["topics"]
-    state.documents = docs
     state.status = CaseStatus.proposed
     state.meta["propose_model"] = result["model"]
     state.meta["proposed_at"] = datetime.utcnow().isoformat()
@@ -49,6 +40,16 @@ async def run_propose(case_id: str) -> CaseState:
     state.meta["propose_user_prompt"] = result.get("user_prompt")
     store.save(state)
     return state
+
+
+async def run_propose(case_id: str) -> CaseState:
+    state = store.get(case_id)
+    result = await propose_documents(
+        inspection_name=state.inspection_name,
+        keywords=state.keywords,
+        period=state.period,
+    )
+    return _persist_propose(state, result)
 
 
 async def run_propose_events(case_id: str):
@@ -67,29 +68,7 @@ async def run_propose_events(case_id: str):
     if not result_payload:
         raise ValueError("No result from model")
 
-    docs = [
-        ProposedDocument(
-            title=d["title"],
-            doc_type=d["doc_type"],
-            why_needed=d["why_needed"],
-            search_queries=d["search_queries"],
-            priority=d["priority"],
-            selected=False,
-        )
-        for d in result_payload["documents"]
-    ]
-    state = store.get(case_id)
-    state.topics = result_payload["topics"]
-    state.documents = docs
-    state.status = CaseStatus.proposed
-    state.meta["propose_model"] = result_payload["model"]
-    state.meta["proposed_at"] = datetime.utcnow().isoformat()
-    state.meta["propose_raw"] = result_payload.get("raw")
-    state.meta["propose_elapsed_ms"] = result_payload.get("elapsed_ms")
-    state.meta["propose_system_prompt"] = result_payload.get("system_prompt")
-    state.meta["propose_user_prompt"] = result_payload.get("user_prompt")
-    store.save(state)
-
+    state = _persist_propose(store.get(case_id), result_payload)
     yield {
         "type": "saved",
         "case_id": case_id,
@@ -205,6 +184,30 @@ def _on_disk(doc: ProposedDocument, lib_dir: Path) -> bool:
     return (lib_dir / Path(doc.local_path).name).is_file()
 
 
+def _record_download(
+    doc: ProposedDocument,
+    result: dict,
+    source: str,
+    manifest_items: list[dict],
+) -> None:
+    doc.local_path = result["local_path"]
+    doc.download_status = "ok"
+    doc.download_error = None
+    manifest_items.append(
+        {
+            "document_id": doc.id,
+            "title": doc.title,
+            "url": result["url"],
+            "source": source,
+            "local_path": result["local_path"],
+            "sha256": result["sha256"],
+            "bytes": result["bytes"],
+            "text_extract": result.get("text_extract"),
+            "downloaded_at": datetime.utcnow().isoformat(),
+        }
+    )
+
+
 async def run_download(case_id: str) -> CaseState:
     state = store.get(case_id)
     selected = [d for d in state.documents if d.selected]
@@ -215,7 +218,7 @@ async def run_download(case_id: str) -> CaseState:
     store.save(state)
 
     lib_dir = store.library_dir(case_id)
-    manifest_items = []
+    manifest_items: list[dict] = []
 
     for i, doc in enumerate(selected, start=1):
         if doc.download_status == "ok" and _on_disk(doc, lib_dir):
@@ -249,22 +252,7 @@ async def run_download(case_id: str) -> CaseState:
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 continue
-            doc.local_path = result["local_path"]
-            doc.download_status = "ok"
-            doc.download_error = None
-            manifest_items.append(
-                {
-                    "document_id": doc.id,
-                    "title": doc.title,
-                    "url": result["url"],
-                    "source": source,
-                    "local_path": result["local_path"],
-                    "sha256": result["sha256"],
-                    "bytes": result["bytes"],
-                    "text_extract": result.get("text_extract"),
-                    "downloaded_at": datetime.utcnow().isoformat(),
-                }
-            )
+            _record_download(doc, result, source, manifest_items)
             saved = True
             break
 
@@ -281,22 +269,7 @@ async def run_download(case_id: str) -> CaseState:
                 store.save(state)
                 try:
                     result = await download_url(url, lib_dir, doc.title, i)
-                    doc.local_path = result["local_path"]
-                    doc.download_status = "ok"
-                    doc.download_error = None
-                    manifest_items.append(
-                        {
-                            "document_id": doc.id,
-                            "title": doc.title,
-                            "url": result["url"],
-                            "source": "searxng",
-                            "local_path": result["local_path"],
-                            "sha256": result["sha256"],
-                            "bytes": result["bytes"],
-                            "text_extract": result.get("text_extract"),
-                            "downloaded_at": datetime.utcnow().isoformat(),
-                        }
-                    )
+                    _record_download(doc, result, "searxng", manifest_items)
                     saved = True
                 except Exception as exc:  # noqa: BLE001
                     last_error = str(exc)
@@ -338,6 +311,5 @@ async def run_download(case_id: str) -> CaseState:
         state.meta["archive_path"] = str(archive)
         state.meta["archive_name"] = store.archive_filename(state.inspection_name, case_id)
     store.save(state)
-    # Тексты + чанки сразу — ask в чате не ждёт отдельный /knowledge/build
     rebuild_index(case_id)
     return store.get(case_id)

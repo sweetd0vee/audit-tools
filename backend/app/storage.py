@@ -35,7 +35,6 @@ class CaseStore:
         return self._case_dir(case_id) / "library.zip"
 
     @staticmethod
-    @staticmethod
     def archive_filename(inspection_name: str, case_id: str = "") -> str:
         _ = case_id
         return f"{slugify(inspection_name or '', limit=60, fallback='proverka')}_npa.zip"

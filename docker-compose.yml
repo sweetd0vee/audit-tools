@@ -90,6 +90,19 @@ services:
     networks:
       - ai-auditor
 
+  frontend:
+    profiles: ["lab"]
+    build:
+      context: ./frontend
+    container_name: audit-tools-ui
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      - backend
+    networks:
+      - ai-auditor
+
 networks:
   ai-auditor:
     name: ai-auditor

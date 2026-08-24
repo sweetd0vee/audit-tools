@@ -163,5 +163,48 @@ class TestDownloadNames(unittest.TestCase):
         self.assertNotIn("abc", name)
 
 
+class TestProgramDocx(unittest.TestCase):
+    def test_programma_name_uses_inspection(self):
+        from app.services.program_flow import program_download_name
+
+        name = program_download_name("Проверка аренды коммерческой недвижимости", "abc")
+        self.assertTrue(name.endswith("_programma.docx"))
+        self.assertIn("аренды", name)
+        self.assertNotIn("abc", name)
+
+    def test_writes_program_title_and_cites(self):
+        from app.services.brief_docx import write_program_docx
+
+        sources = [
+            {
+                "n": 1,
+                "title": "Гражданский кодекс Республики Беларусь",
+                "article": "Статья 625. Договор аренды",
+                "excerpt": "По договору аренды арендодатель обязуется предоставить имущество.",
+                "url": "https://pravo.by/document/?guid=3871&p0=hk9800218",
+                "filename": "gk.txt",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "program.docx"
+            write_program_docx(
+                path,
+                inspection_name="Проверка аренды коммерческой недвижимости",
+                period="2025",
+                keywords=["аренда", "НДС"],
+                case_id="3a23fb6db4a9",
+                body="## 7. Аудиторские процедуры\n\n### Процедура 1. Договор аренды\n- Критерий: [1].",
+                sources=sources,
+            )
+            self.assertTrue(path.exists())
+            from docx import Document
+
+            doc = Document(str(path))
+            texts = "\n".join(p.text for p in doc.paragraphs)
+            self.assertIn("Программа аудиторской проверки", texts)
+            self.assertIn("Процедура 1", texts)
+            self.assertIn("[1]", texts)
+
+
 if __name__ == "__main__":
     unittest.main()

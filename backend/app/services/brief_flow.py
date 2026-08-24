@@ -7,14 +7,15 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.filenames import safe_stem
 from app.services.brief_docx import write_brief_docx
 from app.services.citations import pages_estimate
 from app.services.knowledge_flow import (
     _fragments_from_item,
-    _safe_stem,
     ingest_library,
     summarize_item,
 )
+from app.models import CaseState
 from app.services.ollama_client import chat_complete
 from app.storage import store
 
@@ -31,13 +32,13 @@ FRAGMENTS_PER_ITEM = 10
 
 
 def _brief_dir(case_id: str) -> Path:
-    path = store._case_dir(case_id) / "summaries"
+    path = store.case_dir(case_id) / "summaries"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _docx_path(case_id: str, inspection_name: str) -> Path:
-    stem = _safe_stem(inspection_name or "proverka")
+    stem = safe_stem(inspection_name or "proverka")
     return _brief_dir(case_id) / f"sammari_{stem}_{case_id}.docx"
 
 
@@ -50,7 +51,8 @@ def _sources_path(case_id: str) -> Path:
 
 
 def brief_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
-    stem = _safe_stem(inspection_name or "proverka")
+    _ = case_id
+    stem = safe_stem(inspection_name or "proverka")
     suffix = (ext or "docx").lstrip(".")
     if suffix == "md":
         return f"{stem}_summary.md"
@@ -92,7 +94,7 @@ def brief_status(case_id: str) -> dict:
     return meta
 
 
-def _brief_stale(state) -> bool:
+def _brief_stale(state: CaseState) -> bool:
     meta = state.meta.get("brief") or {}
     path = Path(meta["docx_path"]) if meta.get("docx_path") else None
     if not path or not path.exists():
@@ -191,7 +193,6 @@ def _digest(chapters: list[dict], limit: int = 6) -> list[str]:
     for ch in chapters[:limit]:
         body = re.sub(r"^#+\s*", "", (ch.get("body") or "").strip(), flags=re.M)
         first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
-        first = re.sub(r"\[(\d+)\]", r"[\1]", first)
         if len(first) > 160:
             first = first[:157] + "…"
         out.append(f"- **{ch['title']}**: {first or 'карточка готова'}")

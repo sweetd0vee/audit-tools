@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
-from collections.abc import AsyncIterator
-
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 
+from app.http import require_case, sse_response
 from app.models import (
     CaseStatus,
     CaseSummary,
@@ -20,10 +18,6 @@ from app.services.library_flow import run_download, run_propose, run_propose_eve
 from app.storage import store
 
 router = APIRouter(prefix="/api/v1", tags=["library"])
-
-
-def _sse(event: dict) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @router.post("/cases", response_model=CreateCaseResponse)
@@ -64,19 +58,12 @@ def list_cases() -> list[CaseSummary]:
 
 @router.get("/cases/{case_id}")
 def get_case(case_id: str):
-    try:
-        return store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return require_case(case_id)
 
 
 @router.post("/cases/{case_id}/propose", response_model=ProposeResponse)
 async def propose(case_id: str) -> ProposeResponse:
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
+    require_case(case_id)
     try:
         state = await run_propose(case_id)
     except Exception as exc:  # noqa: BLE001
@@ -98,28 +85,8 @@ async def propose(case_id: str) -> ProposeResponse:
 @router.get("/cases/{case_id}/propose/stream")
 async def propose_stream(case_id: str):
     """SSE stream: status / chat / token / result / saved / error."""
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    async def gen() -> AsyncIterator[str]:
-        try:
-            async for event in run_propose_events(case_id):
-                yield _sse(event)
-            yield _sse({"type": "done"})
-        except Exception as exc:  # noqa: BLE001
-            yield _sse({"type": "error", "message": str(exc)})
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    require_case(case_id)
+    return sse_response(run_propose_events(case_id))
 
 
 @router.post("/cases/{case_id}/select", response_model=SelectDocumentsResponse)
@@ -146,11 +113,7 @@ def select(case_id: str, body: SelectDocumentsRequest) -> SelectDocumentsRespons
 
 @router.post("/cases/{case_id}/download", response_model=DownloadResponse)
 async def download(case_id: str) -> DownloadResponse:
-    try:
-        store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
+    require_case(case_id)
     try:
         state = await run_download(case_id)
     except ValueError as exc:
@@ -177,11 +140,7 @@ async def download(case_id: str) -> DownloadResponse:
 
 @router.get("/cases/{case_id}/library")
 def library(case_id: str):
-    try:
-        state = store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
+    state = require_case(case_id)
     lib = store.library_dir(case_id)
     files = sorted(p.name for p in lib.iterdir() if p.is_file())
     archive_name = state.meta.get("archive_name")
@@ -210,11 +169,7 @@ def library(case_id: str):
 
 @router.get("/cases/{case_id}/library/archive")
 def library_archive(case_id: str):
-    try:
-        state = store.get(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
+    state = require_case(case_id)
     path = store.archive_path(case_id)
     if not path.exists():
         path = store.write_library_archive(case_id)

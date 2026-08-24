@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
 import httpx
 
 from app.config import settings
-
-
-def _host_allowed(url: str) -> bool:
-    try:
-        host = urlparse(url).hostname or ""
-    except Exception:
-        return False
-    host = host.lower()
-    return any(host == d or host.endswith("." + d) for d in settings.domain_allowlist)
+from app.domains import host_allowed
 
 
 async def search_searxng(query: str, count: int | None = None) -> list[dict]:
@@ -39,7 +29,7 @@ async def search_searxng(query: str, count: int | None = None) -> list[dict]:
     results = []
     for item in data.get("results") or []:
         url = item.get("url") or item.get("href") or ""
-        if not url or not _host_allowed(url):
+        if not url or not host_allowed(url):
             continue
         results.append(
             {

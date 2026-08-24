@@ -9,6 +9,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.config import settings
+from app.domains import host_allowed
+from app.filenames import slugify
 
 _PLACEHOLDER = re.compile(r"(?:\.{3}|…)")
 
@@ -25,10 +27,7 @@ def usable_url(url: str | None) -> str | None:
     if _PLACEHOLDER.search(cleaned):
         return None
     parsed = urlparse(cleaned)
-    host = (parsed.hostname or "").lower()
-    if not host:
-        return None
-    if not any(host == d or host.endswith("." + d) for d in settings.domain_allowlist):
+    if not host_allowed(cleaned):
         return None
     if not (parsed.path or "").rstrip("/") and not parsed.query:
         return None
@@ -36,10 +35,8 @@ def usable_url(url: str | None) -> str | None:
 
 
 def _safe_filename(title: str, url: str, index: int) -> str:
-    base = re.sub(r"[^\w\u0400-\u04FF\-]+", "_", title, flags=re.UNICODE).strip("_")
-    base = base[:80] or "document"
-    ext = ".pdf"
     path = urlparse(url).path.lower()
+    ext = ".pdf"
     if path.endswith(".html") or path.endswith(".htm"):
         ext = ".html"
     elif path.endswith(".doc"):
@@ -48,20 +45,15 @@ def _safe_filename(title: str, url: str, index: int) -> str:
         ext = ".docx"
     elif path.endswith(".pdf"):
         ext = ".pdf"
-    elif "html" in (urlparse(url).path.lower()):
+    elif "html" in path:
         ext = ".html"
-    return f"{index:02d}_{base}{ext}"
-
-
-def _host_allowed(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return any(host == d or host.endswith("." + d) for d in settings.domain_allowlist)
+    return f"{index:02d}_{slugify(title)}{ext}"
 
 
 async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict:
     """Download URL into dest_dir. HTML saved as .html (+ optional .txt extract)."""
     url = usable_url(url) or url
-    if not _host_allowed(url):
+    if not host_allowed(url):
         raise ValueError(f"Domain not allowed: {url}")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
