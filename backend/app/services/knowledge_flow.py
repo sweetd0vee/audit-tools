@@ -668,7 +668,7 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
 Фрагменты из базы НПА:
 {chr(10).join(context_parts)}
 """
-    return await chat_complete(ASK_SYSTEM, user, timeout=settings.ollama_timeout_sec)
+    answer = await chat_complete(ASK_SYSTEM, user, timeout=settings.ollama_timeout_sec)
     return {
         "answer": answer,
         "sources": sources,

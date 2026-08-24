@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
@@ -145,6 +146,76 @@ class TestCollectSources(unittest.TestCase):
             frags = _fragments_from_item(state, item)
             self.assertTrue(frags)
 
+    def test_covers_start_and_end_not_keyword_hits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocks = []
+            for i in range(1, 25):
+                payload = "валюта " if i == 12 else "общее "
+                blocks.append(f"Статья {i}. Раздел {i}\n{payload * 220}\n")
+            txt = Path(tmp) / "code.txt"
+            txt.write_text("\n".join(blocks), encoding="utf-8")
+            item = KnowledgeItem(
+                id="item1",
+                title="Кодекс",
+                filename="code.txt",
+                text_path=str(txt),
+                local_path=str(txt),
+                extract_status="ok",
+            )
+            state = CaseState(
+                case_id="c1",
+                inspection_name="Проверка аренды",
+                keywords=["валюта"],
+                knowledge=[item],
+            )
+            blob = " ".join(fr["text"] for fr in _fragments_from_item(state, item))
+            self.assertIn("Статья 1.", blob)
+            self.assertIn("Статья 24.", blob)
+            sources = collect_brief_sources(state)
+            joined = " ".join(s["text"] for s in sources)
+            self.assertIn("Статья 1.", joined)
+            self.assertIn("Статья 24.", joined)
+
+
+class TestSequentialCoverage(unittest.TestCase):
+    def test_even_sample_keeps_first_and_last(self):
+        from app.services.chunker import even_sample
+
+        items = list(range(20))
+        sampled = even_sample(items, 5)
+        self.assertEqual(sampled[0], 0)
+        self.assertEqual(sampled[-1], 19)
+        self.assertEqual(len(sampled), 5)
+
+    def test_windows_cover_every_article(self):
+        from app.services.chunker import sequential_windows
+
+        text = "\n".join(
+            f"Статья {i}. Норма {i}\n{'слово ' * 180}" for i in range(1, 16)
+        )
+        windows = sequential_windows(text, size=2500, overlap=200)
+        self.assertGreaterEqual(len(windows), 2)
+        self.assertIn("Статья 1.", windows[0])
+        self.assertIn("Статья 15.", windows[-1])
+        for i in range(1, 16):
+            self.assertTrue(
+                any(f"Статья {i}." in w for w in windows),
+                f"статья {i} выпала из последовательного чтения",
+            )
+
+    def test_article_outline_order(self):
+        from app.services.citations import extract_article_outline
+
+        text = (
+            "Глава 1. Общие положения\n"
+            "Статья 1. Предмет\nтекст\n"
+            "Статья 2. Термины\nтекст\n"
+        )
+        outline = extract_article_outline(text)
+        self.assertEqual(outline[0], "Глава 1. Общие положения")
+        self.assertIn("Статья 1. Предмет", outline)
+        self.assertIn("Статья 2. Термины", outline)
+
 
 class TestDownloadNames(unittest.TestCase):
     def test_summary_docx_uses_inspection_name(self):
@@ -204,6 +275,83 @@ class TestProgramDocx(unittest.TestCase):
             self.assertIn("Программа аудиторской проверки", texts)
             self.assertIn("Процедура 1", texts)
             self.assertIn("[1]", texts)
+
+
+class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
+    async def test_oneshot_prompt_contains_whole_text(self):
+        from app.services.knowledge_flow import summarize_item
+
+        with tempfile.TemporaryDirectory() as tmp:
+            txt = Path(tmp) / "act.txt"
+            txt.write_text(
+                "Статья 1. Предмет\nДоговор аренды недвижимого имущества.\n\n"
+                "Статья 12. Расчёты\nОплата в белорусских рублях.\n\n"
+                "Статья 40. Ответственность\nНеустойка за просрочку.\n",
+                encoding="utf-8",
+            )
+            item = KnowledgeItem(
+                title="Инструкция тестовая",
+                filename="act.txt",
+                text_path=str(txt),
+                local_path=str(txt),
+                extract_status="ok",
+            )
+            state = CaseState(
+                case_id="c1",
+                inspection_name="Проверка аренды",
+                keywords=["валюта"],
+                knowledge=[item],
+            )
+            prompts: list[str] = []
+
+            async def fake_chat(system, user, **kwargs):
+                prompts.append(user)
+                return "## Назначение и сфера действия\n- ст. 1 — аренда"
+
+            with patch("app.services.knowledge_flow.chat_complete", fake_chat):
+                result = await summarize_item(state, item)
+
+            self.assertEqual(result.summary_status, "ok")
+            self.assertEqual(len(prompts), 1)
+            self.assertIn("Статья 1. Предмет", prompts[0])
+            self.assertIn("Статья 40. Ответственность", prompts[0])
+            self.assertIn("целиком", prompts[0].lower())
+
+    async def test_long_document_is_read_in_ordered_windows(self):
+        from app.services.knowledge_flow import summarize_item
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parts = [f"Статья {i}. Норма {i}\n{'текст ' * 900}\n" for i in range(1, 8)]
+            txt = Path(tmp) / "code.txt"
+            txt.write_text("\n".join(parts), encoding="utf-8")
+            item = KnowledgeItem(
+                title="Кодекс",
+                filename="code.txt",
+                text_path=str(txt),
+                local_path=str(txt),
+                extract_status="ok",
+            )
+            state = CaseState(
+                case_id="c1",
+                inspection_name="Проверка аренды",
+                keywords=["валюта"],
+                knowledge=[item],
+            )
+            prompts: list[str] = []
+
+            async def fake_chat(system, user, **kwargs):
+                prompts.append(user)
+                return "- ст. тест"
+
+            with patch("app.services.knowledge_flow.chat_complete", fake_chat):
+                result = await summarize_item(state, item)
+
+            self.assertEqual(result.summary_status, "ok")
+            self.assertGreaterEqual(len(prompts), 3)
+            joined = "\n".join(prompts)
+            self.assertIn("Статья 1.", joined)
+            self.assertIn("Статья 7.", joined)
+            self.assertTrue(any("часть 1 из" in p.lower() for p in prompts))
 
 
 if __name__ == "__main__":
