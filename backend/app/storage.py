@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.filenames import slugify
 from app.models import CaseState, CaseStatus, new_id
 
 
@@ -17,8 +17,11 @@ class CaseStore:
         self.root = root or settings.data_root
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def _case_dir(self, case_id: str) -> Path:
+    def case_dir(self, case_id: str) -> Path:
         return self.root / case_id
+
+    def _case_dir(self, case_id: str) -> Path:
+        return self.case_dir(case_id)
 
     def _state_path(self, case_id: str) -> Path:
         return self._case_dir(case_id) / "case.json"
@@ -32,10 +35,10 @@ class CaseStore:
         return self._case_dir(case_id) / "library.zip"
 
     @staticmethod
+    @staticmethod
     def archive_filename(inspection_name: str, case_id: str = "") -> str:
-        base = re.sub(r"[^\w\u0400-\u04FF\-]+", "_", inspection_name or "", flags=re.UNICODE)
-        base = base.strip("_")[:60] or "proverka"
-        return f"{base}_npa.zip"
+        _ = case_id
+        return f"{slugify(inspection_name or '', limit=60, fallback='proverka')}_npa.zip"
 
     def write_library_archive(self, case_id: str) -> Path | None:
         """Pack downloaded files (+ manifest) into library.zip. Returns path or None."""
