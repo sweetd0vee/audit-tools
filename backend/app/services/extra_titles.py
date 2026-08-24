@@ -10,6 +10,17 @@ DOC_START_RE = re.compile(
     re.I,
 )
 
+JUNK_RE = re.compile(
+    r"(audit-case|chat_history|если знаете ссылку|вставьте адрес|"
+    r"напишите, какие|утверждаю\s+\d|<!--|</?\w+>|"
+    r"https?://|guid=…|guid=\.\.\.)",
+    re.I,
+)
+LEGAL_HINT_RE = re.compile(
+    r"(закон|кодекс|инструкц|положен|постановлен|указ|декрет|"
+    r"правил|приказ|письмо|разъяснен|нбрб|минфин|налогов)",
+    re.I,
+)
 SPLIT_RE = re.compile(r"\s*[;\n]\s*|\s+\+\s+")
 SPACE_RE = re.compile(r"\s+")
 QUOTES_RE = re.compile(r"[«»\"„“”']")
@@ -25,6 +36,8 @@ def split_extra_titles(blob: str) -> list[str]:
     raw = (blob or "").strip().strip(" .,:;")
     if not raw:
         return []
+    raw = re.split(r"<!--", raw, maxsplit=1)[0]
+    raw = re.split(r"</chat", raw, maxsplit=1)[0]
     parts: list[str] = []
     for chunk in SPLIT_RE.split(raw):
         parts.extend(_split_and_conjunction(chunk))
@@ -32,6 +45,8 @@ def split_extra_titles(blob: str) -> list[str]:
     seen: set[str] = set()
     for part in parts:
         title = _clean_title(part)
+        if not is_plausible_npa_title(title):
+            continue
         key = norm_title(title)
         if len(key) < 8 or key in seen:
             continue
@@ -94,7 +109,16 @@ def _clean_title(part: str) -> str:
         text,
         flags=re.I,
     )
-    return text.strip(" .,:;")
+    return text.strip(" .,:;`")
+
+
+def is_plausible_npa_title(title: str) -> bool:
+    text = (title or "").strip(" .,:;`")
+    if len(text) < 8 or len(text) > 280:
+        return False
+    if JUNK_RE.search(text):
+        return False
+    return bool(DOC_START_RE.match(text) or LEGAL_HINT_RE.search(text))
 
 
 def _split_and_conjunction(chunk: str) -> list[str]:

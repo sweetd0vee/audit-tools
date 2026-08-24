@@ -13,8 +13,8 @@ from app.services.extra_titles import (
 )
 from app.services.known_sources import lookup_known_url
 from app.services.knowledge_flow import rebuild_index
+from app.services.npa_search import expand_official_urls, find_candidate_urls
 from app.services.ollama_client import propose_documents, propose_documents_events
-from app.services.searxng_client import find_best_url
 from app.storage import store
 
 
@@ -167,11 +167,15 @@ def download_candidates(doc: ProposedDocument) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
 
     def add(url: str | None, source: str) -> None:
-        cleaned = usable_url(url)
-        if not cleaned or cleaned in seen:
-            return
-        seen.add(cleaned)
-        out.append((cleaned, source))
+        variants = expand_official_urls(url)
+        if not variants:
+            cleaned = usable_url(url)
+            variants = [cleaned] if cleaned else []
+        for cleaned in variants:
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            out.append((cleaned, source))
 
     add(doc.found_url, "manual")
     add(lookup_known_url(doc.title), "known")
@@ -242,7 +246,10 @@ async def run_download(case_id: str) -> CaseState:
         last_error: str | None = None
         saved = False
 
-        for url, source in download_candidates(doc):
+        async def try_one(url: str, source: str) -> bool:
+            nonlocal last_error, saved
+            if not url or url in tried:
+                return False
             tried.add(url)
             doc.found_url = url
             doc.download_status = "downloading"
@@ -251,28 +258,26 @@ async def run_download(case_id: str) -> CaseState:
                 result = await download_url(url, lib_dir, doc.title, i)
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
-                continue
+                return False
             _record_download(doc, result, source, manifest_items)
             saved = True
-            break
+            return True
+
+        for url, source in download_candidates(doc):
+            if await try_one(url, source):
+                break
 
         if not saved:
             try:
-                hit = await find_best_url(doc.search_queries, title=doc.title)
+                search_hits = await find_candidate_urls(
+                    doc.search_queries, title=doc.title
+                )
             except Exception as exc:  # noqa: BLE001
-                hit = None
+                search_hits = []
                 last_error = last_error or str(exc)
-            url = usable_url((hit or {}).get("url")) if hit else None
-            if url and url not in tried:
-                doc.found_url = url
-                doc.download_status = "downloading"
-                store.save(state)
-                try:
-                    result = await download_url(url, lib_dir, doc.title, i)
-                    _record_download(doc, result, "searxng", manifest_items)
-                    saved = True
-                except Exception as exc:  # noqa: BLE001
-                    last_error = str(exc)
+            for url, source in search_hits:
+                if await try_one(url, source):
+                    break
 
         if not saved:
             if last_error:
@@ -281,8 +286,8 @@ async def run_download(case_id: str) -> CaseState:
             else:
                 doc.download_status = "not_found"
                 doc.download_error = (
-                    "URL not found (SearXNG empty/suspended). "
-                    "Pass a full official URL or extend known_sources."
+                    "Официальный URL не найден. "
+                    "Напишите полную ссылку: к N url https://pravo.by/document/?guid=…"
                 )
 
         store.save(state)

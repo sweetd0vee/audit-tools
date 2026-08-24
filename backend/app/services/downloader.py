@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -13,6 +13,15 @@ from app.domains import host_allowed
 from app.filenames import slugify
 
 _PLACEHOLDER = re.compile(r"(?:\.{3}|…)")
+NEWS_MARKERS = ("/novosti/", "/analitika/", "/news/")
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/pdf,text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
 
 
 def usable_url(url: str | None) -> str | None:
@@ -34,10 +43,68 @@ def usable_url(url: str | None) -> str | None:
     return cleaned
 
 
+def html_text(content: bytes) -> str:
+    soup = BeautifulSoup(content, "lxml")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return soup.get_text("\n", strip=True)
+
+
+def is_usable_npa_page(url: str, content: bytes, content_type: str) -> bool:
+    """Reject 404 cards, news/analytics, and empty publication stubs."""
+    low_url = (url or "").lower()
+    low_type = (content_type or "").lower()
+    if "404.php" in low_url:
+        return False
+    if "pdf" in low_type or low_url.endswith(".pdf"):
+        return len(content or b"") > 400
+    text = html_text(content or b"")
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) < 800:
+        return False
+    low_text = compact.lower()
+    if "страница не найдена" in low_text or "page not found" in low_text:
+        return False
+    if any(marker in low_url for marker in NEWS_MARKERS):
+        return False
+    if "карточка документа" in low_text and "статья " not in low_text:
+        if len(compact) < 4000:
+            return False
+    return True
+
+
+def fulltext_links(content: bytes, page_url: str) -> list[str]:
+    """PDF / guid=3871 / webnpa links from a publication card."""
+    soup = BeautifulSoup(content or b"", "lxml")
+    found: list[str] = []
+    seen: set[str] = set()
+    for tag in soup.find_all("a", href=True):
+        href = urljoin(page_url, str(tag.get("href") or ""))
+        cleaned = usable_url(href)
+        if not cleaned or cleaned in seen:
+            continue
+        low = cleaned.lower()
+        label = (tag.get_text() or "").lower()
+        useful = (
+            low.endswith(".pdf")
+            or "/upload/docs/" in low
+            or "guid=3871" in low
+            or "webnpa/text" in low
+            or "etalonline.by" in low and "/document/" in low
+            or "скачать" in label
+            or "текст" in label
+        )
+        if not useful:
+            continue
+        seen.add(cleaned)
+        found.append(cleaned)
+    return found
+
+
 def _safe_filename(title: str, url: str, index: int) -> str:
     path = urlparse(url).path.lower()
     ext = ".pdf"
-    if path.endswith(".html") or path.endswith(".htm"):
+    if path.endswith(".html") or path.endswith(".htm") or path.endswith(".asp"):
         ext = ".html"
     elif path.endswith(".doc"):
         ext = ".doc"
@@ -50,6 +117,16 @@ def _safe_filename(title: str, url: str, index: int) -> str:
     return f"{index:02d}_{slugify(title)}{ext}"
 
 
+async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, bytes, str]:
+    resp = await client.get(url)
+    resp.raise_for_status()
+    final_url = str(resp.url)
+    if "404.php" in final_url.lower():
+        raise ValueError(f"404 for {url}")
+    content_type = (resp.headers.get("content-type") or "").lower()
+    return final_url, resp.content, content_type
+
+
 async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict:
     """Download URL into dest_dir. HTML saved as .html (+ optional .txt extract)."""
     url = usable_url(url) or url
@@ -57,23 +134,28 @@ async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict
         raise ValueError(f"Domain not allowed: {url}")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
-    headers = {
-        "User-Agent": "AuditToolsBot/1.0 (+local; bank-audit-research)",
-        "Accept": "application/pdf,text/html,application/xhtml+xml,*/*",
-    }
 
     async with httpx.AsyncClient(
         timeout=settings.download_timeout_sec,
         follow_redirects=True,
-        headers=headers,
+        headers=BROWSER_HEADERS,
     ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        content = resp.content
-        content_type = (resp.headers.get("content-type") or "").lower()
+        final_url, content, content_type = await _fetch(client, url)
+        if not is_usable_npa_page(final_url, content, content_type):
+            followed = False
+            for href in fulltext_links(content, final_url)[:4]:
+                try:
+                    hop_url, hop_content, hop_type = await _fetch(client, href)
+                except Exception:
+                    continue
+                if is_usable_npa_page(hop_url, hop_content, hop_type):
+                    final_url, content, content_type = hop_url, hop_content, hop_type
+                    followed = True
+                    break
+            if not followed:
+                raise ValueError(f"No usable NPA text at {url}")
 
-    # Decide extension
-    filename = _safe_filename(title, url, index)
+    filename = _safe_filename(title, final_url, index)
     if "pdf" in content_type and not filename.endswith(".pdf"):
         filename = filename.rsplit(".", 1)[0] + ".pdf"
     elif "html" in content_type and not filename.endswith(".html"):
@@ -87,10 +169,7 @@ async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict
 
     if filename.endswith(".html") or "html" in content_type:
         try:
-            soup = BeautifulSoup(content, "lxml")
-            for tag in soup(["script", "style", "noscript"]):
-                tag.decompose()
-            text = soup.get_text("\n", strip=True)
+            text = html_text(content)
             text_path = path.with_suffix(".txt")
             text_path.write_text(text, encoding="utf-8")
             text_extract = str(text_path)
@@ -103,5 +182,5 @@ async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict
         "sha256": sha,
         "bytes": len(content),
         "content_type": content_type,
-        "url": url,
+        "url": final_url,
     }

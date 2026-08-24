@@ -275,10 +275,14 @@ class Pipe:
                 pass
         ok = downloaded.get("downloaded", 0)
         failed = downloaded.get("failed", 0)
-        fail_lines = []
-        for d in downloaded.get("documents") or []:
-            if d.get("selected") and d.get("download_status") not in {"ok", "skipped", None}:
-                fail_lines.append(f"- {d.get('title')}")
+        extra = ""
+        if fail_lines:
+            extra = (
+                "\nНе удалось скачать:\n"
+                + "\n".join(fail_lines)
+                + "\nНапишите `скачай` — попробую ещё раз. "
+                "Или пришлите полную ссылку: `к 3 url https://pravo.by/document/?guid=…`\n"
+            )
         extra = ""
         if fail_lines:
             extra = (
@@ -402,15 +406,8 @@ class Pipe:
                 name = state.get("inspection_name") or "proverka"
             except Exception:
                 name = "proverka"
-        digest = "\n".join(result.get("digest") or [])
-        digest_block = f"\nКратко по документам:\n{digest}\n" if digest else ""
         return (
-            "Обзор базы знаний готов. Скачайте Word и читайте сами — в чат полный текст не копирую.\n\n"
-            f"{_download_links(public, case_id, name, with_summary=True)}\n"
-            f"{digest_block}\n"
-            "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
-            "Собрать обзор заново: `саммари заново`.\n"
-            "Чтобы получить программу проверки в Word, напишите `программа проверки`.\n"
+            f"{_download_links(public, case_id, name, with_archive=False, with_summary=True)}\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -473,15 +470,8 @@ class Pipe:
                 name = state.get("inspection_name") or "proverka"
             except Exception:
                 name = "proverka"
-        digest = "\n".join(result.get("digest") or [])
-        digest_block = f"\nКратко по процедурам:\n{digest}\n" if digest else ""
         return (
-            "Программа аудиторской проверки готова. Скачайте Word и правьте сами — "
-            "в чат полный текст не копирую. Это черновик, не утверждённая программа СВА.\n\n"
-            f"{_download_links(public, case_id, name, with_program=True)}\n"
-            f"{digest_block}\n"
-            "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
-            "Собрать программу заново: `программа проверки заново`.\n"
+            f"{_download_links(public, case_id, name, with_archive=False, with_program=True)}\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -674,15 +664,17 @@ def _download_links(
     case_id: str,
     inspection_name: str,
     *,
+    with_archive: bool = True,
     with_summary: bool = False,
     with_program: bool = False,
 ) -> str:
     stem = _file_stem(inspection_name)
     base = f"{public}/api/v1/cases/{case_id}"
-    lines = [
-        "Скачать:",
-        f"- архив документов (`{stem}_npa.zip`): {base}/library/archive",
-    ]
+    lines = ["Скачать:"]
+    if with_archive:
+        lines.append(
+            f"- архив документов (`{stem}_npa.zip`): {base}/library/archive"
+        )
     if with_summary:
         lines.append(
             f"- обзор базы знаний (`{stem}_summary.docx`): {base}/knowledge/summary.docx"
@@ -808,6 +800,20 @@ def _parse_extra_titles(blob: str) -> list[str]:
             ).strip(" .,:;")
             key = re.sub(r"\s+", " ", title.lower())
             if len(key) < 8 or key in seen:
+                continue
+            if re.search(
+                r"(audit-case|chat_history|если знаете ссылку|вставьте адрес|"
+                r"<!--|</?\w+>|https?://|guid=…)",
+                title,
+                re.I,
+            ):
+                continue
+            if not re.search(
+                r"(закон|кодекс|инструкц|положен|постановлен|указ|декрет|"
+                r"правил|приказ|письмо|разъяснен|нбрб|минфин|налогов)",
+                title,
+                re.I,
+            ):
                 continue
             seen.add(key)
             out.append(title)
