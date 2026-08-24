@@ -272,7 +272,7 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
             )
         chapters.append({"title": item.title, "body": body, "item_id": item.id})
 
-    yield {"type": "status", "message": "Пишу обзор проверки…", "elapsed_ms": elapsed()}
+    yield {"type": "status", "message": "Пишу саммари по документам базы знаний…", "elapsed_ms": elapsed()}
     try:
         overview = await _synthesize(state, sources, chapters)
     except Exception as exc:  # noqa: BLE001
