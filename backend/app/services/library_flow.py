@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from app.models import CaseState, CaseStatus, ProposedDocument
-from app.services.downloader import download_url
+from app.services.downloader import download_url, usable_url
 from app.services.known_sources import lookup_known_url
 from app.services.knowledge_flow import rebuild_index
 from app.services.ollama_client import propose_documents, propose_documents_events
@@ -120,13 +121,44 @@ def run_select(
     manual_urls = manual_urls or {}
     for doc in state.documents:
         doc.selected = doc.id in id_set
-        if doc.id in manual_urls and str(manual_urls[doc.id]).strip():
-            doc.found_url = str(manual_urls[doc.id]).strip()
+        if doc.id not in manual_urls:
+            continue
+        cleaned = usable_url(str(manual_urls[doc.id]))
+        if not cleaned:
+            continue
+        if doc.found_url != cleaned and doc.download_status == "ok":
+            doc.download_status = None
+            doc.local_path = None
+            doc.download_error = None
+        doc.found_url = cleaned
 
     state.status = CaseStatus.selected
     state.meta["selected_at"] = datetime.utcnow().isoformat()
     store.save(state)
     return state
+
+
+def download_candidates(doc: ProposedDocument) -> list[tuple[str, str]]:
+    """Unique usable URLs: auditor link first, then curated known_sources."""
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+
+    def add(url: str | None, source: str) -> None:
+        cleaned = usable_url(url)
+        if not cleaned or cleaned in seen:
+            return
+        seen.add(cleaned)
+        out.append((cleaned, source))
+
+    add(doc.found_url, "manual")
+    add(lookup_known_url(doc.title), "known")
+    return out
+
+
+def _on_disk(doc: ProposedDocument, lib_dir: Path) -> bool:
+    if not doc.local_path:
+        return False
+    return (lib_dir / Path(doc.local_path).name).is_file()
 
 
 async def run_download(case_id: str) -> CaseState:
@@ -142,35 +174,40 @@ async def run_download(case_id: str) -> CaseState:
     manifest_items = []
 
     for i, doc in enumerate(selected, start=1):
+        if doc.download_status == "ok" and _on_disk(doc, lib_dir):
+            manifest_items.append(
+                {
+                    "document_id": doc.id,
+                    "title": doc.title,
+                    "url": doc.found_url,
+                    "source": "cached",
+                    "local_path": doc.local_path,
+                    "downloaded_at": datetime.utcnow().isoformat(),
+                }
+            )
+            continue
+
         doc.download_status = "searching"
         doc.download_error = None
         store.save(state)
 
-        try:
-            url = doc.found_url or lookup_known_url(doc.title)
-            source = "manual_or_known" if url else "searxng"
+        tried: set[str] = set()
+        last_error: str | None = None
+        saved = False
 
-            if not url:
-                hit = await find_best_url(doc.search_queries, title=doc.title)
-                if hit:
-                    url = hit["url"]
-                    source = "searxng"
-
-            if not url:
-                doc.download_status = "not_found"
-                doc.download_error = (
-                    "URL not found (SearXNG empty/suspended). "
-                    "Pass manual_urls in /select or extend known_sources."
-                )
-                continue
-
+        for url, source in download_candidates(doc):
+            tried.add(url)
             doc.found_url = url
             doc.download_status = "downloading"
             store.save(state)
-
-            result = await download_url(url, lib_dir, doc.title, i)
+            try:
+                result = await download_url(url, lib_dir, doc.title, i)
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
             doc.local_path = result["local_path"]
             doc.download_status = "ok"
+            doc.download_error = None
             manifest_items.append(
                 {
                     "document_id": doc.id,
@@ -184,9 +221,52 @@ async def run_download(case_id: str) -> CaseState:
                     "downloaded_at": datetime.utcnow().isoformat(),
                 }
             )
-        except Exception as exc:  # noqa: BLE001
-            doc.download_status = "failed"
-            doc.download_error = str(exc)
+            saved = True
+            break
+
+        if not saved:
+            try:
+                hit = await find_best_url(doc.search_queries, title=doc.title)
+            except Exception as exc:  # noqa: BLE001
+                hit = None
+                last_error = last_error or str(exc)
+            url = usable_url((hit or {}).get("url")) if hit else None
+            if url and url not in tried:
+                doc.found_url = url
+                doc.download_status = "downloading"
+                store.save(state)
+                try:
+                    result = await download_url(url, lib_dir, doc.title, i)
+                    doc.local_path = result["local_path"]
+                    doc.download_status = "ok"
+                    doc.download_error = None
+                    manifest_items.append(
+                        {
+                            "document_id": doc.id,
+                            "title": doc.title,
+                            "url": result["url"],
+                            "source": "searxng",
+                            "local_path": result["local_path"],
+                            "sha256": result["sha256"],
+                            "bytes": result["bytes"],
+                            "text_extract": result.get("text_extract"),
+                            "downloaded_at": datetime.utcnow().isoformat(),
+                        }
+                    )
+                    saved = True
+                except Exception as exc:  # noqa: BLE001
+                    last_error = str(exc)
+
+        if not saved:
+            if last_error:
+                doc.download_status = "failed"
+                doc.download_error = last_error
+            else:
+                doc.download_status = "not_found"
+                doc.download_error = (
+                    "URL not found (SearXNG empty/suspended). "
+                    "Pass a full official URL or extend known_sources."
+                )
 
         store.save(state)
 

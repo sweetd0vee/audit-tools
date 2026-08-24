@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.1
+version: 0.1.2
 license: MIT
 description: Агент проверки банка РБ. Кейс НПА → HITL → download → цитаты. Цикл в коде, не ReAct 35B.
 requirements: httpx
@@ -20,7 +20,7 @@ Emitter = Optional[Callable[[Any], Awaitable[None]]]
 CASE_MARK = re.compile(r"<!--audit-case:([a-z0-9]+)-->")
 YEAR_RE = re.compile(r"\b(20\d{2}(?:\s*[-–]\s*20\d{2})?)\b")
 APPROVE_RE = re.compile(
-    r"(утвержд\w*|подтвержд\w*|выбираю|скачивай|скачай|бери\s+(эти\s+)?акты)",
+    r"(утвержд\w*|подтвержд\w*|выбираю|скачивай|скачай|скачать|бери\s+(эти\s+)?акты)",
     re.I,
 )
 REJECT_APPROVE_RE = re.compile(r"\bне\s+утвержд", re.I)
@@ -31,7 +31,7 @@ HELP = """Я агент внутренней проверки: собираю б
 Проверка аренды коммерческой недвижимости, 2025, аренда, валюта, НДС
 
 Дальше: «утверждаю 1, 2, 4» или «утверждаю все обязательные».
-Ссылку pravo.by можно сразу: «к пункту 3 url https://pravo.by/...»
+Ссылку pravo.by можно сразу полной строкой: «к 3 url https://pravo.by/document/?guid=…».
 Когда библиотека готова — спрашивайте норму. Нет фрагмента — скажу, что в библиотеке этого нет.
 Посмотреть скачанное: напишите «документы».
 """
@@ -156,7 +156,7 @@ class Pipe:
             _format_docs(docs),
             "",
             "Напишите: `утверждаю 1, 2, 4` или `утверждаю все обязательные`.",
-            "Если знаете ссылку: `к 3 url https://pravo.by/...`",
+            "Если знаете ссылку — полную, без многоточия: `к 3 url https://pravo.by/document/?guid=…`",
             f"<!--audit-case:{case_id}-->",
         ]
         return "\n".join(lines)
@@ -174,7 +174,20 @@ class Pipe:
         state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
         docs = state.get("documents") or []
         ids, manuals = _resolve_approval(text, docs)
+        prev = [d["id"] for d in docs if d.get("selected")]
+        retry_only = _is_retry(text) and not ids and not manuals
+        url_only = bool(manuals) and not _has_explicit_picks(text)
+        if retry_only:
+            ids = list(prev)
+        elif url_only:
+            ids = list(dict.fromkeys(prev + list(manuals.keys())))
         if not ids:
+            if URL_ATTACH_RE.search(text) and not manuals:
+                return (
+                    "Это не полная ссылка (многоточие или обрезка). "
+                    "Вставьте URL как в браузере, с `/document/?guid=` или путём к pdf.\n"
+                    f"<!--audit-case:{case_id}-->"
+                )
             return (
                 "Не поняла, какие акты утвердить. Напишите номера из списка "
                 "(`утверждаю 1, 2`) или `утверждаю все обязательные`.\n"
@@ -225,7 +238,9 @@ class Pipe:
             extra = (
                 "\nНе скачалось:\n"
                 + "\n".join(fail_lines)
-                + "\nПришлите официальный URL: `к <номер> url https://...`\n"
+                + "\nНапишите `скачай` — повторю с запасным официальным URL, "
+                "уже скачанное не трону. Или полную ссылку: "
+                "`к 3 url https://pravo.by/document/?guid=…` (не `...`).\n"
             )
         return (
             f"Кейс `{case_id}`: скачано {ok}, ошибок {failed}. {kb_note}{sync_note}\n"
@@ -366,14 +381,47 @@ def _case_id_from_messages(messages: list) -> Optional[str]:
     return None
 
 
+URL_ATTACH_RE = re.compile(
+    r"(?:к|пункт|акт|номер|id)\s*([a-f0-9]{8,12}|\d{1,2})\s+(?:url|ссылка)\s+(https?://\S+)",
+    re.I,
+)
+
+
+def _clean_url(url: str) -> str:
+    cleaned = (url or "").strip().strip("`\"'<>").rstrip(").,;]")
+    if cleaned.endswith("%60"):
+        cleaned = cleaned[:-3]
+    if "..." in cleaned or "…" in cleaned:
+        return ""
+    if not cleaned.lower().startswith(("http://", "https://")):
+        return ""
+    return cleaned
+
+
+def _is_retry(text: str) -> bool:
+    return bool(re.search(r"скач|ещё раз|еще раз|повтор", text, re.I))
+
+
+def _has_explicit_picks(text: str) -> bool:
+    if re.search(r"все\s+обязательн", text, re.I):
+        return True
+    return bool(re.search(r"утвержд\w*|подтвержд\w*|выбираю", text, re.I)) and bool(
+        re.search(r"\b\d{1,2}\b", text)
+    )
+
+
 def _is_approve(text: str) -> bool:
     if REJECT_APPROVE_RE.search(text):
         return False
-    return bool(APPROVE_RE.search(text))
+    if APPROVE_RE.search(text):
+        return True
+    return bool(URL_ATTACH_RE.search(text))
 
 
 def _is_library(text: str) -> bool:
     t = text.strip().lower()
+    if re.search(r"скачай|скачать|скачивай", t):
+        return False
     keys = (
         "документ",
         "библиотек",
@@ -453,12 +501,11 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
 
 def _resolve_approval(text: str, docs: list[dict]) -> tuple[list[str], dict[str, str]]:
     manuals: dict[str, str] = {}
-    for match in re.finditer(
-        r"(?:к|пункт|акт|номер|id)\s*([a-f0-9]{8,12}|\d{1,2})\s+(?:url|ссылка)\s+(https?://\S+)",
-        text,
-        re.I,
-    ):
-        key, url = match.group(1), match.group(2).rstrip(").,")
+    for match in URL_ATTACH_RE.finditer(text):
+        key, raw_url = match.group(1), match.group(2)
+        url = _clean_url(raw_url)
+        if not url:
+            continue
         doc_id = _index_or_id(key, docs)
         if doc_id:
             manuals[doc_id] = url

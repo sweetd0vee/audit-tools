@@ -2,6 +2,7 @@
 
 Used when SearXNG engines are rate-limited / suspended.
 Keys are lowercase substrings matched against proposed document titles.
+Longer / more specific needles must come first.
 """
 
 from __future__ import annotations
@@ -21,28 +22,20 @@ KNOWN_NPA_URLS: list[tuple[str, str]] = [
         "https://pravo.by/document/?guid=3871&p0=Hk0000441",
     ),
     (
-        "о валютном регулировании",
+        "о валютном регулировании и валютном контроле",
         "https://pravo.by/document/?guid=12551&p0=H12200136&p1=1",
     ),
     (
-        "валютном регулировании и валютном контроле",
-        "https://www.nbrb.by/legislation/forexregul",
-    ),
-    (
-        "валютн",
-        "https://www.nbrb.by/legislation/forexregul",
+        "о валютном регулировании",
+        "https://pravo.by/document/?guid=12551&p0=H12200136&p1=1",
     ),
     (
         "об аудиторской деятельности",
         "https://pravo.by/document/?guid=12551&p0=H11300056&p1=1",
     ),
     (
-        "национальн",
+        "национальные правила аудиторской",
         "https://www.minfin.gov.by/ru/auditor_activities/normative/",
-    ),
-    (
-        "аренда",
-        "https://pravo.by/document/?guid=3871&p0=hk9800218",
     ),
 ]
 

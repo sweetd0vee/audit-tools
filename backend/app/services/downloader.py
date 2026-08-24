@@ -10,6 +10,30 @@ from bs4 import BeautifulSoup
 
 from app.config import settings
 
+_PLACEHOLDER = re.compile(r"(?:\.{3}|…)")
+
+
+def usable_url(url: str | None) -> str | None:
+    """Allowlist URL or None. Drops placeholders like https://pravo.by/..."""
+    if not url or not isinstance(url, str):
+        return None
+    cleaned = url.strip().strip("`\"'<>").rstrip(").,;]")
+    if cleaned.endswith("%60"):
+        cleaned = cleaned[:-3]
+    if not cleaned.lower().startswith(("http://", "https://")):
+        return None
+    if _PLACEHOLDER.search(cleaned):
+        return None
+    parsed = urlparse(cleaned)
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
+    if not any(host == d or host.endswith("." + d) for d in settings.domain_allowlist):
+        return None
+    if not (parsed.path or "").rstrip("/") and not parsed.query:
+        return None
+    return cleaned
+
 
 def _safe_filename(title: str, url: str, index: int) -> str:
     base = re.sub(r"[^\w\u0400-\u04FF\-]+", "_", title, flags=re.UNICODE).strip("_")
@@ -36,6 +60,7 @@ def _host_allowed(url: str) -> bool:
 
 async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict:
     """Download URL into dest_dir. HTML saved as .html (+ optional .txt extract)."""
+    url = usable_url(url) or url
     if not _host_allowed(url):
         raise ValueError(f"Domain not allowed: {url}")
 
