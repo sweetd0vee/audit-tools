@@ -153,7 +153,11 @@ async def propose_documents_events(
         "model": settings.ollama_model,
         "stream": True,
         "format": "json",
-        "options": {"temperature": 0.2},
+        "think": False,
+        "options": {
+            "temperature": 0.2,
+            "num_ctx": settings.ollama_num_ctx,
+        },
         "messages": [
             {"role": "system", "content": PROPOSE_SYSTEM},
             {"role": "user", "content": user_prompt},
@@ -236,18 +240,35 @@ async def propose_documents(
     return result
 
 
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    cleaned = _THINK_RE.sub("", text or "")
+    return cleaned.strip()
+
+
 async def chat_complete(
     system: str,
     user: str,
     *,
     temperature: float = 0.2,
     timeout: float | None = None,
+    num_ctx: int | None = None,
+    num_predict: int | None = None,
 ) -> str:
     """Single-shot chat completion (no stream)."""
+    options: dict[str, Any] = {"temperature": temperature}
+    ctx = num_ctx if num_ctx is not None else settings.ollama_num_ctx
+    if ctx:
+        options["num_ctx"] = int(ctx)
+    if num_predict:
+        options["num_predict"] = int(num_predict)
     payload = {
         "model": settings.ollama_model,
         "stream": False,
-        "options": {"temperature": temperature},
+        "think": False,
+        "options": options,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -257,7 +278,9 @@ async def chat_complete(
         resp = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
         resp.raise_for_status()
         data = resp.json()
-    return str((data.get("message") or {}).get("content") or "").strip()
+    message = data.get("message") or {}
+    content = str(message.get("content") or "").strip()
+    return _strip_think(content)
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:

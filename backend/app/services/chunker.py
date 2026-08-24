@@ -108,6 +108,37 @@ def pick_relevant_chunks(
     return out
 
 
+def even_sample(items: list, k: int) -> list:
+    """Keep first, last and evenly spaced items so a long document is represented throughout."""
+    if k <= 0:
+        return []
+    n = len(items)
+    if n <= k:
+        return list(items)
+    if k == 1:
+        return [items[0]]
+    out = []
+    seen: set[int] = set()
+    for i in range(k):
+        idx = int(round(i * (n - 1) / (k - 1)))
+        if idx in seen:
+            continue
+        seen.add(idx)
+        out.append(items[idx])
+    return out
+
+
+def sequential_windows(
+    text: str,
+    size: int | None = None,
+    overlap: int | None = None,
+) -> list[str]:
+    """Ordered windows covering the whole document. Never keyword-rank or skip the middle."""
+    size = size or settings.summary_section_chars
+    overlap = overlap if overlap is not None else settings.summary_section_overlap
+    return chunk_text(text, size=size, overlap=overlap)
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0

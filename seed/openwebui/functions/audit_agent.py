@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.7
+version: 0.1.8
 license: MIT
 description: Агент проверки. Собирает документы, саммари и программу проверки в Word, отвечает по базе знаний.
 requirements: httpx
@@ -62,7 +62,7 @@ class Pipe:
             default="http://localhost:8100",
             description="Ссылка для браузера аудитора (zip и JSON библиотеки)",
         )
-        TIMEOUT_SEC: int = Field(default=300, description="Таймаут propose/download")
+        TIMEOUT_SEC: int = Field(default=600, description="Таймаут propose/download")
         BRIEF_TIMEOUT_SEC: int = Field(
             default=900,
             description="Таймаут сборки саммари и программы проверки в Word",
@@ -275,14 +275,16 @@ class Pipe:
                 pass
         ok = downloaded.get("downloaded", 0)
         failed = downloaded.get("failed", 0)
-        extra = ""
-        if fail_lines:
-            extra = (
-                "\nНе удалось скачать:\n"
-                + "\n".join(fail_lines)
-                + "\nНапишите `скачай` — попробую ещё раз. "
-                "Или пришлите полную ссылку: `к 3 url https://pravo.by/document/?guid=…`\n"
-            )
+        fail_lines = []
+        for d in downloaded.get("documents") or []:
+            if d.get("selected") and d.get("download_status") not in {"ok", "skipped", None}:
+                err = (d.get("download_error") or "").replace("\n", " ").strip()
+                if len(err) > 120:
+                    err = err[:120] + "…"
+                line = f"- {d.get('title')}"
+                if err:
+                    line += f" ({err})"
+                fail_lines.append(line)
         extra = ""
         if fail_lines:
             extra = (

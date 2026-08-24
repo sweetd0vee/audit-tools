@@ -11,6 +11,27 @@ PUNKT_RE = re.compile(r"(?i)(?:пункт|п\.)\s+\d+(?:\.\d+)*")
 CITE_RE = re.compile(r"\[(\d+)\]")
 
 
+OUTLINE_RE = re.compile(
+    r"(?im)^\s*((?:глава|раздел|часть|статья|ст\.)\s+[^\n]{1,120})",
+)
+
+
+def extract_article_outline(text: str, limit: int = 0) -> list[str]:
+    """Ordered unique headings (статья/глава/раздел) from the full document."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in OUTLINE_RE.finditer(text or ""):
+        title = re.sub(r"\s+", " ", match.group(1)).strip(" .")
+        key = title.lower()
+        if len(key) < 5 or key in seen:
+            continue
+        seen.add(key)
+        found.append(title)
+        if limit and len(found) >= limit:
+            break
+    return found
+
+
 def extract_article_ref(text: str) -> str | None:
     blob = text or ""
     match = ARTICLE_LINE_RE.search(blob)

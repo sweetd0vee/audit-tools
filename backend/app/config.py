@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3.6:35b"
     ollama_timeout_sec: float = 180.0
+    ollama_num_ctx: int = 32768
 
     # SearXNG (self-hosted)
     searxng_url: str = "http://localhost:8080/search"
@@ -38,10 +39,13 @@ class Settings(BaseSettings):
     chunk_size: int = 1400
     chunk_overlap: int = 180
     summary_max_chars: int = 14000
+    summary_section_chars: int = 28000
+    summary_section_overlap: int = 600
+    summary_timeout_sec: float = 420.0
     rag_top_k: int = 8
     embed_timeout_sec: float = 120.0
     brief_chars_per_page: int = 1800
-    brief_timeout_sec: float = 900.0
+    brief_timeout_sec: float = 1800.0
 
     # Open WebUI (optional sync)
     openwebui_url: str = "http://localhost:3000"

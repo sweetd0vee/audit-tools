@@ -24,11 +24,11 @@ KNOWN_NPA_URLS: list[tuple[str, str]] = [
     ),
     (
         "о валютном регулировании и валютном контроле",
-        "https://pravo.by/document/?guid=3871&p0=H12200136",
+        "https://etalonline.by/document/?regnum=H12200136",
     ),
     (
         "о валютном регулировании",
-        "https://pravo.by/document/?guid=3871&p0=H12200136",
+        "https://etalonline.by/document/?regnum=H12200136",
     ),
     (
         "об аудиторской деятельности",
@@ -44,15 +44,15 @@ KNOWN_NPA_URLS: list[tuple[str, str]] = [
     ),
     (
         "организации системы внутреннего контроля",
-        "https://pravo.by/document/?guid=3871&p0=B21326759",
+        "https://etalonline.by/document/?regnum=B21326759",
     ),
     (
         "внутреннем контроле при осуществлении банковских операций",
-        "https://pravo.by/document/?guid=3871&p0=B21529598",
+        "https://etalonline.by/document/?regnum=B21529598",
     ),
     (
         "положение о внутреннем контроле",
-        "https://pravo.by/document/?guid=3871&p0=B21326759",
+        "https://etalonline.by/document/?regnum=B21326759",
     ),
     (
         "об аренде и безвозмездном пользовании имуществом",
@@ -64,19 +64,19 @@ KNOWN_NPA_URLS: list[tuple[str, str]] = [
     ),
     (
         "организации ведения бухгалтерского учета",
-        "https://pravo.by/document/?guid=3871&p0=B21428262",
+        "https://etalonline.by/document/?regnum=B21428262",
     ),
     (
         "ведения бухгалтерского учета в банках",
-        "https://pravo.by/document/?guid=3871&p0=B21428262",
+        "https://etalonline.by/document/?regnum=B21428262",
     ),
     (
         "плана счетов бухгалтерского учета в банках",
-        "https://pravo.by/document/?guid=3871&p0=B21327947",
+        "https://pravo.by/document/?guid=12551&p0=B21327947",
     ),
     (
         "применения плана счетов бухгалтерского учета",
-        "https://pravo.by/document/?guid=3871&p0=B21327947",
+        "https://pravo.by/document/?guid=12551&p0=B21327947",
     ),
     (
         "регистрации резидентами валютных договоров",

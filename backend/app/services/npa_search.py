@@ -11,6 +11,8 @@ import html as html_lib
 import re
 from urllib.parse import parse_qs, unquote, urlparse
 
+import httpx
+
 from app.domains import host_allowed
 from app.services.downloader import usable_url
 from app.services.searxng_client import search_searxng
@@ -47,8 +49,13 @@ _STOP = {
 }
 
 NEWS_MARKERS = ("/novosti/", "/analitika/", "/news/")
-MAX_CANDIDATES = 8
-MAX_QUERIES = 4
+FAMOUS_CODES = {
+    "hk9800218": "гражданский кодекс",
+    "hk0200166": "налоговый кодекс",
+    "hk0000441": "банковский кодекс",
+}
+MAX_CANDIDATES = 5
+MAX_QUERIES = 2
 
 
 def extract_doc_code(url: str | None) -> str | None:
@@ -80,31 +87,36 @@ def expand_official_urls(url: str | None) -> list[str]:
     code = extract_doc_code(cleaned or url or "")
     if not code:
         return out
-    add(f"https://pravo.by/document/?guid=3871&p0={code}")
-    add(f"https://pravo.by/webnpa/text.asp?RN={code}")
+    add(f"https://etalonline.by/document/?regnum={code}")
     add(f"https://pravo.by/document/?guid=12551&p0={code}&p1=1")
     add(f"https://pravo.by/document/?guid=12551&p0={code}")
-    add(f"https://etalonline.by/document/?regnum={code}")
+    add(f"https://pravo.by/document/?guid=3871&p0={code}")
+    add(f"https://pravo.by/webnpa/text.asp?RN={code}")
     return out
 
 
 def score_url(url: str, title: str = "", hit_title: str = "") -> int:
     low = (url or "").lower()
     score = 0
-    if "guid=3871" in low:
-        score += 50
-    if "webnpa/text" in low:
-        score += 45
-    if low.endswith(".pdf") or "/upload/docs/" in low:
-        score += 40
-    if "guid=12551" in low:
-        score += 25
     if "etalonline.by" in low and "/document/" in low:
-        score += 30
+        score += 55
+    if "guid=3871" in low:
+        score += 40
+    if "webnpa/text" in low:
+        score += 20
+    if low.endswith(".pdf") or "/upload/docs/" in low:
+        score += 45
+    if "guid=12551" in low:
+        score += 35
     if "guid=3961" in low:
         score -= 25
     if any(marker in low for marker in NEWS_MARKERS):
         score -= 90
+    code = extract_doc_code(url)
+    if code:
+        famous = FAMOUS_CODES.get(code.lower())
+        if famous and famous not in (title or "").lower():
+            score -= 120
     blob = f"{hit_title} {title}".lower()
     score += _token_overlap(title, hit_title) * 8
     if title:
@@ -225,10 +237,8 @@ async def _from_html_search(
     endpoint: str,
     as_post: bool,
 ) -> list[tuple[str, str, str]]:
-    import httpx
-
     async with httpx.AsyncClient(
-        timeout=20.0,
+        timeout=12.0,
         follow_redirects=True,
         headers=BROWSER_HEADERS,
     ) as client:

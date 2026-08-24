@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
 from app.filenames import safe_stem
 from app.models import CaseState, KnowledgeItem
-from app.services.chunker import chunk_text, cosine, keyword_score, pick_relevant_chunks, tokenize
-from app.services.citations import excerpt_for_cite, extract_article_ref, origin_url
+from app.services.chunker import (
+    chunk_text,
+    cosine,
+    even_sample,
+    keyword_score,
+    sequential_windows,
+    tokenize,
+)
+from app.services.citations import (
+    excerpt_for_cite,
+    extract_article_outline,
+    extract_article_ref,
+    origin_url,
+)
 from app.services.extract import TEXT_EXTS, extract_text
 from app.services.ollama_client import chat_complete, embed_texts
 from app.services.openwebui_client import (
@@ -22,16 +34,92 @@ from app.services.openwebui_client import (
 from app.storage import store
 
 SUMMARY_SYSTEM = """Ты — старший аудитор банка в Республике Беларусь.
-Тебе дают фрагменты актуального НПА и тему проверки.
-Напиши практическое саммари для аудитора, который НЕ будет читать весь акт.
+Тебе дают текст нормативного акта (целиком или очередную часть по порядку).
+Напиши конспект, который ЗАМЕНЯЕТ чтение этого акта: аудитор не должен открывать первоисточник, чтобы понять основные положения.
 
 Правила:
-1. Только то, что есть во фрагментах. Не выдумывай статьи и пункты.
-2. Указывай номера статей / пунктов, если они есть в тексте.
-3. После каждого нормативного тезиса ставь номер фрагмента: [1], [2]. Не ссылайся на номер, которого нет в списке.
-4. Фокус — тема проверки и ключевые слова, а не пересказ всего кодекса.
-5. Если во фрагментах мало релевантного — честно напиши, каких глав/статей не хватает.
-6. Пиши по-русски, структурировано, развёрнуто: примерно страница A4 на акт (2200–3500 знаков).
+1. Опирайся ТОЛЬКО на переданный текст. Не выдумывай статьи, пункты, сроки и цифры.
+2. Покрывай документ ПОСЛЕДОВАТЕЛЬНО: начало, середина, конец. Не выхватывай случайные абзацы.
+3. Не сужай конспект до ключевых слов проверки: сначала перечисли основные моменты всего акта, и только потом отметь, что важнее для темы проверки.
+4. У каждого существенного положения указывай номер статьи / пункта / главы, если он есть в тексте.
+5. Пиши по-русски, официально, конкретно, списком. Без воды и без норм РФ/ЕС/IFRS, которых нет в тексте.
+6. Если кусок — часть длинного акта, не делай вид, что это весь документ.
+"""
+
+SUMMARY_CARD_SECTIONS = """Верни конспект в markdown (заголовки ## сохраняй):
+
+## Назначение и сфера действия
+На кого распространяется, что регулирует, с какого момента (если указано в тексте).
+
+## Структура акта
+Главы/разделы по порядку, как они идут в документе.
+
+## Основные положения
+Полное перечисление существенных норм по порядку документа. Не 3–5 «самых важных», а все основные моменты: определения, обязанности, запреты, права, условия, исключения. У каждой позиции — статья/пункт.
+
+## Сроки, пороги, ставки, документы
+Числа, сроки, формы, перечень документов — только если они есть в тексте.
+
+## Процедуры и порядок действий
+Пошагово, если в акте описан порядок.
+
+## Ответственность
+Санкции / последствия, если есть в тексте.
+
+## Что особенно важно для этой проверки
+Коротко: какие из уже перечисленных норм ближе к теме проверки. Не подменяй этим предыдущие разделы.
+"""
+
+MAP_SECTION_PROMPT = """Это часть {idx} из {total} документа «{title}». Читай этот кусок ЦЕЛИКОМ, по порядку.
+
+Тема проверки (для последнего раздела, не для отбора фактов): {inspection}
+Ключевые слова: {keywords}
+
+Оглавление этого куска:
+{outline}
+
+Текст части:
+{body}
+
+Выпиши ВСЕ существенные положения этой части. Не пропускай статьи только потому что они «не про тему». Не ссылайся на текст вне этой части.
+Формат:
+- ст./п. … — суть одним-двумя предложениями.
+Если в куске есть определения, сроки, запреты, процедуры, исключения — каждый пункт отдельно.
+"""
+
+REDUCE_PROMPT = """Ниже — конспекты ВСЕХ частей одного акта, идущие по порядку от начала к концу. Ни одна часть не должна пропасть.
+
+Тема проверки: {inspection}
+Ключевые слова: {keywords}
+Документ: {title}
+
+Оглавление акта (из текста, не выдумывай новые заголовки):
+{outline}
+
+Конспекты частей:
+{parts}
+
+Собери ЕДИНЫЙ полный конспект акта. Задача — заменить чтение первоисточника.
+Не сжимай до «самого релевантного». Сохрани нормы из каждой части. Объедини дубли.
+{sections}
+Объём: для обычного акта 5000–12000 знаков, для кодекса можно больше, но структурируй списками.
+"""
+
+ONESHOT_PROMPT = """Ниже текст документа ЦЕЛИКОМ. Прочитай его от начала до конца, не выборочно.
+
+Тема проверки: {inspection}
+Ключевые слова: {keywords}
+Документ: {title}
+Источник: {source}
+
+Оглавление, извлечённое из текста:
+{outline}
+
+Полный текст акта:
+{body}
+
+{sections}
+Объём: 5000–12000 знаков списками. Перечисли основные моменты всего акта, чтобы аудитору не нужно было его читать.
 """
 
 ASK_SYSTEM = """Ты — ассистент внутреннего аудитора банка РБ.
@@ -272,12 +360,34 @@ async def embed_index(case_id: str, keywords: list[str]) -> dict:
     return index
 
 
-def _fragments_from_item(state: CaseState, item: KnowledgeItem, start_n: int = 1) -> list[dict]:
+FRAGMENTS_PER_ITEM = 12
+Progress = Callable[[str], Awaitable[None]] | None
+
+
+def _format_outline(text: str, limit: int = 160) -> str:
+    outline = extract_article_outline(text)
+    if not outline:
+        return "в тексте нет явных заголовков статей/глав — конспектируй по абзацам по порядку"
+    extra = ""
+    shown = outline
+    if limit and len(outline) > limit:
+        shown = outline[:limit]
+        extra = f"\n… и ещё {len(outline) - limit} заголовков (они есть в тексте ниже)"
+    return "\n".join(f"- {line}" for line in shown) + extra
+
+
+def _fragments_from_item(
+    state: CaseState,
+    item: KnowledgeItem,
+    start_n: int = 1,
+    max_fragments: int | None = None,
+) -> list[dict]:
+    """Sequential coverage of the whole document, not keyword/RAG retrieval."""
     text = _item_text(item)
     if not text.strip():
         return []
     chunks = chunk_text(text)
-    picked = pick_relevant_chunks(chunks, _keywords(state, item))
+    picked = even_sample(chunks, max_fragments or FRAGMENTS_PER_ITEM)
     url = origin_url(state, item)
     out = []
     n = start_n
@@ -309,11 +419,89 @@ def _format_fragment_block(fragments: list[dict]) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
+async def _chat_summary(user: str) -> str:
+    return await chat_complete(
+        SUMMARY_SYSTEM,
+        user,
+        timeout=settings.summary_timeout_sec,
+        num_ctx=settings.ollama_num_ctx,
+        num_predict=8192,
+    )
+
+
+async def _summarize_full_document(
+    state: CaseState,
+    item: KnowledgeItem,
+    text: str,
+    on_status: Progress = None,
+) -> str:
+    windows = sequential_windows(text)
+    inspection = state.inspection_name
+    keywords = ", ".join(state.keywords) or "не указаны"
+    outline = _format_outline(text)
+
+    if len(windows) <= 1:
+        if on_status:
+            await on_status(f"Читаю целиком: {item.title}")
+        return await _chat_summary(
+            ONESHOT_PROMPT.format(
+                inspection=inspection,
+                keywords=keywords,
+                title=item.title,
+                source=item.source,
+                outline=outline,
+                body=text,
+                sections=SUMMARY_CARD_SECTIONS,
+            )
+        )
+
+    parts: list[str] = []
+    total = len(windows)
+    for idx, window in enumerate(windows, start=1):
+        if on_status:
+            await on_status(f"Читаю «{item.title}»: часть {idx} из {total} (по порядку, весь текст)")
+        try:
+            piece = await _chat_summary(
+                MAP_SECTION_PROMPT.format(
+                    idx=idx,
+                    total=total,
+                    title=item.title,
+                    inspection=inspection,
+                    keywords=keywords,
+                    outline=_format_outline(window, limit=80),
+                    body=window,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            piece = (
+                f"[Часть {idx} из {total} не собрана: {exc}. "
+                "Этот диапазон акта смотрите в первоисточнике.]"
+            )
+        if not (piece or "").strip():
+            piece = f"[Часть {idx} из {total}: модель вернула пустой конспект.]"
+        parts.append(f"### Часть {idx} из {total}\n{piece.strip()}")
+
+    if on_status:
+        await on_status(f"Собираю полный конспект: {item.title}")
+    return await _chat_summary(
+        REDUCE_PROMPT.format(
+            inspection=inspection,
+            keywords=keywords,
+            title=item.title,
+            outline=outline,
+            parts="\n\n".join(parts),
+            sections=SUMMARY_CARD_SECTIONS,
+        )
+    )
+
+
 async def summarize_item(
     state: CaseState,
     item: KnowledgeItem,
     fragments: list[dict] | None = None,
+    on_status: Progress = None,
 ) -> KnowledgeItem:
+    """Summarize the full extracted text. `fragments` are citations only, never the reading set."""
     text = _item_text(item)
     if not text.strip():
         item.summary_status = "failed"
@@ -321,27 +509,6 @@ async def summarize_item(
         return item
 
     frags = fragments if fragments is not None else _fragments_from_item(state, item)
-    if not frags:
-        item.summary_status = "failed"
-        item.summary_error = "Нет фрагментов для саммари"
-        return item
-
-    user = f"""Тема проверки: {state.inspection_name}
-Ключевые слова: {", ".join(state.keywords) or "не указаны"}
-Период: {state.period or "не указан"}
-Документ: {item.title}
-Источник: {item.source}
-
-Фрагменты НПА (ссылайся номерами [n]):
-{_format_fragment_block(frags)}
-
-Верни саммари (~страница A4, 2200–3500 знаков):
-## Зачем этот акт для проверки
-## Ключевые нормы (статьи/пункты)
-## Что проверять аудитору
-## Риски / типичные нарушения
-## Чего нет во фрагментах (если пробелы)
-"""
     item.summary_status = "running"
     item.citations = [
         {
@@ -356,9 +523,9 @@ async def summarize_item(
         for fr in frags
     ]
     try:
-        item.summary = await chat_complete(
-            SUMMARY_SYSTEM, user, timeout=settings.ollama_timeout_sec
-        )
+        item.summary = await _summarize_full_document(state, item, text, on_status=on_status)
+        if not (item.summary or "").strip():
+            raise ValueError("модель вернула пустой конспект")
         item.summary_status = "ok"
         item.summary_error = None
         out = _summaries_dir(state.case_id) / f"{safe_stem(item.filename)}.md"

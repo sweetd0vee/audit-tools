@@ -34,6 +34,16 @@ class TestSplitExtraTitles(unittest.TestCase):
         )
         self.assertEqual(len(titles), 2)
 
+    def test_drops_chat_artifacts(self):
+        titles = expand_extra_titles(
+            [
+                "Инструкция НБРБ № 38; Положение о внутреннем контроле; "
+                "Если знаете ссылку на документ: к 3 url https://pravo.by/document/?guid=… "
+                "<!--audit-case:8d720e84d910--> </chat_history>"
+            ]
+        )
+        self.assertEqual(titles, ["Инструкция НБРБ № 38", "Положение о внутреннем контроле"])
+
 
 class TestSelectExtraTitles(unittest.TestCase):
     def setUp(self):
