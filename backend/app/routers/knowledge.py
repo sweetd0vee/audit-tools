@@ -213,7 +213,7 @@ def download_brief_docx(case_id: str):
     if not path:
         raise HTTPException(
             status_code=404,
-            detail="Саммари ещё нет. Вызовите POST /knowledge/brief или напишите «саммари» в чате.",
+            detail="Обзора ещё нет. Напишите в чате «саммари».",
         )
     return FileResponse(
         path,

@@ -1,9 +1,9 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.3
+version: 0.1.5
 license: MIT
-description: Агент проверки банка РБ. Кейс НПА → HITL → download → саммари Word → цитаты.
+description: Агент проверки. Собирает документы, саммари Word, отвечает по базе знаний.
 requirements: httpx
 """
 
@@ -19,23 +19,27 @@ from pydantic import BaseModel, Field
 Emitter = Optional[Callable[[Any], Awaitable[None]]]
 
 CASE_MARK = re.compile(r"<!--audit-case:([a-z0-9]+)-->")
-YEAR_RE = re.compile(r"\b(20\d{2}(?:\s*[-–]\s*20\d{2})?)\b")
 APPROVE_RE = re.compile(
     r"(утвержд\w*|подтвержд\w*|выбираю|скачивай|скачай|скачать|бери\s+(эти\s+)?акты)",
     re.I,
 )
 REJECT_APPROVE_RE = re.compile(r"\bне\s+утвержд", re.I)
 HEX_ID_RE = re.compile(r"\b([a-f0-9]{8,12})\b", re.I)
-HELP = """Я агент внутренней проверки: собираю библиотеку НПА, жду вашего утверждения, качаю акты, отвечаю цитатами.
+HELP = """Я помогаю собрать документы для проверки и отвечать по ним.
 
-Напишите проверку, например:
-Проверка аренды коммерческой недвижимости, 2025, аренда, валюта, НДС
+Напишите, что проверяете, например:
+Проверка аренды коммерческой недвижимости, аренда, валюта, НДС
 
-Дальше: «утверждаю 1, 2, 4» или «утверждаю все обязательные».
-Ссылку pravo.by можно сразу полной строкой: «к 3 url https://pravo.by/document/?guid=…».
-Когда библиотека готова — напишите «саммари»: соберу Word на 6–10 страниц со ссылками на статьи.
-Спрашивать норму можно сразу. Нет фрагмента — скажу, что в библиотеке этого нет.
-Посмотреть скачанное: напишите «документы».
+Дальше я предложу список документов. Напишите, какие взять:
+утверждаю 1, 2, 4
+или: утверждаю все обязательные
+
+Когда документы скачаются:
+— задавайте вопросы по базе знаний (приложенным документам);
+— напишите «саммари» — получите краткий обзор в Word.
+
+Если в приложенных документах нет ответа — так и скажу.
+Посмотреть, что скачалось: напишите «документы».
 """
 
 
@@ -82,12 +86,12 @@ class Pipe:
         if not text.strip() or text.strip().lower() in {"помощь", "help", "/help", "?"}:
             return HELP
 
-        await _status(__event_emitter__, "Смотрю фазу проверки…")
+        await _status(__event_emitter__, "Смотрю, на каком вы шаге…")
 
         try:
             if _is_brief(text):
                 if not case_id:
-                    return "Нет кейса в этом чате. Сначала опишите проверку."
+                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
                 return await self._brief(
                     api,
                     public,
@@ -99,14 +103,14 @@ class Pipe:
 
             if _is_approve(text):
                 if not case_id:
-                    return "Нет кейса в этом чате. Сначала опишите проверку."
+                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
                 return await self._approve(
                     api, public, timeout, case_id, text, __event_emitter__, owui_key
                 )
 
             if _is_library(text):
                 if not case_id:
-                    return "Нет кейса в этом чате. Сначала опишите проверку."
+                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
                 return await self._library(api, public, timeout, case_id)
 
             if _is_status(text):
@@ -131,15 +135,12 @@ class Pipe:
         except httpx.HTTPError as exc:
             tip = ""
             if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
-                tip = (
-                    " Проверьте Valves: в Docker — `AUDIT_API=http://backend:8100`, "
-                    "с хоста — `http://localhost:8100`."
-                )
+                tip = " Сервер проверки не отвечает. Попробуйте ещё раз через минуту."
             elif isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
-                tip = " Таймаут — propose/download долгий; увеличьте `TIMEOUT_SEC` или проверьте Ollama."
-            return f"Audit Tool Server недоступен (`{api}`): {type(exc).__name__}: {exc or 'нет деталей'}.{tip}"
+                tip = " Операция долгая. Подождите и повторите сообщение."
+            return f"Не получилось связаться с сервером проверки.{tip}"
         except Exception as exc:  # noqa: BLE001
-            return f"Агент остановился: {exc}"
+            return f"Не получилось выполнить шаг: {exc}"
         finally:
             await _status(__event_emitter__, "", done=True)
 
@@ -150,7 +151,7 @@ class Pipe:
         parsed: dict[str, Any],
         emitter: Emitter,
     ) -> str:
-        await _status(emitter, "Создаю кейс…")
+        await _status(emitter, "Создаю проверку…")
         created = await _req(
             "POST",
             f"{api}/api/v1/cases",
@@ -158,23 +159,24 @@ class Pipe:
             json={
                 "inspection_name": parsed["inspection_name"],
                 "keywords": parsed["keywords"],
-                "period": parsed.get("period") or None,
             },
         )
         case_id = created["case_id"]
-        await _status(emitter, "Модель предлагает список НПА (это может занять минуты)…")
+        await _status(emitter, "Подбираю список документов. Это может занять несколько минут…")
         proposed = await _req("POST", f"{api}/api/v1/cases/{case_id}/propose", timeout)
         docs = proposed.get("documents") or []
+        kws = ", ".join(parsed["keywords"]) or "не указаны"
         lines = [
-            f"Кейс `{case_id}` — {created.get('inspection_name')}",
-            f"Период: {parsed.get('period') or 'не указан'}. Keywords: {', '.join(parsed['keywords']) or '—'}",
+            f"Проверка: {created.get('inspection_name')}",
+            f"Ключевые слова: {kws}",
             "",
-            "Предлагаю акты. **Ничего не скачаю**, пока не утвердите номера или id.",
+            "Предлагаю документы для базы знаний. Пока ничего не скачиваю — сначала выберите номера.",
             "",
             _format_docs(docs),
             "",
-            "Напишите: `утверждаю 1, 2, 4` или `утверждаю все обязательные`.",
-            "Если знаете ссылку — полную, без многоточия: `к 3 url https://pravo.by/document/?guid=…`",
+            "Напишите, какие взять, например: `утверждаю 1, 2, 4`",
+            "Или: `утверждаю все обязательные`.",
+            "Если знаете ссылку на документ: `к 3 url https://pravo.by/document/?guid=…` (вставьте адрес целиком, без многоточия).",
             f"<!--audit-case:{case_id}-->",
         ]
         return "\n".join(lines)
@@ -202,72 +204,66 @@ class Pipe:
         if not ids:
             if URL_ATTACH_RE.search(text) and not manuals:
                 return (
-                    "Это не полная ссылка (многоточие или обрезка). "
-                    "Вставьте URL как в браузере, с `/document/?guid=` или путём к pdf.\n"
+                    "Ссылка обрезана или с многоточием — так скачать нельзя. "
+                    "Вставьте адрес как в браузере, целиком.\n"
                     f"<!--audit-case:{case_id}-->"
                 )
             return (
-                "Не поняла, какие акты утвердить. Напишите номера из списка "
-                "(`утверждаю 1, 2`) или `утверждаю все обязательные`.\n"
+                "Не поняла, какие документы взять. Напишите номера из списка, "
+                "например: `утверждаю 1, 2`. Или: `утверждаю все обязательные`.\n"
                 f"<!--audit-case:{case_id}-->"
             )
-        await _status(emitter, "Фиксирую выбор аудитора…")
+        await _status(emitter, "Сохраняю ваш выбор…")
         body: dict[str, Any] = {"document_ids": ids}
         if manuals:
             body["manual_urls"] = manuals
         await _req("POST", f"{api}/api/v1/cases/{case_id}/select", timeout, json=body)
-        await _status(emitter, "Качаю утверждённые акты (allowlist РБ)…")
+        await _status(emitter, "Скачиваю выбранные документы…")
         downloaded = await _req("POST", f"{api}/api/v1/cases/{case_id}/download", timeout)
-        await _status(emitter, "Собираю базу знаний кейса…")
-        kb_note = "База знаний кейса собрана (индекс сервера)."
+        await _status(emitter, "Готовлю базу знаний из скачанных документов…")
+        n_items = 0
         try:
             indexed = await _req(
                 "POST", f"{api}/api/v1/cases/{case_id}/knowledge/index", timeout
             )
             n_items = len(indexed.get("items") or [])
-            n_chunks = indexed.get("chunks") or 0
-            kb_note = f"База знаний кейса: {n_items} документов, {n_chunks} фрагментов."
         except Exception:
             pass
-        sync_note = ""
         if owui_key:
-            await _status(emitter, "Заливаю коллекцию Open WebUI Knowledge…")
+            await _status(emitter, "Добавляю документы в базу знаний чата…")
             try:
-                sync = await _req(
+                await _req(
                     "POST",
                     f"{api}/api/v1/cases/{case_id}/knowledge/openwebui/sync",
                     timeout,
                     json={"api_key": owui_key},
                 )
-                name = sync.get("knowledge_name") or sync.get("name") or "коллекция кейса"
-                sync_note = f" Open WebUI Knowledge: {name}."
-            except Exception as exc:  # noqa: BLE001
-                sync_note = f" Коллекция Open WebUI не залита ({exc})."
+            except Exception:
+                pass
         ok = downloaded.get("downloaded", 0)
         failed = downloaded.get("failed", 0)
         fail_lines = []
         for d in downloaded.get("documents") or []:
             if d.get("selected") and d.get("download_status") not in {"ok", "skipped", None}:
-                fail_lines.append(
-                    f"- {d.get('title')}: {d.get('download_status')} — {d.get('download_error') or 'нет URL'}"
-                )
+                fail_lines.append(f"- {d.get('title')}")
         extra = ""
         if fail_lines:
             extra = (
-                "\nНе скачалось:\n"
+                "\nНе удалось скачать:\n"
                 + "\n".join(fail_lines)
-                + "\nНапишите `скачай` — повторю с запасным официальным URL, "
-                "уже скачанное не трону. Или полную ссылку: "
-                "`к 3 url https://pravo.by/document/?guid=…` (не `...`).\n"
+                + "\nНапишите `скачай` — попробую ещё раз. "
+                "Или пришлите полную ссылку: `к 3 url https://pravo.by/document/?guid=…`\n"
             )
+        name = state.get("inspection_name") or "proverka"
+        kb = f"В базе знаний {n_items} документов." if n_items else "База знаний подготовлена."
         return (
-            f"Кейс `{case_id}`: скачано {ok}, ошибок {failed}. {kb_note}{sync_note}\n"
+            f"Готово. Скачано документов: {ok}"
+            + (f", не скачалось: {failed}" if failed else "")
+            + f". {kb}\n"
             f"{extra}\n"
-            f"{_library_links(public, case_id)}\n"
-            "Или в чате: `документы`.\n"
-            "Когда будете читать глазами: напишите `саммари` — соберу Word на 6–10 страниц "
-            "со ссылками на статьи и официальный URL.\n"
-            "Можно спрашивать норму. Нет фрагмента в библиотеке — скажу, что этого нет.\n"
+            f"{_download_links(public, case_id, name, with_summary=False)}\n\n"
+            "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
+            "Чтобы получить краткий обзор в Word, напишите `саммари`.\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -279,7 +275,7 @@ class Pipe:
         question: str,
         emitter: Emitter,
     ) -> str:
-        await _status(emitter, "Ищу цитату в библиотеке кейса…")
+        await _status(emitter, "Ищу ответ в приложенных документах…")
         try:
             result = await _req(
                 "POST",
@@ -289,22 +285,26 @@ class Pipe:
             )
         except Exception as exc:  # noqa: BLE001
             return (
-                f"Не могу ответить по базе кейса `{case_id}`: {exc}\n"
-                "Сначала утвердите список и дождитесь скачивания.\n"
+                f"Пока не могу ответить по базе знаний: {exc}\n"
+                "Сначала выберите документы (`утверждаю 1, 2`) и дождитесь скачивания.\n"
                 f"<!--audit-case:{case_id}-->"
             )
         sources = result.get("sources") or []
         cites = []
         for s in sources[:6]:
-            title = s.get("title") or s.get("filename") or "фрагмент"
+            title = s.get("title") or s.get("filename") or "документ"
             excerpt = (s.get("excerpt") or "").replace("\n", " ").strip()
             if len(excerpt) > 220:
                 excerpt = excerpt[:220] + "…"
-            cites.append(f"- [{s.get('n')}] {title}: {excerpt}")
-        cite_block = "\n".join(cites) if cites else "_Цитат нет — не считайте ответ нормой._"
+            cites.append(f"- {title}: {excerpt}")
+        cite_block = (
+            "\n".join(cites)
+            if cites
+            else "В приложенных документах этого не нашлось — не опирайтесь на ответ как на факт из базы."
+        )
         return (
             f"{result.get('answer', '').strip()}\n\n"
-            f"**Откуда:**\n{cite_block}\n"
+            f"**Откуда в базе знаний:**\n{cite_block}\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -318,7 +318,7 @@ class Pipe:
         emitter: Emitter,
     ) -> str:
         force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
-        await _status(emitter, "Собираю саммари на 6–10 страниц со ссылками на статьи…")
+        await _status(emitter, "Готовлю обзор базы знаний в Word. Это может занять несколько минут…")
         result: dict[str, Any] | None = None
         url = f"{api}/api/v1/cases/{case_id}/knowledge/brief/stream"
         if force:
@@ -338,64 +338,57 @@ class Pipe:
                             continue
                         kind = event.get("type")
                         if kind == "status":
-                            await _status(emitter, event.get("message") or "Саммари…")
+                            await _status(emitter, event.get("message") or "Готовлю обзор…")
                         elif kind == "error":
                             raise RuntimeError(event.get("message") or "brief error")
                         elif kind == "result":
                             result = event
         except Exception as exc:  # noqa: BLE001
             return (
-                f"Не могу собрать саммари кейса `{case_id}`: {exc}\n"
-                "Нужна скачанная библиотека. Напишите `документы` или сначала `утверждаю …`.\n"
+                f"Не получилось собрать обзор: {exc}\n"
+                "Сначала должны быть скачаны документы. Напишите `документы` или `утверждаю 1, 2`.\n"
                 f"<!--audit-case:{case_id}-->"
             )
         if not result:
             return (
-                f"Саммари не вернулось. Попробуйте ещё раз: `саммари`.\n"
+                "Обзор не получился. Напишите ещё раз: `саммари`.\n"
                 f"<!--audit-case:{case_id}-->"
             )
-        pages = result.get("pages_estimate") or "—"
-        cites = result.get("citations") or 0
+        name = result.get("inspection_name") or ""
+        if not name:
+            try:
+                state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
+                name = state.get("inspection_name") or "proverka"
+            except Exception:
+                name = "proverka"
         digest = "\n".join(result.get("digest") or [])
-        digest_block = f"\n{digest}\n" if digest else ""
+        digest_block = f"\nКратко по документам:\n{digest}\n" if digest else ""
         return (
-            f"Саммари готово (~{pages} стр., {cites} фрагментов). "
-            "Скачайте Word и читайте глазами — полный текст в чат не выкладываю.\n\n"
-            f"Word: {public}/api/v1/cases/{case_id}/knowledge/brief.docx\n"
-            f"Markdown: {public}/api/v1/cases/{case_id}/knowledge/brief.md\n"
+            "Обзор базы знаний готов. Скачайте Word и читайте сами — в чат полный текст не копирую.\n\n"
+            f"{_download_links(public, case_id, name, with_summary=True)}\n"
             f"{digest_block}\n"
-            "В файле номера `[n]` ведут к статье/пункту и официальному URL источника.\n"
-            "Пересобрать: `саммари заново`. Дальше можно спрашивать норму.\n"
+            "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
+            "Собрать обзор заново: `саммари заново`.\n"
             f"<!--audit-case:{case_id}-->"
         )
 
     async def _library(self, api: str, public: str, timeout: float, case_id: str) -> str:
         data = await _req("GET", f"{api}/api/v1/cases/{case_id}/library", timeout)
+        name = data.get("inspection_name") or "proverka"
         lines = [
-            f"Кейс `{case_id}` — скачанные акты (первоисточники).",
+            "Документы в базе знаний этой проверки:",
             "",
         ]
         for doc in data.get("documents") or []:
             if not doc.get("selected") and doc.get("download_status") in (None, "skipped"):
                 continue
-            status = doc.get("download_status") or "—"
-            url = doc.get("found_url") or ""
-            name = _file_name(doc.get("local_path"))
-            lines.append(f"- **{doc.get('title')}** — {status}")
-            if url:
-                lines.append(f"  источник: {url}")
-            if name:
-                lines.append(f"  файл: `{name}`")
-        files = data.get("files") or []
-        if files:
-            lines.append("")
-            lines.append("Файлы в папке кейса: " + ", ".join(f"`{f}`" for f in files))
+            status = "скачан" if doc.get("download_status") == "ok" else "не скачался"
+            lines.append(f"- {doc.get('title')} — {status}")
         lines.append("")
-        lines.append(_library_links(public, case_id))
-        lines.append(
-            "Коллекция Open WebUI Knowledge появится после `OPENWEBUI_API_KEY`; "
-            "без ключа скачайте txt по ссылке выше — спрашивать норму в этом чате можно."
-        )
+        lines.append(_download_links(public, case_id, name, with_summary=False))
+        lines.append("")
+        lines.append("Дальше можно задавать вопросы по базе знаний (приложенным документам).")
+        lines.append("Чтобы получить краткий обзор в Word, напишите `саммари`.")
         lines.append(f"<!--audit-case:{case_id}-->")
         return "\n".join(lines)
 
@@ -406,13 +399,11 @@ class Pipe:
     async def _list_cases(self, api: str, timeout: float) -> str:
         rows = await _req("GET", f"{api}/api/v1/cases", timeout)
         if not rows:
-            return "Кейсов нет. Опишите проверку, чтобы создать первый."
-        lines = ["Проверки:"]
+            return "Проверок пока нет. Напишите, что проверяете, чтобы начать."
+        lines = ["Ваши проверки:"]
         for row in rows[:20]:
-            lines.append(
-                f"- `{row.get('case_id')}` {row.get('status')} — {row.get('inspection_name')}"
-            )
-        lines.append("\nНапишите название проверки, чтобы начать новую, или вопрос в чате с уже созданным кейсом.")
+            lines.append(f"- {row.get('inspection_name')}")
+        lines.append("\nЧтобы начать новую — напишите название проверки. Вопросы задавайте в чате той проверки, по которой уже собраны документы.")
         return "\n".join(lines)
 
 
@@ -533,21 +524,29 @@ def _is_library(text: str) -> bool:
     return any(k in t for k in keys)
 
 
-def _file_name(path: Optional[str]) -> str:
-    if not path:
-        return ""
-    return str(path).replace("\\", "/").rstrip("/").split("/")[-1]
+def _file_stem(inspection_name: str) -> str:
+    base = re.sub(r"[^\w\u0400-\u04FF\-]+", "_", inspection_name or "", flags=re.UNICODE)
+    return base.strip("_")[:60] or "proverka"
 
 
-def _library_links(public: str, case_id: str) -> str:
+def _download_links(
+    public: str,
+    case_id: str,
+    inspection_name: str,
+    *,
+    with_summary: bool,
+) -> str:
+    stem = _file_stem(inspection_name)
     base = f"{public}/api/v1/cases/{case_id}"
-    return (
-        "Скачать в браузере:\n"
-        f"- чистый текст (txt): {base}/knowledge/export\n"
-        f"- zip сырых файлов: {base}/library/archive\n"
-        f"- список JSON: {base}/library\n"
-        f"Саммари Word (после команды `саммари`): {base}/knowledge/brief.docx"
-    )
+    lines = [
+        "Скачать:",
+        f"- архив документов (`{stem}_npa.zip`): {base}/library/archive",
+    ]
+    if with_summary:
+        lines.append(
+            f"- обзор базы знаний (`{stem}_summary.docx`): {base}/knowledge/brief.docx"
+        )
+    return "\n".join(lines)
 
 
 def _is_status(text: str) -> bool:
@@ -573,19 +572,11 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
         return None
     if _is_approve(raw) or _is_status(raw) or _is_library(raw) or _is_brief(raw):
         return None
-    period_match = YEAR_RE.search(raw)
-    period = period_match.group(1).replace(" ", "") if period_match else None
     parts = [p.strip(" .;") for p in re.split(r"[,;\n]", raw) if p.strip()]
     if not parts:
         return None
     name = parts[0]
-    if period and name == period_match.group(0):
-        return None
-    keywords = []
-    for part in parts[1:]:
-        if YEAR_RE.fullmatch(part.replace(" ", "")):
-            continue
-        keywords.append(part)
+    keywords = [part for part in parts[1:] if part]
     looks_like_case = bool(
         re.search(r"проверк|аудит|аренда|кредит|валют|касс|нпа", raw, re.I)
     ) or (len(name) >= 12 and not _looks_like_question(raw))
@@ -594,7 +585,6 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
     return {
         "inspection_name": name,
         "keywords": keywords,
-        "period": period,
     }
 
 
@@ -650,7 +640,6 @@ def _format_docs(docs: list[dict]) -> str:
     for i, doc in enumerate(docs, start=1):
         lines.append(
             f"{i}. **{doc.get('title')}** — {_priority_label(doc.get('priority'))}\n"
-            f"   `{doc.get('id')}` · {doc.get('doc_type') or ''}\n"
             f"   {doc.get('why_needed') or ''}"
         )
     return "\n".join(lines)
@@ -661,9 +650,8 @@ def _format_case(state: dict) -> str:
     selected = sum(1 for d in docs if d.get("selected"))
     ok = sum(1 for d in docs if d.get("download_status") == "ok")
     return (
-        f"Кейс `{state.get('case_id')}` · {state.get('status')}\n"
-        f"{state.get('inspection_name')}\n"
-        f"Документов: {len(docs)}, утверждено: {selected}, скачано: {ok}"
+        f"Проверка: {state.get('inspection_name')}\n"
+        f"В списке документов: {len(docs)}, выбрано: {selected}, скачано: {ok}"
     )
 
 

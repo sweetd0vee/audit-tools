@@ -49,9 +49,12 @@ def _sources_path(case_id: str) -> Path:
     return _brief_dir(case_id) / "brief_sources.json"
 
 
-def brief_download_name(inspection_name: str, case_id: str, ext: str) -> str:
+def brief_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
     stem = _safe_stem(inspection_name or "proverka")
-    return f"sammari_{stem}_{case_id}.{ext.lstrip('.')}"
+    suffix = (ext or "docx").lstrip(".")
+    if suffix == "md":
+        return f"{stem}_summary.md"
+    return f"{stem}_summary.{suffix}"
 
 
 def resolve_brief_file(case_id: str, kind: str) -> Path | None:
@@ -83,6 +86,7 @@ def brief_status(case_id: str) -> dict:
             "docx_path": str(docx) if ready else meta.get("docx_path"),
             "download": f"/api/v1/cases/{case_id}/knowledge/brief.docx",
             "markdown": f"/api/v1/cases/{case_id}/knowledge/brief.md",
+            "inspection_name": state.inspection_name,
         }
     )
     return meta
@@ -207,6 +211,7 @@ def _save_brief_meta(state, *, docx: Path, md: Path, sources: list[dict], body: 
         "markdown": f"/api/v1/cases/{state.case_id}/knowledge/brief.md",
         "ready": True,
         "case_id": state.case_id,
+        "inspection_name": state.inspection_name,
     }
     state.meta["brief"] = meta
     store.save(state)

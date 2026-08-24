@@ -183,6 +183,7 @@ def library(case_id: str):
     return {
         "case_id": case_id,
         "status": state.status,
+        "inspection_name": state.inspection_name,
         "library_dir": str(lib),
         "archive_name": archive_name,
         "archive_url": f"/api/v1/cases/{case_id}/library/archive" if archive_name else None,
@@ -219,9 +220,8 @@ def library_archive(case_id: str):
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Archive not found")
 
-    filename = state.meta.get("archive_name") or store.archive_filename(
-        state.inspection_name, case_id
-    )
+    filename = store.archive_filename(state.inspection_name, case_id)
+    state.meta["archive_name"] = filename
     return FileResponse(
         path,
         media_type="application/zip",

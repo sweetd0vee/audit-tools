@@ -32,10 +32,10 @@ class CaseStore:
         return self._case_dir(case_id) / "library.zip"
 
     @staticmethod
-    def archive_filename(inspection_name: str, case_id: str) -> str:
+    def archive_filename(inspection_name: str, case_id: str = "") -> str:
         base = re.sub(r"[^\w\u0400-\u04FF\-]+", "_", inspection_name or "", flags=re.UNICODE)
-        base = base.strip("_")[:60] or "library"
-        return f"{base}_{case_id}.zip"
+        base = base.strip("_")[:60] or "proverka"
+        return f"{base}_npa.zip"
 
     def write_library_archive(self, case_id: str) -> Path | None:
         """Pack downloaded files (+ manifest) into library.zip. Returns path or None."""

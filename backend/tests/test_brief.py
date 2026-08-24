@@ -146,5 +146,22 @@ class TestCollectSources(unittest.TestCase):
             self.assertTrue(frags)
 
 
+class TestDownloadNames(unittest.TestCase):
+    def test_summary_docx_uses_inspection_name(self):
+        from app.services.brief_flow import brief_download_name
+
+        name = brief_download_name("Проверка аренды коммерческой недвижимости", "abc")
+        self.assertTrue(name.endswith("_summary.docx"))
+        self.assertIn("аренды", name)
+        self.assertNotIn("abc", name)
+
+    def test_archive_zip_uses_npa_suffix(self):
+        from app.storage import CaseStore
+
+        name = CaseStore.archive_filename("Проверка аренды коммерческой недвижимости", "abc")
+        self.assertTrue(name.endswith("_npa.zip"))
+        self.assertNotIn("abc", name)
+
+
 if __name__ == "__main__":
     unittest.main()
