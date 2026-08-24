@@ -20,7 +20,7 @@
 
 ## Сейчас (факт)
 
-Аудиторский поток библиотеки НПА живёт в чате. Как пользоваться: [AUDITOR.md](AUDITOR.md).
+Аудиторский поток библиотеки НПА живёт в чате. Как пользоваться: [GUIDE.md](GUIDE.md).
 
 - FastAPI: кейс, propose / select / download, extract, ask, саммари Word, sync в Open WebUI;
 - Pipe «Аудитор» (`seed/openwebui/functions/audit_agent.py`): фазы и HITL в коде, download только после «утверждаю»;
@@ -56,7 +56,7 @@
 - [x] Корневой `compose.yaml`: Open WebUI, Ollama, SearXNG, Audit Tool Server; frontend — profile `lab`.
 - [x] `seed/openwebui`: RAG-шаблон аудитора, system prompt; hybrid/embedding в compose env (на чистом volume).
 - [ ] `.env.example` на корне: модели, порты, пути данных.
-- [x] Документ «как аудитор ведёт проверку в чате»: [AUDITOR.md](AUDITOR.md).
+- [x] Документ «как аудитор ведёт проверку в чате»: [GUIDE.md](GUIDE.md), шпаргалка [AUDITOR.md](AUDITOR.md).
 - [ ] Документ «поставил → работает» на одну страницу (образы, pull моделей). Для банка — пометка про офлайн-бандл образов/весов.
 - [ ] Прогнать четыре золотых теста RAG из [RAG_для_разработчика.md](RAG_для_разработчика.md) на одной инструкции НБРБ.
 

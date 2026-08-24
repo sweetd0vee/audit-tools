@@ -4,7 +4,7 @@
 
 Первый код — не новые экраны и не тесты/WP. Сначала из уже работающего API делаем **один вход**: аудитор открывает Open WebUI и ведёт проверку чатом.
 
-Как аудитор этим пользуется: [AUDITOR.md](AUDITOR.md).
+Как аудитор этим пользуется: [GUIDE.md](GUIDE.md). Шпаргалка команд: [AUDITOR.md](AUDITOR.md).
 
 Дорожная карта на месяцы: [PLAN.md](PLAN.md). Этот файл — что делать на этой неделе.
 
@@ -39,7 +39,7 @@
 
 Файлы: [`seed/openwebui/AGENT.md`](../seed/openwebui/AGENT.md), `functions/audit_agent.py`, `tools/audit_case.py`.
 
-Вставить Pipe в **Панель администратора → Функции**. Продуктовый вход — модель **Аудитор**. Tools — запасной native FC. Фразы аудитора: [AUDITOR.md](AUDITOR.md).
+Вставить Pipe в **Панель администратора → Функции**. Продуктовый вход — модель **Аудитор**. Tools — запасной native FC. Фразы аудитора: [GUIDE.md](GUIDE.md).
 
 ---
 
@@ -77,7 +77,7 @@ docker compose up -d --build
 
 Открыть:
 
-- продукт: http://localhost:3000 — модель **Аудитор**, сценарий в [AUDITOR.md](AUDITOR.md)
+- продукт: http://localhost:3000 — модель **Аудитор**, гайд [GUIDE.md](GUIDE.md)
 - API, пока пишете tools: http://localhost:8100/docs
 
 Лабораторный UI http://localhost:5174 не открывать как «место работы». Если нужен — только сверить, что API ещё живое, пока tools не готовы.

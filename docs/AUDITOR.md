@@ -324,7 +324,7 @@ http://localhost:8100/api/v1/cases/{case_id}/knowledge/brief.docx
 
 Если ответ странный: переформулируйте уже, с названием акта. Или откройте первоисточник по ссылке из `документы` / из Word.
 
-**Под капотом.** `POST …/knowledge/ask`. Вопрос эмбеддится той же моделью, что индекс (`qwen3-embedding`). Чанки ранжируются: пересечение слов + cosine. Top-k фрагментов кладутся в промпт. LLM отвечает **по этим кускам**. Веб-поиск в этом шаге выключен. SearXNG уже отработал на download.
+**Под капотом.** `POST …/knowledge/ask`. Вопрос эмбеддится той же моделью, что индекс (`qwen3-embedding:latest`). Чанки ранжируются: пересечение слов + cosine. Top-k фрагментов кладутся в промпт. LLM отвечает **по этим кускам**. Веб-поиск в этом шаге выключен. SearXNG уже отработал на download.
 
 ---
 
@@ -418,7 +418,7 @@ Pipe «Аудитор»          Python в Open WebUI Functions
     ▼
 Audit Tool Server       FastAPI :8100 — система записи кейса
     ├─ Ollama           qwen3.6:35b — propose, карточки, ответы
-    ├─ Ollama embed     qwen3-embedding — векторы чанков и вопроса
+    ├─ Ollama embed     qwen3-embedding:latest — векторы чанков и вопроса
     ├─ SearXNG          поиск URL только по allowlist РБ
     └─ диск             backend/data/audit_cases/{case_id}/
 ```
@@ -444,7 +444,7 @@ backend/data/audit_cases/{case_id}/
 
 1. пусто / `помощь` → шпаргалка;
 2. `саммари` / `сводка` / `бриф` / `docx` → сборка Word;
-3. `утверждаю` / `скачай` / `к 3 url …` → select + download;
+3. `утверждаю` / `скачай` / `плюс …` / `к 3 url …` → select + download;
 4. `документы` / `библиотека` → список файлов;
 5. `статус` / `кейсы` → состояние;
 6. текст похож на новую проверку **и не вопрос** → create + propose;

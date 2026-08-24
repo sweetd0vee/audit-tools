@@ -6,7 +6,7 @@
 
 Это не «ещё один чат с LLM». Чат — поверхность. Ядро продукта — **Audit Tool Server**: кейс проверки, библиотека НПА, тесты, рабочие бумаги (WP), правила.
 
-**Как работать аудитору** (что писать агенту, HITL, саммари, вопросы, под капотом): [`docs/AUDITOR.md`](docs/AUDITOR.md).
+**Как работать аудитору** — гайд с навигацией Open WebUI, историями и объяснением, что видит модель: [`docs/GUIDE.md`](docs/GUIDE.md). Краткая шпаргалка команд: [`docs/AUDITOR.md`](docs/AUDITOR.md).
 
 Коробка: [`docs/VISION.md`](docs/VISION.md) · [с чего писать](docs/START.md) · [архитектура](docs/ARCHITECTURE.md) · [план](docs/PLAN.md) · [идеи](docs/IDEAS.md).
 
@@ -129,7 +129,7 @@ Allowlist:
 
 Когда библиотека скачана, аудитор пишет в чате `саммари`. Сервер собирает карточки по актам из фрагментов (не из памяти модели), синтезирует обзор проверки и отдаёт `.docx` со ссылками `[n]` на статью/пункт и официальный URL. Полный текст в чат не выкладывается. Пересборка: `саммари заново`.
 
-Как пользоваться: [`docs/AUDITOR.md`](docs/AUDITOR.md).
+Как пользоваться: [`docs/GUIDE.md`](docs/GUIDE.md).
 
 ### 4–7. Данные, тесты, WP, rules (план)
 
@@ -154,7 +154,7 @@ Allowlist:
 | Агент в чате | `seed/openwebui/functions/audit_agent.py` | Pipe «Аудитор»: HITL, фазы в коде |
 | Лабораторный UI шагов 1–2 | `frontend/` | заморожен; compose profile `lab`, не витрина продукта |
 | Засев Open WebUI | `seed/openwebui/` | system prompt, RAG-шаблон, чеклист Admin |
-| Документация | `docs/` | [история аудитора](docs/AUDITOR.md), коробка, архитектура, план, RAG |
+| Документация | `docs/` | [гайд аудитора](docs/GUIDE.md), [шпаргалка](docs/AUDITOR.md), коробка, архитектура, план, RAG |
 | API библиотеки | `backend/README.md` | эндпоинты и пример PowerShell |
 
 Хранение кейса (без БД на текущем шаге):
@@ -195,7 +195,7 @@ cd c:\Users\audit\Work\Arina\2026\audit-tools
 docker compose up -d --build
 ```
 
-После `up`: http://localhost:3000 → новый чат → модель **Аудитор**. Что писать — [`docs/AUDITOR.md`](docs/AUDITOR.md). Поставить Pipe: [`seed/openwebui/AGENT.md`](seed/openwebui/AGENT.md), засев Admin — [`seed/openwebui/README.md`](seed/openwebui/README.md).
+После `up`: http://localhost:3000 → новый чат → модель **Аудитор**. Что писать — [`docs/GUIDE.md`](docs/GUIDE.md). Поставить Pipe: [`seed/openwebui/AGENT.md`](seed/openwebui/AGENT.md), засев Admin — [`seed/openwebui/README.md`](seed/openwebui/README.md).
 
 Модели (см. `backend/.env.example`):
 

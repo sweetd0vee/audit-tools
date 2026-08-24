@@ -1,6 +1,6 @@
 # Audit Tools — Step 1: библиотека НПА
 
-Продуктовый вход для аудитора — чат Open WebUI, не этот API: [`docs/AUDITOR.md`](../docs/AUDITOR.md). Ниже — эндпоинты для разработки tools.
+Продуктовый вход для аудитора — чат Open WebUI, не этот API: [`docs/GUIDE.md`](../docs/GUIDE.md). Ниже — эндпоинты для разработки tools.
 
 ## Что делает этот шаг
 
@@ -21,7 +21,7 @@ data/audit_cases/{case_id}/
 ## Запуск
 
 ```powershell
-cd c:\Users\audit\Work\test\audit-tools\backend
+cd c:\Users\audit\Work\Arina\2026\audit-tools\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
