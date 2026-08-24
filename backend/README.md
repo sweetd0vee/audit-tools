@@ -74,6 +74,16 @@ POST /api/v1/cases/{case_id}/download
 GET /api/v1/cases/{case_id}/library
 ```
 
+### 6. Саммари и программа проверки
+```http
+POST /api/v1/cases/{case_id}/knowledge/brief
+GET  /api/v1/cases/{case_id}/knowledge/brief.docx
+POST /api/v1/cases/{case_id}/knowledge/program
+GET  /api/v1/cases/{case_id}/knowledge/program.docx
+```
+
+Стрим прогресса: `GET …/brief/stream`, `GET …/program/stream`. `force=true` — пересобрать.
+
 ## Allowlist доменов
 
 - pravo.gov.by / pravo.by / etalonline.by
