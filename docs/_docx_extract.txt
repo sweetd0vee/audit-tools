@@ -1,0 +1,298 @@
+Пошаговый план: локальный Cursorдля аудиторских проверок банка (РБ)на базе Open WebUI
+Вариант сборки: Open WebUI + Pipelines + Ollama + SearXNG + Chroma/pgvector + Audit Tool Server + Continue.dev/AiderВерсия 1.0  |  20.08.2026  |  Конфиденциальные данные — только on-prem
+0. Цель и ожидаемый результат
+Вы строите локальный аналог Cursor для внутреннего аудита банка. Вход: название проверки + произвольные данные (Excel/CSV/SQL). Выход: план проверки, гипотезы, тесты, исключения, рабочие документы (WP), draft findings со ссылками на нормативку РБ — без отправки данных в интернет.
+Что должно получиться через 8 недель:
+Чат в Open WebUI, где аудитор пишет: «Проверка X + файл Y»
+Агент сам проходит фазы: scope → data quality → tests → report
+Числа и нормы — только из tools и локального RAG (не «из головы» модели)
+Excel WP и findings на диске в /audit_cases/{case_id}/
+Полный audit trail: какие tools вызывались и с какими аргументами
+Главный принцип качества:
+LLM планирует и объясняет. Tools доказывают (pandas, SQL, compliance rules, Excel). QA-валидатор блокирует findings без evidence и без ссылки на норму.
+1. Архитектура (что за что отвечает)
+Компонент
+Роль
+Пишете сами?
+Open WebUI
+UI, чат, RAG, Functions
+Нет — ставите
+Open WebUI Pipelines
+Agent loop / middleware (фазы проверки)
+Частично — свой pipeline
+Ollama
+Локальные LLM + embeddings
+Нет — ставите
+SearXNG
+Веб-поиск только по allowlist (pravo.by, nbrb.by)
+Нет — ставите
+Chroma / pgvector
+Векторная БД для нормативки
+Нет — ставите
+Audit Tool Server
+FastAPI: данные, тесты, WP, rules
+ДА — главный custom
+Continue.dev / Aider
+IDE-режим как Cursor (позже)
+Нет — ставите
+
+Не пишите UI, LLM-runtime и векторную БД с нуля. Сосредоточьтесь на Audit Tool Server и Orchestrator Pipeline — именно они дают «аудиторское» качество.
+2. Перед стартом: проверка железа и ПО
+2.1 Железо (у вас — сильное, используйте полностью)
+GPU: желательно 24–48+ GB VRAM под qwen2.5:72b (Q4/Q5)
+RAM: 64 GB+ (система + embeddings + парсинг)
+Диск: 200+ GB NVMe (модели + Knowledge + audit_cases)
+ОС: Windows 10/11 или Linux; ниже команды для Windows PowerShell
+2.2 ПО, которое должно быть установлено
+Docker Desktop (с поддержкой GPU / WSL2)
+NVIDIA drivers + NVIDIA Container Toolkit (для GPU в Docker)
+Git
+Python 3.11+ (для разработки Tool Server локально)
+VS Code или Cursor (для Continue.dev позже)
+Проверка Docker:
+docker --versiondocker run --rm hello-world
+3. День 1 — поднять базовый стек
+Цель дня: чат с локальной 72B-моделью в Open WebUI + веб-поиск через SearXNG. Пока без ваших audit-tools.
+3.1 Установить Ollama и скачать модели
+Скачайте Ollama с https://ollama.com и установите. Затем в PowerShell:
+ollama pull qwen2.5:72b-instructollama pull qwen2.5:32b-instructollama pull bge-m3ollama list
+Если 72B не влезает в VRAM — начните с qwen2.5:32b-instruct, но для качества гипотез и планов проверки лучше 70B+.
+Проверка:
+ollama run qwen2.5:72b-instruct "Ответь одним словом: работает?"
+3.2 Поднять Open WebUI
+docker run -d -p 3000:8080 --add-host=host.docker.internal:host-gateway `  -v open-webui:/app/backend/data `  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 `  -e WEBUI_SECRET_KEY=change-me-to-long-random-string `  --name open-webui `  ghcr.io/open-webui/open-webui:main
+Откройте http://localhost:3000 → создайте первого пользователя (admin).
+Важно для конфиденциальности: не добавляйте OPENAI_API_KEY и другие облачные ключи. Модель должна идти только через Ollama.
+3.3 Поднять SearXNG
+mkdir searxngdocker run -d -p 8080:8080 -v ${PWD}/searxng:/etc/searxng --name searxng searxng/searxng
+В файле searxng/settings.yml (создастся после первого запуска) в секции search добавьте json в formats:
+search:  formats:    - html    - json
+Перезапустите: docker restart searxng
+Проверка в браузере: http://localhost:8080
+3.4 Настроить Open WebUI (обязательно в День 1)
+Admin Panel → Settings:
+Раздел
+Параметр
+Значение
+Models
+Default model
+qwen2.5:72b-instruct
+Models → Edit → Advanced
+Context Length
+32768 (или максимум)
+Models
+Function Calling
+Native
+Documents
+Embedding Engine
+Ollama
+Documents
+Embedding Model
+bge-m3
+Documents
+Chunk Size
+700
+Documents
+Chunk Overlap
+150
+Documents
+Top K
+8–12
+Web Search
+Enable
+ON
+Web Search
+Engine
+searxng
+Web Search
+SearXNG Query URL
+http://host.docker.internal:8080/search?q=
+Web Search
+Embedding & Retrieval
+ON (если есть)
+
+Критерий готовности Дня 1:
+Чат отвечает на русском
+Web Search возвращает источники
+Нет подключений к облачным LLM
+4. День 2 — Knowledge Base (нормативка)
+Цель: модель умеет цитировать законы и инструкции из локальной базы. Клиентские данные в Knowledge НЕ загружайте.
+4.1 Создайте 3 коллекции
+Нормативка_РБ — Банковский кодекс, законы, постановления
+НБРБ_инструкции — инструкции и письма НБРБ
+Методология_аудита — ваш audit manual, чеклисты, шаблоны WP
+Позже (неделя 3+): Политики_банка, Прошлые_проверки (анонимизированные).
+4.2 Как загружать документы
+Workspace → Knowledge → New Collection → Upload PDF/DOCX
+Дождитесь индексации (embedding)
+В чате: #Нормативка_РБ и вопрос по конкретному пункту
+Критерий готовности:
+Модель отвечает со ссылкой на загруженный документ, а не «в общем». Если ссылок нет — уменьшите chunk size до 500–600 и переиндексируйте.
+5. Дни 3–5 — Audit Tool Server (ваш главный код)
+Цель: модель вызывает ваш FastAPI и получает реальные числа из Excel. Без этого это «умный чат», а не Cursor.
+5.1 Структура проекта
+audit-tool-server/  app/    main.py                 # FastAPI приложение    config.py               # пути, allowlist    tools/      data_profile.py       # профилирование      data_quality.py       # качество данных      audit_trail.py        # лог действий    security/      sandbox.py            # только /audit_cases/{id}/  audit_cases/    demo/      sample.xlsx           # тестовый файл  requirements.txt  Dockerfile
+5.2 Первые 3 tools (обязательный минимум)
+Endpoint
+Вход
+Выход
+Зачем
+POST /tools/data_profile
+case_id, file_name
+JSON: rows, columns, dtypes, describe, missing%
+Понять структуру произвольных данных
+POST /tools/data_quality
+case_id, file_name, rules?
+JSON: dupes, nulls, date gaps, currency mix
+Оценка качества перед тестами
+POST /tools/audit_trail
+case_id, event
+append в trail.jsonl
+Неизменяемый журнал для банка
+
+5.3 Зависимости
+fastapiuvicornpandasopenpyxlpython-multipartpydanticnumpyscipy
+5.4 Правила безопасности Tool Server
+Чтение/запись только внутри /audit_cases/{case_id}/
+Запрет path traversal (..\)
+Нет исходящих HTTP из Tool Server (кроме API НБРБ, если разрешено политикой)
+Каждый вызов → запись в audit_trail
+Логи без ПДн (маскировать ФИО, счета)
+5.5 Подключение к Open WebUI
+Запустите Tool Server: uvicorn app.main:app --host 0.0.0.0 --port 8000
+Open WebUI → Workspace → Functions → Create
+Function делает HTTP POST на http://host.docker.internal:8000/tools/data_profile
+Привяжите Function к модели qwen2.5:72b-instruct
+В системном промпте: «Перед анализом данных вызывай data_profile»
+Тестовый запрос в чате:
+Профилируй файл sample.xlsx в кейсе demo через tool data_profile.Верни: число строк, список колонок, % пропусков. Числа не выдумывай.
+Критерий готовности: в ответе числа совпадают с Excel, в audit_cases/demo/ есть запись в trail.jsonl.
+6. Неделя 2 — Pipelines (agent loop)
+Цель: воспроизвести поведение Cursor — план → действие → результат → следующий шаг → retry при ошибке.
+6.1 Установка Pipelines
+mkdir pipelinesdocker run -d -p 9099:9099 `  -v ${PWD}/pipelines:/app/pipelines `  --name pipelines `  ghcr.io/open-webui/pipelines:main
+В Open WebUI: Admin → Settings → Pipelines → URL http://host.docker.internal:9099 → Connect.
+6.2 Первый pipeline: 4 фазы (упрощённо)
+Пока не все 10 фаз — начните с минимального цикла:
+INTAKE — разобрать название проверки + пути к файлам
+DATA_QUALITY — вызвать data_profile + data_quality
+HYPOTHESES — LLM генерирует ≥10 гипотез по profile JSON
+REPORT — черновик отчёта + ссылки на trail
+Правило retry: если tool вернул ошибку — передать traceback модели, повторить шаг до 3 раз, затем остановиться с понятным сообщением аудитору.
+6.3 Системный промпт агента (вставить в модель)
+Ты — агент внутреннего аудита банка (Республика Беларусь).Работай фазами: INTAKE → DATA_QUALITY → HYPOTHESES → REPORT.Запрещено выдумывать числа и пункты законов.Числа — только из tools. Нормы — только из #Knowledge или web allowlist.Каждый вывод должен иметь evidence (файл/строка) или norm_reference.Если данных недостаточно — явно запроси дополнительные файлы.Пиши на русском. Формат ответа: Scope / Data / Hypotheses / Findings / Next steps.
+7. Недели 3–8 — наращивание до полноценного аудита
+Неделя
+Что делать
+Критерий готовности
+3
+Tools: resolve_regulatory_scope, search_normative_web (allowlist), ingest_to_case_rag
+По названию проверки агент выдаёт список актов с пунктами
+4
+Tools: run_compliance_rules, run_stat_tests, build_exceptions
+На demo-данных находятся известные нарушения
+5
+Довести pipeline до 10 фаз (как в PDF-гайде)
+Один end-to-end кейс без ручных шагов
+6
+Tools: build_working_papers, build_findings_draft, qa_validate_audit_case
+WP.xlsx + findings.md; QA блокирует «пустые» findings
+7
+Безопасность: RBAC, sandbox, domain allowlist, PII masking; Chroma/pgvector если нужно
+Чеклист ИБ пройден
+8
+Пилот с 2 аудиторами на 2 реальных проверках
+Feedback: полезно / не хватает X; правки промптов и rules
+
+7.1 Полный список tools (roadmap)
+resolve_regulatory_scope — название проверки → акты/пункты
+search_normative_web — SearXNG только pravo.by, nbrb.by
+ingest_to_case_rag — найденный акт → временная коллекция кейса
+data_profile / data_quality / map_columns_to_audit_fields
+generate_audit_hypotheses / run_compliance_rules / run_stat_tests
+sample_selector / build_exceptions
+build_working_papers / build_findings_draft / qa_validate_audit_case
+audit_trail_log
+8. IDE-режим (Continue.dev / Aider) — после базового чата
+Ставьте, когда Tool Server уже отвечает. Иначе IDE будет без audit-логики.
+8.1 Continue.dev (рекомендуется для разработки tools)
+Установите расширение Continue в VS Code
+В config укажите Ollama: model qwen2.5:72b-instruct, apiBase localhost:11434
+Используйте для написания/правки audit-tool-server
+8.2 Aider (автономный coding в терминале)
+pip install aider-chataider --model ollama/qwen2.5:72b-instruct
+Aider хорош для рефакторинга Tool Server. Аудиторам для проверок основной интерфейс — Open WebUI.
+9. Конфиденциальность: жёсткие правила
+Обязательно:
+Ollama и Open WebUI без облачных API-ключей
+Клиентские данные только в /audit_cases/{case_id}/ — не в общий Knowledge
+Web search: allowlist доменов; в query не подставлять счета/ФИО/суммы
+Docker: data-контейнеры без исходящего интернета (кроме SearXNG с фильтрами)
+SQL (если добавите) — только read-only replica
+RBAC: auditor / reviewer / admin
+Audit trail append-only
+Запрещено:
+OpenAI / Claude / Gemini / облачные embeddings
+Tavily / облачный Firecrawl с передачей текста проверки
+Отправка фрагментов Excel в веб-поиск
+10. Чеклисты готовности
+10.1 После Дня 1
+[ ] Ollama: 72B + 32B + bge-m3
+[ ] Open WebUI отвечает локально
+[ ] SearXNG + Web Search работают
+[ ] Нет облачных ключей
+10.2 После Дня 2
+[ ] 3 Knowledge коллекции
+[ ] #Нормативка_РБ даёт ответы со ссылками
+10.3 После Дней 3–5
+[ ] Tool Server запущен на :8000
+[ ] Function data_profile работает из чата
+[ ] trail.jsonl пишется
+[ ] Числа в ответе = числа в Excel
+10.4 После Недели 2
+[ ] Pipelines подключены
+[ ] 4-фазный цикл проходит без ручных tool-вызовов
+[ ] Retry при ошибке tool работает
+10.5 Готово к пилоту (конец недели 8)
+[ ] 10+ tools
+[ ] QA validator блокирует пустые findings
+[ ] WP.xlsx выгружается
+[ ] 2 реальные проверки пройдены с аудиторами
+11. Как аудитор будет работать (целевой UX)
+Сообщение аудитора:
+Проверка: Соблюдение лимитов на операции с аффилированными лицами.Период: 2025Q1.Данные: /audit_cases/2025Q1_affil/ops.xlsx и counterparties.xlsx.Выполни полный цикл: scope → качество данных → гипотезы → тесты → исключения → рабочие документы.
+Ожидаемый ответ агента (структура):
+A) Scope & Norms — список актов и пунктов (из RAG/web)
+B) Data Summary — строки, качество, mapping колонок
+C) Hypotheses & Tests — таблица H0/H1/метод/результат
+D) Exceptions — id, сумма, ссылка на строку, severity
+E) Conclusion — draft finding или «существенных нарушений не выявлено»
+F) Evidence Index — пути к файлам, trail
+G) Next Steps — что уточнить у бизнес-подразделения
+12. С чего начать прямо сейчас (первые 60 минут)
+Установить Ollama → pull qwen2.5:72b-instruct и bge-m3 (скачивание может занять время)
+Поднять Open WebUI (docker run из раздела 3.2)
+Поднять SearXNG и включить json format
+Настроить Models / Documents / Web Search в Admin
+Проверить простой чат и web search
+Создать папку audit-tool-server и репозиторий Git
+Завтра: Knowledge Base + первые 3 tools. Не начинайте с Pipelines и Continue.dev, пока data_profile не работает из чата.
+13. Типичные ошибки
+Сразу писать 15 tools — нет: сначала 3, потом pipeline
+Класть клиентский Excel в Knowledge — нет: только /audit_cases
+Маленький context (2048) — web и законы обрежутся
+Модель считает сама — всегда требуйте tool
+Облачный поиск с текстом проверки — риск утечки
+Ставить Continue.dev до Tool Server — ранняя оптимизация
+14. Полезные ссылки
+Open WebUI: https://docs.openwebui.com
+RAG: https://docs.openwebui.com/features/chat-conversations/rag/
+Web Search: https://docs.openwebui.com/features/chat-conversations/web-search/
+Pipelines: https://github.com/open-webui/pipelines
+Ollama: https://ollama.com
+SearXNG: https://docs.searxng.org
+Continue.dev: https://docs.continue.dev
+API НБРБ (курсы): https://api.nbrb.by/exrates/
+15. Итог
+Ваш путь: поставить готовый стек (Open WebUI + Ollama + SearXNG) → наполнить Knowledge нормативкой → написать Audit Tool Server (сначала 3 tools) → добавить Pipelines с agent loop → нарастить tools и QA → пилот с аудиторами. Качество близкое к Cursor даёт не «магия модели», а цикл план–tool–проверка плюс жёсткий запрет выдумывать числа и нормы.
+Сопутствующий PDF-гайд в той же папке: Гайд_OpenWebUI_локальная_аналитика.pdf (алгоритм 10 фаз, список tools, архитектура).

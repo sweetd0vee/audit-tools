@@ -170,7 +170,7 @@ class Pipe:
             },
         )
         case_id = created["case_id"]
-        await _status(emitter, "Подбираю список документов. Это может занять несколько минут…")
+        await _status(emitter, "Подбираю список документов (npa). Это может занять несколько минут…")
         proposed = await _req("POST", f"{api}/api/v1/cases/{case_id}/propose", timeout)
         docs = proposed.get("documents") or []
         kws = ", ".join(parsed["keywords"]) or "не указаны"
