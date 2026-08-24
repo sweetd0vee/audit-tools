@@ -69,6 +69,9 @@ def resolve_brief_file(case_id: str, kind: str) -> Path | None:
         return found[-1] if found else None
     candidate = _md_path(case_id)
     return candidate if candidate.exists() else None
+
+
+def brief_status(case_id: str) -> dict:
     state = store.get(case_id)
     meta = dict(state.meta.get("brief") or {})
     docx = Path(meta["docx_path"]) if meta.get("docx_path") else _docx_path(case_id, state.inspection_name)

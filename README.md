@@ -6,7 +6,9 @@
 
 Это не «ещё один чат с LLM». Чат — поверхность. Ядро продукта — **Audit Tool Server**: кейс проверки, библиотека НПА, тесты, рабочие бумаги (WP), правила.
 
-Коробка (минимум своего кода, качество как у Cursor): [`docs/VISION.md`](docs/VISION.md) · [с чего писать](docs/START.md) · [архитектура](docs/ARCHITECTURE.md) · [план](docs/PLAN.md) · [идеи](docs/IDEAS.md).
+**Как работать аудитору** (что писать агенту, HITL, саммари, вопросы, под капотом): [`docs/AUDITOR.md`](docs/AUDITOR.md).
+
+Коробка: [`docs/VISION.md`](docs/VISION.md) · [с чего писать](docs/START.md) · [архитектура](docs/ARCHITECTURE.md) · [план](docs/PLAN.md) · [идеи](docs/IDEAS.md).
 
 ---
 
@@ -75,13 +77,14 @@
 Один **кейс** = одна проверка (название, ключевые слова, период).
 
 ```
-1. Библиотека НПА     ← сейчас
-2. База знаний / RAG  ← сейчас
-3. Данные клиента     ← план
-4. Тесты и выборка    ← план
-5. Working papers     ← план
-6. Правила (rules)    ← план
-7. Агентные фазы      ← план (Pipelines)
+1. Библиотека НПА     ← сейчас (чат: описать → утвердить → скачать)
+2. База знаний / RAG  ← сейчас (вопросы с цитатами)
+3. Саммари Word       ← сейчас (команда «саммари»)
+4. Данные клиента     ← план
+5. Тесты и выборка    ← план
+6. Working papers     ← план
+7. Правила (rules)    ← план
+8. Агентные фазы      ← частично: Pipe «Аудитор» на шаги 1–3; остальные фазы — план
 ```
 
 ### 1. Библиотека НПА (готово)
@@ -122,7 +125,13 @@ Allowlist:
 
 Подробная модель RAG: [`docs/RAG_для_разработчика.md`](docs/RAG_для_разработчика.md).
 
-### 3–6. Данные, тесты, WP, rules (план)
+### 3. Саммари Word (готово)
+
+Когда библиотека скачана, аудитор пишет в чате `саммари`. Сервер собирает карточки по актам из фрагментов (не из памяти модели), синтезирует обзор проверки и отдаёт `.docx` со ссылками `[n]` на статью/пункт и официальный URL. Полный текст в чат не выкладывается. Пересборка: `саммари заново`.
+
+Как пользоваться: [`docs/AUDITOR.md`](docs/AUDITOR.md).
+
+### 4–7. Данные, тесты, WP, rules (план)
 
 Это и есть причина, почему custom-сервер главный, а не обёртка над чатом.
 
@@ -131,9 +140,9 @@ Allowlist:
 - **Working papers** — слепок доказательства: норма → факт → вывод. Генерация черновика, не подпись.
 - **Rules** — кодифицированные проверки (курсы, лимиты, признаки связанности), которые можно гонять детерминированно и вызывать из пайплайна.
 
-### 7. Агентные фазы (план)
+### 8. Агентные фазы (частично)
 
-Open WebUI Pipelines + Functions: цикл «фаза проверки → tool call в Audit Tool Server → результат в чат». Свой pipeline — чтобы фазы были аудиторскими (план, полевые процедуры, WP), а не универсальным ReAct.
+Сейчас Pipe «Аудитор» закрывает фазы библиотеки, саммари и вопросов к НПА. Дальше — Open WebUI Pipelines: цикл «фаза проверки → API сервера → результат в чат» для данных, тестов и WP, не универсальный ReAct.
 
 ---
 
@@ -141,10 +150,11 @@ Open WebUI Pipelines + Functions: цикл «фаза проверки → tool 
 
 | Часть | Путь | Статус |
 |---|---|---|
-| Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, sync Open WebUI |
+| Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, brief Word, sync Open WebUI |
+| Агент в чате | `seed/openwebui/functions/audit_agent.py` | Pipe «Аудитор»: HITL, фазы в коде |
 | Лабораторный UI шагов 1–2 | `frontend/` | заморожен; compose profile `lab`, не витрина продукта |
 | Засев Open WebUI | `seed/openwebui/` | system prompt, RAG-шаблон, чеклист Admin |
-| Документация продукта | `docs/` | коробка, архитектура, план, идеи, RAG |
+| Документация | `docs/` | [история аудитора](docs/AUDITOR.md), коробка, архитектура, план, RAG |
 | API библиотеки | `backend/README.md` | эндпоинты и пример PowerShell |
 
 Хранение кейса (без БД на текущем шаге):
@@ -185,7 +195,7 @@ cd c:\Users\audit\Work\Arina\2026\audit-tools
 docker compose up -d --build
 ```
 
-Засев чата и агент: [`seed/openwebui/README.md`](seed/openwebui/README.md), как устроен агент — [`seed/openwebui/AGENT.md`](seed/openwebui/AGENT.md).
+После `up`: http://localhost:3000 → новый чат → модель **Аудитор**. Что писать — [`docs/AUDITOR.md`](docs/AUDITOR.md). Поставить Pipe: [`seed/openwebui/AGENT.md`](seed/openwebui/AGENT.md), засев Admin — [`seed/openwebui/README.md`](seed/openwebui/README.md).
 
 Модели (см. `backend/.env.example`):
 

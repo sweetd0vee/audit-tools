@@ -89,13 +89,6 @@ class TestBriefDocx(unittest.TestCase):
                 sources=sources,
             )
             self.assertTrue(path.exists())
-            raw = path.read_bytes()
-            self.assertIn(b"cite_1", raw)
-            self.assertIn(b"w:hyperlink", raw)
-            self.assertIn(b"pravo.by", raw)
-            with zipfile.ZipFile(path) as zf:
-                rels = zf.read("word/_rels/document.xml.rels").decode("utf-8")
-            self.assertIn("https://pravo.by/document/?guid=3871&p0=hk9800218", rels)
             from docx import Document
 
             doc = Document(str(path))
@@ -103,6 +96,13 @@ class TestBriefDocx(unittest.TestCase):
             self.assertIn("Саммари нормативной базы", texts)
             self.assertIn("Статья 625", texts)
             self.assertIn("[1]", texts)
+            with zipfile.ZipFile(path) as zf:
+                xml = zf.read("word/document.xml").decode("utf-8")
+                rels = zf.read("word/_rels/document.xml.rels").decode("utf-8")
+            self.assertIn("cite_1", xml)
+            self.assertIn("w:hyperlink", xml)
+            self.assertIn("pravo.by/document/?guid=3871", rels)
+            self.assertIn("TargetMode=\"External\"", rels)
 
 
 class TestCollectSources(unittest.TestCase):

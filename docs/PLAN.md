@@ -20,14 +20,15 @@
 
 ## Сейчас (факт)
 
-Работает как стенд разработчика, не как продукт:
+Аудиторский поток библиотеки НПА живёт в чате. Как пользоваться: [AUDITOR.md](AUDITOR.md).
 
-- FastAPI: кейс, propose / select / download, extract, саммари, свой ask, sync в Open WebUI;
+- FastAPI: кейс, propose / select / download, extract, ask, саммари Word, sync в Open WebUI;
+- Pipe «Аудитор» (`seed/openwebui/functions/audit_agent.py`): фазы и HITL в коде, download только после «утверждаю»;
 - React-мастер шагов 1–2 на Vite — **заморожен, не развиваем**;
 - `docker-compose.yml` поднимает SearXNG + Open WebUI + backend; frontend только `--profile lab`;
-- заготовки засева: `seed/openwebui/` (промпт, RAG-шаблон); Admin ещё руками;
-- tools в чате нет — аудиторский поток пока Swagger или lab-UI;
-- данных клиента, тестов, WP, pipeline фаз — нет.
+- засев Open WebUI (промпт, RAG-шаблон, Pipe) — Admin ещё руками, см. [`seed/openwebui/AGENT.md`](../seed/openwebui/AGENT.md);
+- запасной native Tools (`audit_case.py`) есть, для продукта не основной путь (35B ломает HITL);
+- данных клиента, тестов, WP, полных агентных фаз проверки — нет.
 
 Как сесть писать на этой неделе: [START.md](START.md).
 
@@ -55,7 +56,8 @@
 - [x] Корневой `compose.yaml`: Open WebUI, Ollama, SearXNG, Audit Tool Server; frontend — profile `lab`.
 - [x] `seed/openwebui`: RAG-шаблон аудитора, system prompt; hybrid/embedding в compose env (на чистом volume).
 - [ ] `.env.example` на корне: модели, порты, пути данных.
-- [ ] Документ «поставил → работает» на одну страницу (образы, pull моделей, первый кейс). Для банка — пометка про офлайн-бандл образов/весов.
+- [x] Документ «как аудитор ведёт проверку в чате»: [AUDITOR.md](AUDITOR.md).
+- [ ] Документ «поставил → работает» на одну страницу (образы, pull моделей). Для банка — пометка про офлайн-бандл образов/весов.
 - [ ] Прогнать четыре золотых теста RAG из [RAG_для_разработчика.md](RAG_для_разработчика.md) на одной инструкции НБРБ.
 
 Выход: стенд собирается как продукт. Это уже ближе к Cursor, чем любой новый экран.
@@ -69,11 +71,12 @@
 
 Цель: полный поток библиотеки НПА из Open WebUI. React больше не нужен для демо.
 
-- [ ] Tools (Open WebUI Functions или OpenAPI): `create_case`, `propose_npa`, `select_npa`, `download_npa`, `case_status`, `sync_knowledge`.
-- [ ] Жёсткий HITL: download не вызывается без `document_ids`, которые аудитор явно утвердил в этом ходе.
-- [ ] System prompt модели-аудитора: фазы, «сначала tool», «не выдумывай статьи», «не тащи клиентский текст в поиск».
-- [ ] Sync в Knowledge после download — часть download или отдельный tool, но для аудитора один шаг.
-- [ ] Пройти сценарий аренды целиком в чате. Записать, где чат ломается (длинный список, ручной URL, ошибка SearXNG).
+- [x] Агент в чате — Pipe, не набор native tools: create → propose → HITL select → download → index; ask и brief в том же диалоге.
+- [x] Жёсткий HITL: download не вызывается без `document_ids`, которые аудитор явно утвердил (`утверждаю 1, 2`).
+- [x] System prompt / правила Pipe: фазы в коде, «не выдумывай статьи», клиентский текст в SearXNG не уходит.
+- [x] Sync в Knowledge после download — часть approve-ветки Pipe (если задан `OPENWEBUI_API_KEY`).
+- [x] Сценарий аренды в чате: список, ручной URL (`к N url …`), повтор `скачай`, `саммари`, вопрос с цитатой. Где ломается — длинный список номерами, обрезанный URL, 403 SearXNG (лечится known_sources / ручной ссылкой).
+- [ ] Засев Pipe при `compose up` без ручной вставки в Admin.
 
 Решение по фронту после этого этапа, не до:
 
