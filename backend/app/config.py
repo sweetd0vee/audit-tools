@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     summary_max_chars: int = 14000
     rag_top_k: int = 8
     embed_timeout_sec: float = 120.0
+    brief_chars_per_page: int = 1800
+    brief_timeout_sec: float = 900.0
 
     # Open WebUI (optional sync)
     openwebui_url: str = "http://localhost:3000"

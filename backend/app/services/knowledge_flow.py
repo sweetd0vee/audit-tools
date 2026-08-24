@@ -9,6 +9,7 @@ from pathlib import Path
 from app.config import settings
 from app.models import CaseState, KnowledgeItem, new_id
 from app.services.chunker import chunk_text, cosine, keyword_score, pick_relevant_chunks, tokenize
+from app.services.citations import excerpt_for_cite, extract_article_ref, origin_url
 from app.services.extract import TEXT_EXTS, extract_text
 from app.services.ollama_client import chat_complete, embed_texts
 from app.services.openwebui_client import (
@@ -27,9 +28,10 @@ SUMMARY_SYSTEM = """Ты — старший аудитор банка в Рес�
 Правила:
 1. Только то, что есть во фрагментах. Не выдумывай статьи и пункты.
 2. Указывай номера статей / пунктов, если они есть в тексте.
-3. Фокус — тема проверки и ключевые слова, а не пересказ всего кодекса.
-4. Если во фрагментах мало релевантного — честно напиши, каких глав/статей не хватает.
-5. Пиши по-русски, кратко, структурировано.
+3. После каждого нормативного тезиса ставь номер фрагмента: [1], [2]. Не ссылайся на номер, которого нет в списке.
+4. Фокус — тема проверки и ключевые слова, а не пересказ всего кодекса.
+5. Если во фрагментах мало релевантного — честно напиши, каких глав/статей не хватает.
+6. Пиши по-русски, структурировано, развёрнуто: примерно страница A4 на акт (2200–3500 знаков).
 """
 
 ASK_SYSTEM = """Ты — ассистент внутреннего аудитора банка РБ.
@@ -276,26 +278,70 @@ async def embed_index(case_id: str, keywords: list[str]) -> dict:
     return index
 
 
-async def summarize_item(state: CaseState, item: KnowledgeItem) -> KnowledgeItem:
+def _fragments_from_item(state: CaseState, item: KnowledgeItem, start_n: int = 1) -> list[dict]:
+    text = _item_text(item)
+    if not text.strip():
+        return []
+    chunks = chunk_text(text)
+    picked = pick_relevant_chunks(chunks, _keywords(state, item))
+    url = origin_url(state, item)
+    out = []
+    n = start_n
+    for part in picked:
+        out.append(
+            {
+                "n": n,
+                "item_id": item.id,
+                "title": item.title,
+                "filename": item.filename,
+                "article": extract_article_ref(part),
+                "excerpt": excerpt_for_cite(part),
+                "text": part,
+                "url": url,
+            }
+        )
+        n += 1
+    return out
+
+
+def _format_fragment_block(fragments: list[dict]) -> str:
+    blocks = []
+    for fr in fragments:
+        article = fr.get("article") or "фрагмент без номера статьи"
+        url = fr.get("url") or "URL в библиотеке не зафиксирован"
+        blocks.append(
+            f"[{fr['n']}] {article}\nисточник: {url}\n{fr.get('text') or fr.get('excerpt') or ''}"
+        )
+    return "\n\n---\n\n".join(blocks)
+
+
+async def summarize_item(
+    state: CaseState,
+    item: KnowledgeItem,
+    fragments: list[dict] | None = None,
+) -> KnowledgeItem:
     text = _item_text(item)
     if not text.strip():
         item.summary_status = "failed"
         item.summary_error = "Нет текста для саммари"
         return item
 
-    chunks = chunk_text(text)
-    picked = pick_relevant_chunks(chunks, _keywords(state, item))
-    excerpts = "\n\n---\n\n".join(picked)
+    frags = fragments if fragments is not None else _fragments_from_item(state, item)
+    if not frags:
+        item.summary_status = "failed"
+        item.summary_error = "Нет фрагментов для саммари"
+        return item
+
     user = f"""Тема проверки: {state.inspection_name}
 Ключевые слова: {", ".join(state.keywords) or "не указаны"}
 Период: {state.period or "не указан"}
 Документ: {item.title}
 Источник: {item.source}
 
-Фрагменты НПА:
-{excerpts}
+Фрагменты НПА (ссылайся номерами [n]):
+{_format_fragment_block(frags)}
 
-Верни саммари:
+Верни саммари (~страница A4, 2200–3500 знаков):
 ## Зачем этот акт для проверки
 ## Ключевые нормы (статьи/пункты)
 ## Что проверять аудитору
@@ -303,8 +349,22 @@ async def summarize_item(state: CaseState, item: KnowledgeItem) -> KnowledgeItem
 ## Чего нет во фрагментах (если пробелы)
 """
     item.summary_status = "running"
+    item.citations = [
+        {
+            "n": fr["n"],
+            "article": fr.get("article"),
+            "excerpt": fr.get("excerpt"),
+            "url": fr.get("url"),
+            "title": fr.get("title") or item.title,
+            "filename": fr.get("filename") or item.filename,
+            "item_id": item.id,
+        }
+        for fr in frags
+    ]
     try:
-        item.summary = await chat_complete(SUMMARY_SYSTEM, user, timeout=settings.ollama_timeout_sec)
+        item.summary = await chat_complete(
+            SUMMARY_SYSTEM, user, timeout=settings.ollama_timeout_sec
+        )
         item.summary_status = "ok"
         item.summary_error = None
         out = _summaries_dir(state.case_id) / f"{_safe_stem(item.filename)}.md"

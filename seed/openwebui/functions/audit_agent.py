@@ -1,14 +1,15 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.2
+version: 0.1.3
 license: MIT
-description: Агент проверки банка РБ. Кейс НПА → HITL → download → цитаты. Цикл в коде, не ReAct 35B.
+description: Агент проверки банка РБ. Кейс НПА → HITL → download → саммари Word → цитаты.
 requirements: httpx
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Awaitable, Callable, Optional
 
@@ -32,7 +33,8 @@ HELP = """Я агент внутренней проверки: собираю б
 
 Дальше: «утверждаю 1, 2, 4» или «утверждаю все обязательные».
 Ссылку pravo.by можно сразу полной строкой: «к 3 url https://pravo.by/document/?guid=…».
-Когда библиотека готова — спрашивайте норму. Нет фрагмента — скажу, что в библиотеке этого нет.
+Когда библиотека готова — напишите «саммари»: соберу Word на 6–10 страниц со ссылками на статьи.
+Спрашивать норму можно сразу. Нет фрагмента — скажу, что в библиотеке этого нет.
 Посмотреть скачанное: напишите «документы».
 """
 
@@ -48,6 +50,10 @@ class Pipe:
             description="Ссылка для браузера аудитора (zip и JSON библиотеки)",
         )
         TIMEOUT_SEC: int = Field(default=300, description="Таймаут propose/download")
+        BRIEF_TIMEOUT_SEC: int = Field(
+            default=900,
+            description="Таймаут сборки саммари Word (минуты на каждый акт)",
+        )
         OPENWEBUI_API_KEY: str = Field(
             default="",
             description="Ключ Open WebUI (Settings → Account → API Keys). Пусто = коллекция Knowledge не создаётся, ответы идут через индекс сервера.",
@@ -79,6 +85,18 @@ class Pipe:
         await _status(__event_emitter__, "Смотрю фазу проверки…")
 
         try:
+            if _is_brief(text):
+                if not case_id:
+                    return "Нет кейса в этом чате. Сначала опишите проверку."
+                return await self._brief(
+                    api,
+                    public,
+                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
+                    case_id,
+                    text,
+                    __event_emitter__,
+                )
+
             if _is_approve(text):
                 if not case_id:
                     return "Нет кейса в этом чате. Сначала опишите проверку."
@@ -247,6 +265,8 @@ class Pipe:
             f"{extra}\n"
             f"{_library_links(public, case_id)}\n"
             "Или в чате: `документы`.\n"
+            "Когда будете читать глазами: напишите `саммари` — соберу Word на 6–10 страниц "
+            "со ссылками на статьи и официальный URL.\n"
             "Можно спрашивать норму. Нет фрагмента в библиотеке — скажу, что этого нет.\n"
             f"<!--audit-case:{case_id}-->"
         )
@@ -285,6 +305,67 @@ class Pipe:
         return (
             f"{result.get('answer', '').strip()}\n\n"
             f"**Откуда:**\n{cite_block}\n"
+            f"<!--audit-case:{case_id}-->"
+        )
+
+    async def _brief(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
+        await _status(emitter, "Собираю саммари на 6–10 страниц со ссылками на статьи…")
+        result: dict[str, Any] | None = None
+        url = f"{api}/api/v1/cases/{case_id}/knowledge/brief/stream"
+        if force:
+            url += "?force=true"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("GET", url) as response:
+                    if response.status_code >= 400:
+                        detail = (await response.aread())[:400].decode("utf-8", "replace")
+                        raise RuntimeError(f"{response.status_code}: {detail}")
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        try:
+                            event = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            continue
+                        kind = event.get("type")
+                        if kind == "status":
+                            await _status(emitter, event.get("message") or "Саммари…")
+                        elif kind == "error":
+                            raise RuntimeError(event.get("message") or "brief error")
+                        elif kind == "result":
+                            result = event
+        except Exception as exc:  # noqa: BLE001
+            return (
+                f"Не могу собрать саммари кейса `{case_id}`: {exc}\n"
+                "Нужна скачанная библиотека. Напишите `документы` или сначала `утверждаю …`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        if not result:
+            return (
+                f"Саммари не вернулось. Попробуйте ещё раз: `саммари`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        pages = result.get("pages_estimate") or "—"
+        cites = result.get("citations") or 0
+        digest = "\n".join(result.get("digest") or [])
+        digest_block = f"\n{digest}\n" if digest else ""
+        return (
+            f"Саммари готово (~{pages} стр., {cites} фрагментов). "
+            "Скачайте Word и читайте глазами — полный текст в чат не выкладываю.\n\n"
+            f"Word: {public}/api/v1/cases/{case_id}/knowledge/brief.docx\n"
+            f"Markdown: {public}/api/v1/cases/{case_id}/knowledge/brief.md\n"
+            f"{digest_block}\n"
+            "В файле номера `[n]` ведут к статье/пункту и официальному URL источника.\n"
+            "Пересобрать: `саммари заново`. Дальше можно спрашивать норму.\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -410,6 +491,21 @@ def _has_explicit_picks(text: str) -> bool:
     )
 
 
+def _is_brief(text: str) -> bool:
+    t = text.strip().lower()
+    if t in {"саммари", "сводка", "бриф", "docx", "word", "/brief", "/summary"}:
+        return True
+    if re.search(r"(статья|ст\.)\s*\d+", t) and not re.search(r"\bdocx\b|word-файл", t):
+        return False
+    return bool(
+        re.search(
+            r"(саммари|сводк\w*|бриф|briefing|\bdocx\b|/brief|/summary|"
+            r"обзор\s+(акт|нпа|норм)|word-файл|файл word)",
+            t,
+        )
+    )
+
+
 def _is_approve(text: str) -> bool:
     if REJECT_APPROVE_RE.search(text):
         return False
@@ -420,6 +516,8 @@ def _is_approve(text: str) -> bool:
 
 def _is_library(text: str) -> bool:
     t = text.strip().lower()
+    if _is_brief(t):
+        return False
     if re.search(r"скачай|скачать|скачивай", t):
         return False
     keys = (
@@ -447,7 +545,8 @@ def _library_links(public: str, case_id: str) -> str:
         "Скачать в браузере:\n"
         f"- чистый текст (txt): {base}/knowledge/export\n"
         f"- zip сырых файлов: {base}/library/archive\n"
-        f"- список JSON: {base}/library"
+        f"- список JSON: {base}/library\n"
+        f"Саммари Word (после команды `саммари`): {base}/knowledge/brief.docx"
     )
 
 
@@ -472,7 +571,7 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
     raw = text.strip()
     if len(raw) < 8:
         return None
-    if _is_approve(raw) or _is_status(raw) or _is_library(raw):
+    if _is_approve(raw) or _is_status(raw) or _is_library(raw) or _is_brief(raw):
         return None
     period_match = YEAR_RE.search(raw)
     period = period_match.group(1).replace(" ", "") if period_match else None

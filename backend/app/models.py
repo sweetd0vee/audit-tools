@@ -53,6 +53,7 @@ class KnowledgeItem(BaseModel):
     summary_status: Optional[str] = None
     summary_error: Optional[str] = None
     summary_path: Optional[str] = None
+    citations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CreateCaseRequest(BaseModel):
@@ -137,6 +138,10 @@ class AskResponse(BaseModel):
 
 class OpenWebUISyncRequest(BaseModel):
     api_key: Optional[str] = None
+
+
+class BriefRequest(BaseModel):
+    force: bool = False
 
 
 class CaseSummary(BaseModel):

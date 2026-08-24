@@ -163,6 +163,23 @@ class Tools:
             for row in data
         )
 
+    async def build_brief(self, case_id: str, force: bool = False) -> str:
+        """
+        Собрать саммари библиотеки НПА (6–10 стр. Word) со ссылками на статьи.
+        Вызывай, когда аудитор просит саммари / сводку / docx. После download_npa.
+        """
+        path = f"/api/v1/cases/{case_id}/knowledge/brief"
+        if force:
+            data = await self._req("POST", path, {"force": True})
+        else:
+            data = await self._req("POST", path, {})
+        pages = data.get("pages_estimate")
+        cites = data.get("citations")
+        return (
+            f"brief ready pages={pages} citations={cites}. "
+            f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
+        )
+
     async def _req(self, method: str, path: str, json: Optional[dict] = None) -> dict:
         url = f"{self._base()}{path}"
         timeout = float(self.valves.TIMEOUT_SEC)

@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Cm, Pt, RGBColor
+
+from app.services.citations import CITE_RE
+
+_BOOKMARK_IDS = 0
+
+
+def _next_bookmark_id() -> str:
+    global _BOOKMARK_IDS
+    _BOOKMARK_IDS += 1
+    return str(_BOOKMARK_IDS)
+
+
+def add_hyperlink(paragraph, text: str, url: str, *, italic: bool = False) -> None:
+    """Clickable URL. python-docx has no public helper for this."""
+    part = paragraph.part
+    r_id = part.relate_to(
+        url,
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        is_external=True,
+    )
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    r_pr.append(color)
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+    if italic:
+        r_pr.append(OxmlElement("w:i"))
+    sz = OxmlElement("w:sz")
+    sz.set(qn("w:val"), "24")
+    r_pr.append(sz)
+    fonts = OxmlElement("w:rFonts")
+    fonts.set(qn("w:ascii"), "Times New Roman")
+    fonts.set(qn("w:hAnsi"), "Times New Roman")
+    fonts.set(qn("w:cs"), "Times New Roman")
+    r_pr.append(fonts)
+    new_run.append(r_pr)
+    text_el = OxmlElement("w:t")
+    text_el.set(qn("xml:space"), "preserve")
+    text_el.text = text
+    new_run.append(text_el)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+
+def add_anchor_hyperlink(paragraph, text: str, anchor: str) -> None:
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("w:anchor"), anchor)
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    r_pr.append(color)
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+    sz = OxmlElement("w:sz")
+    sz.set(qn("w:val"), "24")
+    r_pr.append(sz)
+    fonts = OxmlElement("w:rFonts")
+    fonts.set(qn("w:ascii"), "Times New Roman")
+    fonts.set(qn("w:hAnsi"), "Times New Roman")
+    r_pr.append(fonts)
+    new_run.append(r_pr)
+    text_el = OxmlElement("w:t")
+    text_el.text = text
+    new_run.append(text_el)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+
+def add_bookmark(paragraph, name: str) -> None:
+    start = OxmlElement("w:bookmarkStart")
+    bid = _next_bookmark_id()
+    start.set(qn("w:id"), bid)
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), bid)
+    paragraph._p.append(start)
+    paragraph._p.append(end)
+
+
+def _set_run_font(run, *, size: int = 12, bold: bool = False, italic: bool = False) -> None:
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(size)
+    run.bold = bold
+    run.italic = italic
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    r_fonts.set(qn("w:ascii"), "Times New Roman")
+    r_fonts.set(qn("w:hAnsi"), "Times New Roman")
+    r_fonts.set(qn("w:eastAsia"), "Times New Roman")
+    r_fonts.set(qn("w:cs"), "Times New Roman")
+    try:
+        run.font.color.rgb = RGBColor(0x22, 0x22, 0x22)
+    except Exception:
+        pass
+
+
+def _style_paragraph(paragraph, *, first_line: bool = False) -> None:
+    fmt = paragraph.paragraph_format
+    fmt.space_after = Pt(6)
+    fmt.space_before = Pt(0)
+    fmt.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+    if first_line:
+        fmt.first_line_indent = Cm(1.25)
+
+
+def _add_plain_run(paragraph, text: str, *, italic: bool = False, bold: bool = False) -> None:
+    run = paragraph.add_run(text)
+    _set_run_font(run, italic=italic, bold=bold)
+
+
+def add_text_with_cites(paragraph, text: str, sources_by_n: dict[int, dict[str, Any]]) -> None:
+    """Render a paragraph, turning [n] into links to the appendix bookmark."""
+    pos = 0
+    for match in CITE_RE.finditer(text or ""):
+        if match.start() > pos:
+            _add_plain_run(paragraph, text[pos : match.start()])
+        n = int(match.group(1))
+        if n in sources_by_n:
+            add_anchor_hyperlink(paragraph, match.group(0), f"cite_{n}")
+        else:
+            _add_plain_run(paragraph, match.group(0))
+        pos = match.end()
+    if pos < len(text or ""):
+        _add_plain_run(paragraph, text[pos:])
+
+
+def _strip_md(line: str) -> str:
+    line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+    line = re.sub(r"`([^`]+)`", r"\1", line)
+    return line.strip()
+
+
+def add_markdown_block(doc: Document, md: str, sources_by_n: dict[int, dict[str, Any]]) -> None:
+    for raw in (md or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line.startswith("### "):
+            p = doc.add_heading(_strip_md(line[4:]), level=3)
+            for run in p.runs:
+                _set_run_font(run, size=13, bold=True)
+            continue
+        if line.startswith("## "):
+            p = doc.add_heading(_strip_md(line[3:]), level=2)
+            for run in p.runs:
+                _set_run_font(run, size=14, bold=True)
+            continue
+        if line.startswith("# "):
+            p = doc.add_heading(_strip_md(line[2:]), level=1)
+            for run in p.runs:
+                _set_run_font(run, size=16, bold=True)
+            continue
+        if line.startswith("- ") or line.startswith("* "):
+            p = doc.add_paragraph(style="List Bullet")
+            _style_paragraph(p)
+            add_text_with_cites(p, _strip_md(line[2:]), sources_by_n)
+            continue
+        p = doc.add_paragraph()
+        _style_paragraph(p, first_line=True)
+        add_text_with_cites(p, _strip_md(line), sources_by_n)
+
+
+def write_brief_docx(
+    path: Path,
+    *,
+    inspection_name: str,
+    period: str | None,
+    keywords: list[str],
+    case_id: str,
+    overview: str,
+    chapters: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+) -> Path:
+    global _BOOKMARK_IDS
+    _BOOKMARK_IDS = 0
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Cm(21.0)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2.5)
+    section.right_margin = Cm(2.0)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fr = footer.add_run(f"Саммари НПА · {inspection_name} · кейс {case_id} · черновик")
+    _set_run_font(fr, size=9, italic=True)
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    tr = title.add_run("Саммари нормативной базы")
+    _set_run_font(tr, size=20, bold=True)
+
+    sub = doc.add_paragraph()
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sr = sub.add_run(inspection_name)
+    _set_run_font(sr, size=14, bold=True)
+
+    meta = doc.add_paragraph()
+    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    period_s = period or "не указан"
+    kws = ", ".join(keywords) if keywords else "—"
+    mr = meta.add_run(f"Период: {period_s}. Ключевые слова: {kws}")
+    _set_run_font(mr, size=11, italic=True)
+
+    note = doc.add_paragraph()
+    _style_paragraph(note)
+    nr = note.add_run(
+        "Документ для самостоятельной работы аудитора. Нормы только из утверждённой "
+        "библиотеки кейса. Номера в квадратных скобках ведут к фрагменту-источнику. "
+        "Это черновик, не аудиторское суждение."
+    )
+    _set_run_font(nr, size=11, italic=True)
+
+    if overview.strip():
+        h = doc.add_heading("Обзор проверки", level=1)
+        for run in h.runs:
+            _set_run_font(run, size=16, bold=True)
+        add_markdown_block(doc, overview, {int(s["n"]): s for s in sources})
+
+    sources_by_n = {int(s["n"]): s for s in sources}
+    for chapter in chapters:
+        h = doc.add_heading(chapter.get("title") or "Акт", level=1)
+        for run in h.runs:
+            _set_run_font(run, size=16, bold=True)
+        add_markdown_block(doc, chapter.get("body") or "", sources_by_n)
+
+    h = doc.add_heading("Источники: статьи и фрагменты", level=1)
+    for run in h.runs:
+        _set_run_font(run, size=16, bold=True)
+    intro = doc.add_paragraph()
+    _style_paragraph(intro)
+    ir = intro.add_run(
+        "Каждая ссылка [n] в тексте указывает на фрагмент ниже. "
+        "Официальный URL — страница, с которой акт скачан в библиотеку кейса."
+    )
+    _set_run_font(ir, size=11, italic=True)
+
+    for src in sources:
+        n = int(src["n"])
+        p = doc.add_paragraph()
+        _style_paragraph(p)
+        add_bookmark(p, f"cite_{n}")
+        _add_plain_run(p, f"[{n}] ", bold=True)
+        article = (src.get("article") or "").strip()
+        title = (src.get("title") or "акт").strip()
+        if article:
+            _add_plain_run(p, f"{title} — {article}. ")
+        else:
+            _add_plain_run(p, f"{title}. ")
+        url = (src.get("url") or "").strip()
+        if url:
+            add_hyperlink(p, url, url)
+        elif src.get("filename"):
+            _add_plain_run(p, f"файл: {src['filename']}", italic=True)
+        excerpt = (src.get("excerpt") or "").strip()
+        if excerpt:
+            q = doc.add_paragraph()
+            _style_paragraph(q)
+            q.paragraph_format.left_indent = Cm(1.0)
+            _add_plain_run(q, excerpt, italic=True)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+    return path
