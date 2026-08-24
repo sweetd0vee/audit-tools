@@ -20,6 +20,7 @@ from app.services.knowledge_flow import (
     export_pack_files,
     ingest_library,
     openwebui_status,
+    rebuild_index,
     sync_openwebui,
 )
 from app.services.openwebui_client import OpenWebUIError
@@ -86,6 +87,22 @@ def ingest(case_id: str):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"case_id": case_id, "items": [k.model_dump() for k in state.knowledge]}
+
+
+@router.post("/cases/{case_id}/knowledge/index")
+def index_knowledge(case_id: str):
+    """Collect chunks from downloaded txt without summaries or Open WebUI."""
+    try:
+        store.get(case_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    payload = rebuild_index(case_id)
+    state = store.get(case_id)
+    return {
+        "case_id": case_id,
+        "chunks": len(payload.get("chunks") or []),
+        "items": [k.model_dump() for k in state.knowledge],
+    }
 
 
 @router.get("/cases/{case_id}/knowledge/build/stream")
