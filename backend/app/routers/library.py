@@ -125,7 +125,12 @@ async def propose_stream(case_id: str):
 @router.post("/cases/{case_id}/select", response_model=SelectDocumentsResponse)
 def select(case_id: str, body: SelectDocumentsRequest) -> SelectDocumentsResponse:
     try:
-        state = run_select(case_id, body.document_ids, body.manual_urls)
+        state = run_select(
+            case_id,
+            body.document_ids,
+            body.manual_urls,
+            extra_titles=body.extra_titles,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

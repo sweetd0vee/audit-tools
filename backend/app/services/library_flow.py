@@ -5,6 +5,12 @@ from pathlib import Path
 
 from app.models import CaseState, CaseStatus, ProposedDocument
 from app.services.downloader import download_url, usable_url
+from app.services.extra_titles import (
+    expand_extra_titles,
+    guess_doc_type,
+    norm_title,
+    search_queries_for_title,
+)
 from app.services.known_sources import lookup_known_url
 from app.services.knowledge_flow import rebuild_index
 from app.services.ollama_client import propose_documents, propose_documents_events
@@ -99,6 +105,7 @@ def run_select(
     case_id: str,
     document_ids: list[str],
     manual_urls: dict[str, str] | None = None,
+    extra_titles: list[str] | None = None,
 ) -> CaseState:
     state = store.get(case_id)
     if state.status not in (
@@ -109,18 +116,32 @@ def run_select(
     ):
         raise ValueError(f"Cannot select in status={state.status}")
 
-    id_set = set(document_ids)
-    if not id_set:
-        raise ValueError("document_ids must not be empty")
+    extras = expand_extra_titles(extra_titles)
+    added_ids: list[str] = []
+    for title in extras:
+        doc = _ensure_extra_document(state, title)
+        added_ids.append(doc.id)
+
+    id_set = set(document_ids or [])
+    if not id_set and not added_ids:
+        raise ValueError("document_ids or extra_titles must not be empty")
 
     known = {d.id for d in state.documents}
     unknown = id_set - known
     if unknown:
         raise ValueError(f"Unknown document ids: {sorted(unknown)}")
 
+    if id_set:
+        selected = id_set | set(added_ids)
+    else:
+        selected = {d.id for d in state.documents if d.selected} | set(added_ids)
+
+    if not selected:
+        raise ValueError("document_ids or extra_titles must not be empty")
+
     manual_urls = manual_urls or {}
     for doc in state.documents:
-        doc.selected = doc.id in id_set
+        doc.selected = doc.id in selected
         if doc.id not in manual_urls:
             continue
         cleaned = usable_url(str(manual_urls[doc.id]))
@@ -134,8 +155,31 @@ def run_select(
 
     state.status = CaseStatus.selected
     state.meta["selected_at"] = datetime.utcnow().isoformat()
+    if extras:
+        state.meta["extra_titles"] = extras
     store.save(state)
     return state
+
+
+def _ensure_extra_document(state: CaseState, title: str) -> ProposedDocument:
+    needle = norm_title(title)
+    for doc in state.documents:
+        existing = norm_title(doc.title)
+        if existing == needle:
+            return doc
+        if len(needle) >= 16 and (needle in existing or existing in needle):
+            return doc
+
+    doc = ProposedDocument(
+        title=title.strip(),
+        doc_type=guess_doc_type(title),
+        why_needed="Добавлен аудитором по названию",
+        search_queries=search_queries_for_title(title),
+        priority=1,
+        selected=True,
+    )
+    state.documents.append(doc)
+    return doc
 
 
 def download_candidates(doc: ProposedDocument) -> list[tuple[str, str]]:

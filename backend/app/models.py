@@ -84,7 +84,14 @@ class ProposeResponse(BaseModel):
 
 
 class SelectDocumentsRequest(BaseModel):
-    document_ids: list[str] = Field(description="ID документов, которые аудитор утвердил")
+    document_ids: list[str] = Field(
+        default_factory=list,
+        description="ID документов из propose, которые аудитор утвердил",
+    )
+    extra_titles: list[str] = Field(
+        default_factory=list,
+        description="Названия актов, которых нет в списке: сервер сам найдёт и скачает",
+    )
     manual_urls: dict[str, str] = Field(
         default_factory=dict,
         description="Опционально: document_id -> URL, если знаете точную ссылку",

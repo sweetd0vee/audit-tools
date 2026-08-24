@@ -79,14 +79,21 @@ class Tools:
         case_id: str,
         document_ids: str,
         manual_urls_json: str = "",
+        extra_titles: str = "",
     ) -> str:
         """
-        Утвердить акты. Вызывай ТОЛЬКО если аудитор в ЭТОМ сообщении назвал id или номера.
+        Утвердить акты. Вызывай ТОЛЬКО если аудитор в ЭТОМ сообщении назвал id, номера
+        или дополнительные названия, которых нет в списке.
         document_ids — через запятую, это id из propose, не выдумывай.
+        extra_titles — названия актов «от аудитора», через точку с запятой.
         manual_urls_json — опционально JSON object id→URL, если аудитор дал ссылку pravo.by.
         """
         ids = [x.strip() for x in document_ids.split(",") if x.strip()]
         body: dict = {"document_ids": ids}
+        if extra_titles.strip():
+            body["extra_titles"] = [
+                x.strip() for x in extra_titles.split(";") if x.strip()
+            ]
         if manual_urls_json.strip():
             import json
 

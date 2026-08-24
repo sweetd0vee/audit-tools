@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.5
+version: 0.1.6
 license: MIT
 description: Агент проверки. Собирает документы, саммари Word, отвечает по базе знаний.
 requirements: httpx
@@ -25,6 +25,10 @@ APPROVE_RE = re.compile(
 )
 REJECT_APPROVE_RE = re.compile(r"\bне\s+утвержд", re.I)
 HEX_ID_RE = re.compile(r"\b([a-f0-9]{8,12})\b", re.I)
+EXTRA_MARK_RE = re.compile(
+    r"(?:\bплюс\b|\bдобавь(?:те)?\b|\bдополнительно\b|\bи\s+ещ[её]\b|\bещ[её]\s*:|\s\+\s)\s*[:\-–+]?\s*",
+    re.I,
+)
 HELP = """Я помогаю собрать документы для проверки и отвечать по ним.
 
 Напишите, что проверяете, например:
@@ -33,6 +37,10 @@ HELP = """Я помогаю собрать документы для прове�
 Дальше я предложу список документов. Напишите, какие взять:
 утверждаю 1, 2, 4
 или: утверждаю все обязательные
+
+Нет нужного акта в списке — допишите название:
+утверждаю 1, 2 плюс Инструкция НБРБ № 38; Положение о внутреннем контроле
+или отдельно: добавь Инструкция о порядке проведения валютных операций
 
 Когда документы скачаются:
 — задавайте вопросы по базе знаний (приложенным документам);
@@ -176,6 +184,7 @@ class Pipe:
             "",
             "Напишите, какие взять, например: `утверждаю 1, 2, 4`",
             "Или: `утверждаю все обязательные`.",
+            "Нет в списке — допишите названия: `утверждаю 1, 2 плюс Инструкция НБРБ № 38; Положение о внутреннем контроле`.",
             "Если знаете ссылку на документ: `к 3 url https://pravo.by/document/?guid=…` (вставьте адрес целиком, без многоточия).",
             f"<!--audit-case:{case_id}-->",
         ]
@@ -193,15 +202,17 @@ class Pipe:
     ) -> str:
         state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
         docs = state.get("documents") or []
-        ids, manuals = _resolve_approval(text, docs)
+        ids, manuals, extras = _resolve_approval(text, docs)
         prev = [d["id"] for d in docs if d.get("selected")]
-        retry_only = _is_retry(text) and not ids and not manuals
-        url_only = bool(manuals) and not _has_explicit_picks(text)
+        retry_only = _is_retry(text) and not ids and not manuals and not extras
+        url_only = bool(manuals) and not _has_explicit_picks(text) and not extras
         if retry_only:
             ids = list(prev)
         elif url_only:
             ids = list(dict.fromkeys(prev + list(manuals.keys())))
-        if not ids:
+        elif extras and not ids:
+            ids = list(prev)
+        if not ids and not extras:
             if URL_ATTACH_RE.search(text) and not manuals:
                 return (
                     "Ссылка обрезана или с многоточием — так скачать нельзя. "
@@ -211,14 +222,23 @@ class Pipe:
             return (
                 "Не поняла, какие документы взять. Напишите номера из списка, "
                 "например: `утверждаю 1, 2`. Или: `утверждаю все обязательные`.\n"
+                "Нет нужного акта — допишите название: "
+                "`утверждаю 1, 2 плюс Инструкция НБРБ № 38`.\n"
                 f"<!--audit-case:{case_id}-->"
             )
         await _status(emitter, "Сохраняю ваш выбор…")
         body: dict[str, Any] = {"document_ids": ids}
         if manuals:
             body["manual_urls"] = manuals
+        if extras:
+            body["extra_titles"] = extras
+            await _status(emitter, "Ищу документы по вашим названиям…")
         await _req("POST", f"{api}/api/v1/cases/{case_id}/select", timeout, json=body)
-        await _status(emitter, "Скачиваю выбранные документы…")
+        await _status(
+            emitter,
+            "Скачиваю выбранные документы"
+            + (" и те, что вы добавили по названию…" if extras else "…"),
+        )
         downloaded = await _req("POST", f"{api}/api/v1/cases/{case_id}/download", timeout)
         await _status(emitter, "Готовлю базу знаний из скачанных документов…")
         n_items = 0
@@ -254,13 +274,20 @@ class Pipe:
                 + "\nНапишите `скачай` — попробую ещё раз. "
                 "Или пришлите полную ссылку: `к 3 url https://pravo.by/document/?guid=…`\n"
             )
+        added = ""
+        if extras:
+            added = (
+                "Добавлены по вашему названию (ищу официальный текст):\n"
+                + "\n".join(f"- {t}" for t in extras)
+                + "\n"
+            )
         name = state.get("inspection_name") or "proverka"
         kb = f"В базе знаний {n_items} документов." if n_items else "База знаний подготовлена."
         return (
             f"Готово. Скачано документов: {ok}"
             + (f", не скачалось: {failed}" if failed else "")
             + f". {kb}\n"
-            f"{extra}\n"
+            f"{added}{extra}\n"
             f"{_download_links(public, case_id, name, with_summary=False)}\n\n"
             "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
             "Чтобы получить краткий обзор в Word, напишите `саммари`.\n"
@@ -502,7 +529,16 @@ def _is_approve(text: str) -> bool:
         return False
     if APPROVE_RE.search(text):
         return True
-    return bool(URL_ATTACH_RE.search(text))
+    if URL_ATTACH_RE.search(text):
+        return True
+    # Доп. акты по названию — только как реплика целиком, не «плюс» внутри названия проверки
+    return bool(
+        re.match(
+            r"^\s*(добавь(?:те)?|дополнительно|и\s+ещ[её]|ещ[её]\s*:|\+)\b",
+            text,
+            re.I,
+        )
+    )
 
 
 def _is_library(text: str) -> bool:
@@ -588,7 +624,11 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
     }
 
 
-def _resolve_approval(text: str, docs: list[dict]) -> tuple[list[str], dict[str, str]]:
+def _resolve_approval(
+    text: str, docs: list[dict]
+) -> tuple[list[str], dict[str, str], list[str]]:
+    main, extras_blob = _split_extra_section(text)
+    extras = _parse_extra_titles(extras_blob)
     manuals: dict[str, str] = {}
     for match in URL_ATTACH_RE.finditer(text):
         key, raw_url = match.group(1), match.group(2)
@@ -599,20 +639,64 @@ def _resolve_approval(text: str, docs: list[dict]) -> tuple[list[str], dict[str,
         if doc_id:
             manuals[doc_id] = url
 
-    if re.search(r"все\s+обязательн", text, re.I):
+    if re.search(r"все\s+обязательн", main, re.I):
         ids = [d["id"] for d in docs if int(d.get("priority") or 2) == 1]
-        return ids, manuals
+        return ids, manuals, extras
 
-    numbers = [int(n) for n in re.findall(r"\b(\d{1,2})\b", text)]
+    numbers = [int(n) for n in re.findall(r"\b(\d{1,2})\b", main)]
     ids_from_n = []
     for n in numbers:
         if 1 <= n <= len(docs):
             ids_from_n.append(docs[n - 1]["id"])
-    hex_ids = [h.lower() for h in HEX_ID_RE.findall(text)]
+    hex_ids = [h.lower() for h in HEX_ID_RE.findall(main)]
     known = {d["id"] for d in docs}
     ids_from_hex = [h for h in hex_ids if h in known]
     merged = list(dict.fromkeys(ids_from_n + ids_from_hex + list(manuals.keys())))
-    return merged, manuals
+    return merged, manuals, extras
+
+
+def _split_extra_section(text: str) -> tuple[str, str]:
+    match = EXTRA_MARK_RE.search(text)
+    if not match:
+        return text, ""
+    return text[: match.start()].strip(), text[match.end() :].strip()
+
+
+def _parse_extra_titles(blob: str) -> list[str]:
+    raw = (blob or "").strip().strip(" .,:;")
+    if not raw:
+        return []
+    parts = re.split(r"\s*[;\n]\s*|\s+\+\s+", raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        chunk = part.strip()
+        and_split = re.search(r"\s+и\s+", chunk, re.I)
+        pieces = [chunk]
+        if and_split:
+            right = chunk[and_split.end() :].strip()
+            if re.match(
+                r"^(закон|кодекс|инструкц|положен|постановлен|указ|декрет|"
+                r"правил|налоговый|гражданский|банковский)",
+                right,
+                re.I,
+            ):
+                left = chunk[: and_split.start()].strip()
+                pieces = [left, right] if left else [right]
+        for piece in pieces:
+            title = re.sub(r"^[\d]+[.)]\s*", "", piece).strip(" .,:;")
+            title = re.sub(
+                r"^(?:и|ещ[её]|также|плюс|добавь(?:те)?|документы?)\s+",
+                "",
+                title,
+                flags=re.I,
+            ).strip(" .,:;")
+            key = re.sub(r"\s+", " ", title.lower())
+            if len(key) < 8 or key in seen:
+                continue
+            seen.add(key)
+            out.append(title)
+    return out
 
 
 def _index_or_id(key: str, docs: list[dict]) -> Optional[str]:
