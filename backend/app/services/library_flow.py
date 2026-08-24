@@ -8,6 +8,7 @@ from app.services.downloader import download_url, usable_url
 from app.services.extra_titles import (
     expand_extra_titles,
     guess_doc_type,
+    is_plausible_npa_title,
     norm_title,
     search_queries_for_title,
 )
@@ -214,6 +215,13 @@ def _record_download(
 
 async def run_download(case_id: str) -> CaseState:
     state = store.get(case_id)
+    selected = [d for d in state.documents if d.selected]
+    for doc in selected:
+        if is_plausible_npa_title(doc.title):
+            continue
+        doc.selected = False
+        doc.download_status = "skipped"
+        doc.download_error = "не похоже на название акта"
     selected = [d for d in state.documents if d.selected]
     if not selected:
         raise ValueError("No selected documents. Call /select first.")

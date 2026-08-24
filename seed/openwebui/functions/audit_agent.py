@@ -64,7 +64,7 @@ class Pipe:
         )
         TIMEOUT_SEC: int = Field(default=600, description="Таймаут propose/download")
         BRIEF_TIMEOUT_SEC: int = Field(
-            default=900,
+            default=1800,
             description="Таймаут сборки саммари и программы проверки в Word",
         )
         OPENWEBUI_API_KEY: str = Field(

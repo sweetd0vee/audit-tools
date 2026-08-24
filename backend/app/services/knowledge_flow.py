@@ -85,6 +85,7 @@ MAP_SECTION_PROMPT = """Это часть {idx} из {total} документа 
 Формат:
 - ст./п. … — суть одним-двумя предложениями.
 Если в куске есть определения, сроки, запреты, процедуры, исключения — каждый пункт отдельно.
+Объём этой части: 1500–2800 знаков, только списки, без вступления.
 """
 
 REDUCE_PROMPT = """Ниже — конспекты ВСЕХ частей одного акта, идущие по порядку от начала к концу. Ни одна часть не должна пропасть.
@@ -361,7 +362,7 @@ async def embed_index(case_id: str, keywords: list[str]) -> dict:
 
 
 FRAGMENTS_PER_ITEM = 12
-Progress = Callable[[str], Awaitable[None]] | None
+Progress = Callable[[str], Awaitable[None]]
 
 
 def _format_outline(text: str, limit: int = 160) -> str:
@@ -481,18 +482,36 @@ async def _summarize_full_document(
             piece = f"[Часть {idx} из {total}: модель вернула пустой конспект.]"
         parts.append(f"### Часть {idx} из {total}\n{piece.strip()}")
 
+    REDUCE_GROUP = 5
+    REDUCE_CHARS = 36000
+
+    async def _reduce(group: list[str], label: str) -> str:
+        return await _chat_summary(
+            REDUCE_PROMPT.format(
+                inspection=inspection,
+                keywords=keywords,
+                title=f"{item.title} ({label})",
+                outline=outline,
+                parts="\n\n".join(group),
+                sections=SUMMARY_CARD_SECTIONS,
+            )
+        )
+
     if on_status:
         await on_status(f"Собираю полный конспект: {item.title}")
-    return await _chat_summary(
-        REDUCE_PROMPT.format(
-            inspection=inspection,
-            keywords=keywords,
-            title=item.title,
-            outline=outline,
-            parts="\n\n".join(parts),
-            sections=SUMMARY_CARD_SECTIONS,
-        )
-    )
+    if len(parts) > REDUCE_GROUP or sum(len(p) for p in parts) > REDUCE_CHARS:
+        merged: list[str] = []
+        for start in range(0, len(parts), REDUCE_GROUP):
+            group = parts[start : start + REDUCE_GROUP]
+            g_from = start + 1
+            g_to = start + len(group)
+            if on_status:
+                await on_status(
+                    f"Склеиваю части {g_from}–{g_to} из {total}: {item.title}"
+                )
+            merged.append(await _reduce(group, f"части {g_from}–{g_to} из {total}"))
+        parts = [f"### Блок {i}\n{body}" for i, body in enumerate(merged, start=1)]
+    return await _reduce(parts, "весь акт")
 
 
 async def summarize_item(
@@ -649,7 +668,7 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
 Фрагменты из базы НПА:
 {chr(10).join(context_parts)}
 """
-    answer = await chat_complete(ASK_SYSTEM, user, timeout=settings.ollama_timeout_sec)
+    return await chat_complete(ASK_SYSTEM, user, timeout=settings.ollama_timeout_sec)
     return {
         "answer": answer,
         "sources": sources,

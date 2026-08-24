@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
@@ -9,9 +10,11 @@ from pathlib import Path
 from app.config import settings
 from app.filenames import safe_stem
 from app.services.brief_docx import write_brief_docx
-from app.services.citations import pages_estimate
+from app.services.citations import extract_article_outline, pages_estimate
 from app.services.knowledge_flow import (
+    FRAGMENTS_PER_ITEM,
     _fragments_from_item,
+    _item_text,
     ingest_library,
     summarize_item,
 )
@@ -20,15 +23,13 @@ from app.services.ollama_client import chat_complete
 from app.storage import store
 
 SYNTHESIS_SYSTEM = """Ты — старший аудитор банка в Республике Беларусь.
-По карточкам актов из утверждённой библиотеки напиши обзор для проверки.
+По ПОЛНЫМ конспектам актов из библиотеки напиши навигационный обзор.
 Правила:
-1. Только то, что есть в карточках и списке фрагментов. Не выдумывай статьи.
-2. После тезиса ставь номер фрагмента [n] из списка.
+1. Только то, что есть в конспектах. Не выдумывай статьи.
+2. Обзор — оглавление основных моментов по каждому акту, не замена карточек.
 3. Не подменяй право РБ нормами РФ/ЕС/IFRS.
 4. Это черновик для чтения глазами, не аудиторское суждение.
 """
-
-FRAGMENTS_PER_ITEM = 10
 
 
 def _brief_dir(case_id: str) -> Path:
@@ -121,32 +122,35 @@ def collect_brief_sources(state) -> list[dict]:
     return sources
 
 
-async def _synthesize(state, sources: list[dict], chapters: list[dict]) -> str:
-    catalog = []
-    for src in sources:
-        article = src.get("article") or "фрагмент"
-        url = src.get("url") or "нет URL"
-        catalog.append(f"[{src['n']}] {src.get('title')} — {article} — {url}")
+async def _synthesize(state, chapters: list[dict]) -> str:
     cards = "\n\n".join(f"# {ch['title']}\n{ch['body']}" for ch in chapters)
-    n_pages = max(2, min(3, 10 - max(len(chapters), 1)))
-    target = n_pages * settings.brief_chars_per_page
     user = f"""Тема проверки: {state.inspection_name}
 Ключевые слова: {", ".join(state.keywords) or "не указаны"}
 Период: {state.period or "не указан"}
 
-Список фрагментов (цитируй [n]):
-{chr(10).join(catalog)}
-
-Карточки актов:
+Конспекты актов (каждый покрывает документ целиком):
 {cards}
 
-Напиши обзор на {target}–{target + 800} знаков:
-## Нормативный контур проверки
-## Что смотреть в первую очередь
-## Пересечения норм (если есть в карточках)
-## Пробелы библиотеки
+Напиши навигационный обзор — перечень основных моментов, чтобы можно было сразу перейти к нужной карточке ниже. Не сокращай карточки: они уже есть в файле.
+
+## Состав нормативной базы
+По каждому акту: одно предложение, о чём документ и зачем он в этой проверке.
+
+## Основные моменты по актам
+Для КАЖДОГО акта отдельный подзаголовок ### и маркированный список 6–15 главных положений с номерами статей/пунктов из конспекта. Не пропускай акт.
+
+## Пересечения норм
+Только если это явно следует из конспектов.
+
+Не выдумывай статьи. Нормы РФ/ЕС/IFRS не подставляй.
 """
-    return await chat_complete(SYNTHESIS_SYSTEM, user, timeout=settings.ollama_timeout_sec)
+    return await chat_complete(
+        SYNTHESIS_SYSTEM,
+        user,
+        timeout=settings.summary_timeout_sec,
+        num_ctx=settings.ollama_num_ctx,
+        num_predict=8192,
+    )
 
 
 def _write_markdown(
@@ -165,7 +169,8 @@ def _write_markdown(
         f"**{inspection_name}**",
         f"Период: {period or 'не указан'}. Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",
-        "Номера `[n]` — фрагменты в конце файла. Официальный URL — страница скачивания акта.",
+        "Номера статей — из текста актов. Официальный URL — страница скачивания. "
+        "Конспект покрывает документ целиком, не выборку по поиску.",
         "",
         "## Обзор проверки",
         overview.strip(),
@@ -237,26 +242,32 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
         return
 
-    yield {"type": "status", "message": "Отбираю фрагменты статей…", "elapsed_ms": elapsed()}
+    yield {"type": "status", "message": "Готовлю конспекты по полным текстам актов…", "elapsed_ms": elapsed()}
     sources = collect_brief_sources(state)
-    if not sources:
-        raise ValueError("Нет фрагментов для саммари. Проверьте, что акты скачались как текст.")
-
-    by_item: dict[str, list[dict]] = {}
-    for src in sources:
-        by_item.setdefault(src["item_id"], []).append(src)
 
     total = len(ok_items)
     for idx, item in enumerate(ok_items, start=1):
-        frags = by_item.get(item.id) or []
-        if not frags:
-            continue
+        status_q: asyncio.Queue[str] = asyncio.Queue()
+
+        async def on_status(msg: str, q: asyncio.Queue[str] = status_q) -> None:
+            await q.put(msg)
+
         yield {
             "type": "status",
-            "message": f"Саммари акта {idx} из {total}: {item.title}",
+            "message": f"Читаю акт {idx} из {total} целиком: {item.title}",
             "elapsed_ms": elapsed(),
         }
-        await summarize_item(state, item, fragments=frags)
+        task = asyncio.create_task(summarize_item(state, item, on_status=on_status))
+        while True:
+            if task.done() and status_q.empty():
+                break
+            try:
+                msg = await asyncio.wait_for(status_q.get(), timeout=0.5)
+                yield {"type": "status", "message": msg, "elapsed_ms": elapsed()}
+            except asyncio.TimeoutError:
+                if task.done():
+                    break
+        await task
         store.save(state)
 
     state = store.get(case_id)
@@ -271,11 +282,17 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
                 f"Карточка не собрана ({failed}). "
                 f"Читайте первоисточник в библиотеке кейса."
             )
+        outline = extract_article_outline(_item_text(item))
+        if outline:
+            shown = outline[:100]
+            extra = f"\n- … ещё {len(outline) - 100} разделов в первоисточнике" if len(outline) > 100 else ""
+            toc = "### Оглавление акта (из текста)\n" + "\n".join(f"- {h}" for h in shown) + extra
+            body = toc + "\n\n" + body
         chapters.append({"title": item.title, "body": body, "item_id": item.id})
 
-    yield {"type": "status", "message": "Пишу саммари по документам базы знаний…", "elapsed_ms": elapsed()}
+    yield {"type": "status", "message": "Пишу сводку основных моментов по всем актам…", "elapsed_ms": elapsed()}
     try:
-        overview = await _synthesize(state, sources, chapters)
+        overview = await _synthesize(state, chapters)
     except Exception as exc:  # noqa: BLE001
         overview = (
             f"Обзор моделью не собран ({exc}). Ниже — карточки по актам из библиотеки. "
@@ -285,7 +302,7 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
     body_for_pages = overview + "\n\n" + "\n\n".join(ch["body"] for ch in chapters)
     md = _md_path(case_id)
     docx = _docx_path(case_id, state.inspection_name)
-    yield {"type": "status", "message": "Собираю Word со ссылками на фрагменты…", "elapsed_ms": elapsed()}
+    yield {"type": "status", "message": "Собираю Word с конспектами актов…", "elapsed_ms": elapsed()}
     _write_markdown(
         md,
         inspection_name=state.inspection_name,

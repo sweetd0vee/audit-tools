@@ -317,6 +317,8 @@ async def _compose_program(state: CaseState, sources: list[dict]) -> str:
         PROGRAM_SYSTEM,
         user,
         timeout=settings.brief_timeout_sec,
+        num_ctx=settings.ollama_num_ctx,
+        num_predict=8192,
     )
 
 
