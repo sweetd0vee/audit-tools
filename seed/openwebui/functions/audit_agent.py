@@ -685,7 +685,7 @@ def _download_links(
     ]
     if with_summary:
         lines.append(
-            f"- обзор базы знаний (`{stem}_summary.docx`): {base}/knowledge/brief.docx"
+            f"- обзор базы знаний (`{stem}_summary.docx`): {base}/knowledge/summary.docx"
         )
     if with_program:
         lines.append(

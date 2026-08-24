@@ -248,7 +248,7 @@
 Откройте:
 
 ```
-http://localhost:8100/api/v1/cases/{case_id}/knowledge/brief.docx
+http://localhost:8100/api/v1/cases/{case_id}/knowledge/summary.docx
 ```
 
 В файле:

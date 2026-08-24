@@ -148,6 +148,7 @@ async def brief_stream(case_id: str, force: bool = Query(default=False)):
     return sse_response(build_brief_events(case_id, force=force))
 
 
+@router.get("/cases/{case_id}/knowledge/summary.docx")
 @router.get("/cases/{case_id}/knowledge/brief.docx")
 def download_brief_docx(case_id: str):
     state = require_case(case_id)
@@ -164,6 +165,7 @@ def download_brief_docx(case_id: str):
     )
 
 
+@router.get("/cases/{case_id}/knowledge/summary.md")
 @router.get("/cases/{case_id}/knowledge/brief.md")
 def download_brief_md(case_id: str):
     state = require_case(case_id)

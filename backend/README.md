@@ -77,7 +77,7 @@ GET /api/v1/cases/{case_id}/library
 ### 6. Саммари и программа проверки
 ```http
 POST /api/v1/cases/{case_id}/knowledge/brief
-GET  /api/v1/cases/{case_id}/knowledge/brief.docx
+GET  /api/v1/cases/{case_id}/knowledge/summary.docx
 POST /api/v1/cases/{case_id}/knowledge/program
 GET  /api/v1/cases/{case_id}/knowledge/program.docx
 ```

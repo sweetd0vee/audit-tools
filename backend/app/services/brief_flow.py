@@ -86,8 +86,8 @@ def brief_status(case_id: str) -> dict:
             "case_id": case_id,
             "ready": ready,
             "docx_path": str(docx) if ready else meta.get("docx_path"),
-            "download": f"/api/v1/cases/{case_id}/knowledge/brief.docx",
-            "markdown": f"/api/v1/cases/{case_id}/knowledge/brief.md",
+            "download": f"/api/v1/cases/{case_id}/knowledge/summary.docx",
+            "markdown": f"/api/v1/cases/{case_id}/knowledge/summary.md",
             "inspection_name": state.inspection_name,
         }
     )
@@ -208,8 +208,8 @@ def _save_brief_meta(state, *, docx: Path, md: Path, sources: list[dict], body: 
         "citations": len(sources),
         "chars": len(body),
         "pages_estimate": pages_estimate(body, settings.brief_chars_per_page),
-        "download": f"/api/v1/cases/{state.case_id}/knowledge/brief.docx",
-        "markdown": f"/api/v1/cases/{state.case_id}/knowledge/brief.md",
+        "download": f"/api/v1/cases/{state.case_id}/knowledge/summary.docx",
+        "markdown": f"/api/v1/cases/{state.case_id}/knowledge/summary.md",
         "ready": True,
         "case_id": state.case_id,
         "inspection_name": state.inspection_name,

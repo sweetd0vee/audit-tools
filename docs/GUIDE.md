@@ -135,7 +135,7 @@ API без чата: [`backend/README.md`](../backend/README.md).
 ```
 Скачать:
 - архив документов (`…_npa.zip`): http://localhost:8100/api/v1/cases/{id}/library/archive
-- обзор базы знаний (`…_summary.docx`): http://localhost:8100/api/v1/cases/{id}/knowledge/brief.docx
+- обзор базы знаний (`…_summary.docx`): http://localhost:8100/api/v1/cases/{id}/knowledge/summary.docx
 - программа проверки (`…_programma.docx`): http://localhost:8100/api/v1/cases/{id}/knowledge/program.docx
 ```
 
@@ -429,7 +429,7 @@ LLM снова **не вызывается**. Pipe вырезает хвост �
 
 Скачать:
 - архив документов (`…_npa.zip`): …
-- обзор базы знаний (`…_summary.docx`): http://localhost:8100/api/v1/cases/…/knowledge/brief.docx
+- обзор базы знаний (`…_summary.docx`): http://localhost:8100/api/v1/cases/…/knowledge/summary.docx
 
 Кратко по документам:
 - Гражданский кодекс …: …
