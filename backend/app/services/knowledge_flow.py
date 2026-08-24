@@ -412,7 +412,11 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
     index = _load_index(case_id)
     chunks = index.get("chunks") or []
     if not chunks:
-        raise ValueError("База знаний пуста. Сначала соберите индекс.")
+        rebuild_index(case_id)
+        index = _load_index(case_id)
+        chunks = index.get("chunks") or []
+    if not chunks:
+        raise ValueError("База знаний пуста. Сначала утвердите акты и дождитесь скачивания.")
 
     q_tokens = set(tokenize(question))
     q_emb: list[float] | None = None

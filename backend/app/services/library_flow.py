@@ -5,7 +5,7 @@ from datetime import datetime
 from app.models import CaseState, CaseStatus, ProposedDocument
 from app.services.downloader import download_url
 from app.services.known_sources import lookup_known_url
-from app.services.knowledge_flow import ingest_library
+from app.services.knowledge_flow import rebuild_index
 from app.services.ollama_client import propose_documents, propose_documents_events
 from app.services.searxng_client import find_best_url
 from app.storage import store
@@ -214,4 +214,6 @@ async def run_download(case_id: str) -> CaseState:
         state.meta["archive_path"] = str(archive)
         state.meta["archive_name"] = store.archive_filename(state.inspection_name, case_id)
     store.save(state)
-    return ingest_library(case_id)
+    # Тексты + чанки сразу — ask в чате не ждёт отдельный /knowledge/build
+    rebuild_index(case_id)
+    return store.get(case_id)

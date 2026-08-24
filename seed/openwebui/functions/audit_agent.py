@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.0
+version: 0.1.1
 license: MIT
 description: Агент проверки банка РБ. Кейс НПА → HITL → download → цитаты. Цикл в коде, не ReAct 35B.
 requirements: httpx
@@ -48,6 +48,10 @@ class Pipe:
             description="Ссылка для браузера аудитора (zip и JSON библиотеки)",
         )
         TIMEOUT_SEC: int = Field(default=300, description="Таймаут propose/download")
+        OPENWEBUI_API_KEY: str = Field(
+            default="",
+            description="Ключ Open WebUI (Settings → Account → API Keys). Пусто = коллекция Knowledge не создаётся, ответы идут через индекс сервера.",
+        )
 
     def __init__(self) -> None:
         self.valves = self.Valves()
@@ -56,6 +60,7 @@ class Pipe:
         self,
         body: dict,
         __user__: Optional[dict] = None,
+        __request__: Any = None,
         __event_emitter__: Emitter = None,
         **kwargs,
     ) -> str:
@@ -64,6 +69,9 @@ class Pipe:
         api = self.valves.AUDIT_API.rstrip("/")
         public = (self.valves.PUBLIC_API or "http://localhost:8100").rstrip("/")
         timeout = float(self.valves.TIMEOUT_SEC)
+        owui_key = (self.valves.OPENWEBUI_API_KEY or "").strip() or _session_token(
+            __user__, __request__
+        )
 
         if not text.strip() or text.strip().lower() in {"помощь", "help", "/help", "?"}:
             return HELP
@@ -74,7 +82,9 @@ class Pipe:
             if _is_approve(text):
                 if not case_id:
                     return "Нет кейса в этом чате. Сначала опишите проверку."
-                return await self._approve(api, public, timeout, case_id, text, __event_emitter__)
+                return await self._approve(
+                    api, public, timeout, case_id, text, __event_emitter__, owui_key
+                )
 
             if _is_library(text):
                 if not case_id:
@@ -101,7 +111,15 @@ class Pipe:
 
             return HELP
         except httpx.HTTPError as exc:
-            return f"Audit Tool Server недоступен (`{api}`): {exc}"
+            tip = ""
+            if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                tip = (
+                    " Проверьте Valves: в Docker — `AUDIT_API=http://backend:8100`, "
+                    "с хоста — `http://localhost:8100`."
+                )
+            elif isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+                tip = " Таймаут — propose/download долгий; увеличьте `TIMEOUT_SEC` или проверьте Ollama."
+            return f"Audit Tool Server недоступен (`{api}`): {type(exc).__name__}: {exc or 'нет деталей'}.{tip}"
         except Exception as exc:  # noqa: BLE001
             return f"Агент остановился: {exc}"
         finally:
@@ -151,6 +169,7 @@ class Pipe:
         case_id: str,
         text: str,
         emitter: Emitter,
+        owui_key: str = "",
     ) -> str:
         state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
         docs = state.get("documents") or []
@@ -168,22 +187,31 @@ class Pipe:
         await _req("POST", f"{api}/api/v1/cases/{case_id}/select", timeout, json=body)
         await _status(emitter, "Качаю утверждённые акты (allowlist РБ)…")
         downloaded = await _req("POST", f"{api}/api/v1/cases/{case_id}/download", timeout)
-        await _status(emitter, "Синхронизирую Knowledge…")
-        sync_note = ""
+        await _status(emitter, "Собираю базу знаний кейса…")
+        kb_note = "База знаний кейса собрана (индекс сервера)."
         try:
-            sync = await _req(
-                "POST",
-                f"{api}/api/v1/cases/{case_id}/knowledge/openwebui/sync",
-                timeout,
-                json={},
+            indexed = await _req(
+                "POST", f"{api}/api/v1/cases/{case_id}/knowledge/index", timeout
             )
-            name = sync.get("knowledge_name") or sync.get("name") or "коллекция кейса"
-            sync_note = f"Open WebUI Knowledge: {name}."
-        except Exception as exc:  # noqa: BLE001
-            sync_note = (
-                f"Knowledge не синхронизировался ({exc}). "
-                "Можно спросить норму всё равно — ответ пойдёт через индекс сервера."
-            )
+            n_items = len(indexed.get("items") or [])
+            n_chunks = indexed.get("chunks") or 0
+            kb_note = f"База знаний кейса: {n_items} документов, {n_chunks} фрагментов."
+        except Exception:
+            pass
+        sync_note = ""
+        if owui_key:
+            await _status(emitter, "Заливаю коллекцию Open WebUI Knowledge…")
+            try:
+                sync = await _req(
+                    "POST",
+                    f"{api}/api/v1/cases/{case_id}/knowledge/openwebui/sync",
+                    timeout,
+                    json={"api_key": owui_key},
+                )
+                name = sync.get("knowledge_name") or sync.get("name") or "коллекция кейса"
+                sync_note = f" Open WebUI Knowledge: {name}."
+            except Exception as exc:  # noqa: BLE001
+                sync_note = f" Коллекция Open WebUI не залита ({exc})."
         ok = downloaded.get("downloaded", 0)
         failed = downloaded.get("failed", 0)
         fail_lines = []
@@ -200,7 +228,7 @@ class Pipe:
                 + "\nПришлите официальный URL: `к <номер> url https://...`\n"
             )
         return (
-            f"Кейс `{case_id}`: скачано {ok}, ошибок {failed}. {sync_note}\n"
+            f"Кейс `{case_id}`: скачано {ok}, ошибок {failed}. {kb_note}{sync_note}\n"
             f"{extra}\n"
             f"{_library_links(public, case_id)}\n"
             "Или в чате: `документы`.\n"
@@ -269,7 +297,8 @@ class Pipe:
         lines.append("")
         lines.append(_library_links(public, case_id))
         lines.append(
-            "В Open WebUI Knowledge файлов нет, пока не задан API-ключ (это не мешает спрашивать норму в этом чате)."
+            "Коллекция Open WebUI Knowledge появится после `OPENWEBUI_API_KEY`; "
+            "без ключа скачайте txt по ссылке выше — спрашивать норму в этом чате можно."
         )
         lines.append(f"<!--audit-case:{case_id}-->")
         return "\n".join(lines)
@@ -303,6 +332,26 @@ def _last_user_text(body: dict) -> str:
                     parts.append(str(item.get("text") or ""))
             return "\n".join(parts).strip()
         return str(content or "").strip()
+    return ""
+
+
+def _session_token(user: Optional[dict], request: Any) -> str:
+    if user:
+        for key in ("token", "api_key", "jwt"):
+            value = user.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    cookies = getattr(request, "cookies", None)
+    if cookies:
+        for name in ("token", "owui-token"):
+            value = cookies.get(name) if hasattr(cookies, "get") else None
+            if value:
+                return str(value).strip()
+    headers = getattr(request, "headers", None)
+    if headers:
+        auth = headers.get("authorization") or headers.get("Authorization")
+        if auth and str(auth).lower().startswith("bearer "):
+            return str(auth).split(" ", 1)[1].strip()
     return ""
 
 
@@ -347,10 +396,10 @@ def _file_name(path: Optional[str]) -> str:
 def _library_links(public: str, case_id: str) -> str:
     base = f"{public}/api/v1/cases/{case_id}"
     return (
-        "Открыть в браузере:\n"
-        f"- zip всех файлов: {base}/library/archive\n"
-        f"- список JSON: {base}/library\n"
-        f"- карточка кейса: {base}"
+        "Скачать в браузере:\n"
+        f"- чистый текст (txt): {base}/knowledge/export\n"
+        f"- zip сырых файлов: {base}/library/archive\n"
+        f"- список JSON: {base}/library"
     )
 
 
