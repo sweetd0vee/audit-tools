@@ -1,8 +1,6 @@
 # С чего начать писать
 
-Фронтенд **не пишем**. `frontend/` не трогаем: ни фичи, ни «чуть причесать». Это лаборатория API, не продукт.
-
-Первый код — не новые экраны и не тесты/WP. Сначала из уже работающего API делаем **один вход**: аудитор открывает Open WebUI и ведёт проверку чатом.
+Сначала из уже работающего API делаем **один вход**: аудитор открывает Open WebUI и ведёт проверку чатом.
 
 Как аудитор этим пользуется: [GUIDE.md](GUIDE.md). Настройка Open WebUI: [OPENWEBUI.md](OPENWEBUI.md). Шпаргалка команд: [AUDITOR.md](AUDITOR.md).
 
@@ -10,32 +8,13 @@
 
 ---
 
-## Что уже есть (не изобретать)
-
-| Есть | Не начинать с |
-|---|---|
-| FastAPI: кейс → propose → select → download → ingest → sync Open WebUI | нового React, нового чата |
-| `docker-compose.yml`: SearXNG, Open WebUI, backend; frontend только `--profile lab` | своего UI «потому что раньше он был в compose» |
-| `searxng/settings.yml` | нового поисковика |
-| Ollama на хосте | LLM в Docker «на вырост» |
-
-Писать нужно только то, чего нет: довести засев (Pipe без ручной вставки в Admin), качество цитаты, не второй UI. Агент и HITL уже есть.
-
----
-
 ## Неделя 1 — три коммита, в этом порядке
 
-### Коммит A. Убрать фронт с дороги — сделано
-
-`frontend` в compose на profile `lab`. Дефолтный `up` его не поднимает. Продукт: http://localhost:3000.
-
-Если контейнер фронта ещё крутится с прошлого запуска: `docker compose stop frontend`.
-
-### Коммит B. Засев чата — файлы есть, Admin руками
+### Коммит A. Засев чата — файлы есть, Admin руками
 
 Исходники: `seed/openwebui/`. Чеклист: [`seed/openwebui/README.md`](../seed/openwebui/README.md).
 
-### Коммит C. Первый агент — Pipe, не UI
+### Коммит B. Первый агент — Pipe, не UI
 
 Файлы: [`seed/openwebui/AGENT.md`](../seed/openwebui/AGENT.md), `functions/audit_agent.py`, `tools/audit_case.py`.
 
