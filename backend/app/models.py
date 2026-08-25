@@ -143,6 +143,21 @@ class AskResponse(BaseModel):
     used_embeddings: bool = False
 
 
+class ChatMessage(BaseModel):
+    role: str = Field(description="system | user | assistant")
+    content: str = Field(min_length=1)
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage] = Field(min_length=1)
+    system: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    model: str
+
+
 class OpenWebUISyncRequest(BaseModel):
     api_key: Optional[str] = None
 

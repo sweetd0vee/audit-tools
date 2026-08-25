@@ -187,6 +187,24 @@ class Tools:
             f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
         )
 
+    async def build_total(self, case_id: str, force: bool = False) -> str:
+        """
+        Собрать total саммари — конспект по теме из знаний LLM (не из базы знаний) в Word.
+        Вызывай, когда аудитор просит total саммари / total / конспект модели / из головы.
+        Достаточно созданного кейса; download_npa не обязателен.
+        """
+        path = f"/api/v1/cases/{case_id}/knowledge/total"
+        if force:
+            data = await self._req("POST", path, {"force": True})
+        else:
+            data = await self._req("POST", path, {})
+        pages = data.get("pages_estimate")
+        cites = data.get("citations")
+        return (
+            f"total саммари ready pages={pages} citations={cites}. "
+            f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
+        )
+
     async def build_program(self, case_id: str, force: bool = False) -> str:
         """
         Собрать программу аудиторской проверки банка РБ в Word.

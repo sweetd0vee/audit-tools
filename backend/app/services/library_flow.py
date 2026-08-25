@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
 from app.models import CaseState, CaseStatus, ProposedDocument
-from app.services.downloader import download_url, usable_url
+from app.services.downloader import NEWS_MARKERS, download_url, usable_url
 from app.services.extra_titles import (
     expand_extra_titles,
     guess_doc_type,
@@ -14,7 +15,7 @@ from app.services.extra_titles import (
 )
 from app.services.known_sources import lookup_known_url
 from app.services.knowledge_flow import rebuild_index
-from app.services.npa_search import expand_official_urls, find_candidate_urls
+from app.services.npa_search import expand_official_urls, extract_doc_code, find_candidate_urls
 from app.services.ollama_client import propose_documents, propose_documents_events
 from app.storage import store
 
@@ -93,8 +94,9 @@ def run_select(
         CaseStatus.selected,
         CaseStatus.ready,
         CaseStatus.failed,
+        CaseStatus.downloading,
     ):
-        raise ValueError(f"Cannot select in status={state.status}")
+        raise ValueError(f"Cannot select in status={state.status.value}")
 
     extras = expand_extra_titles(extra_titles)
     added_ids: list[str] = []
@@ -175,6 +177,8 @@ def download_candidates(doc: ProposedDocument) -> list[tuple[str, str]]:
         for cleaned in variants:
             if not cleaned or cleaned in seen:
                 continue
+            if any(marker in cleaned.lower() for marker in NEWS_MARKERS):
+                continue
             seen.add(cleaned)
             out.append((cleaned, source))
 
@@ -189,6 +193,20 @@ def _on_disk(doc: ProposedDocument, lib_dir: Path) -> bool:
     return (lib_dir / Path(doc.local_path).name).is_file()
 
 
+def _should_redownload(doc: ProposedDocument) -> bool:
+    """Retry a cached file if it is a news stub, chrome link, or a better official URL is known."""
+    url = (doc.found_url or "").lower()
+    if any(marker in url for marker in NEWS_MARKERS):
+        return True
+    known = lookup_known_url(doc.title)
+    if known:
+        return extract_doc_code(known) != extract_doc_code(doc.found_url)
+    significant = re.findall(r"[а-яёa-z]{5,}", (doc.title or "").lower())
+    if significant and not any(token in url for token in significant):
+        return True
+    return False
+
+
 def _record_download(
     doc: ProposedDocument,
     result: dict,
@@ -196,6 +214,7 @@ def _record_download(
     manifest_items: list[dict],
 ) -> None:
     doc.local_path = result["local_path"]
+    doc.found_url = result.get("url") or doc.found_url
     doc.download_status = "ok"
     doc.download_error = None
     manifest_items.append(
@@ -229,11 +248,30 @@ async def run_download(case_id: str) -> CaseState:
     state.status = CaseStatus.downloading
     store.save(state)
 
+    try:
+        return await _download_selected(state, case_id, selected)
+    except Exception:
+        latest = store.get(case_id)
+        if latest.status == CaseStatus.downloading:
+            latest.status = CaseStatus.failed
+            store.save(latest)
+        raise
+
+
+async def _download_selected(
+    state: CaseState,
+    case_id: str,
+    selected: list[ProposedDocument],
+) -> CaseState:
     lib_dir = store.library_dir(case_id)
     manifest_items: list[dict] = []
 
     for i, doc in enumerate(selected, start=1):
-        if doc.download_status == "ok" and _on_disk(doc, lib_dir):
+        if (
+            doc.download_status == "ok"
+            and _on_disk(doc, lib_dir)
+            and not _should_redownload(doc)
+        ):
             manifest_items.append(
                 {
                     "document_id": doc.id,

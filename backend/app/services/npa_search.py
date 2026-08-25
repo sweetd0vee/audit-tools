@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import html as html_lib
 import re
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.domains import host_allowed
 from app.services.downloader import usable_url
@@ -54,8 +55,9 @@ FAMOUS_CODES = {
     "hk0200166": "налоговый кодекс",
     "hk0000441": "банковский кодекс",
 }
-MAX_CANDIDATES = 5
-MAX_QUERIES = 2
+MAX_CANDIDATES = 8
+MAX_QUERIES = 6
+_NUM_RE = re.compile(r"№\s*(\d{1,4})", re.I)
 
 
 def extract_doc_code(url: str | None) -> str | None:
@@ -112,6 +114,8 @@ def score_url(url: str, title: str = "", hit_title: str = "") -> int:
         score -= 25
     if any(marker in low for marker in NEWS_MARKERS):
         score -= 90
+    if not (hit_title or "").strip():
+        score -= 40
     code = extract_doc_code(url)
     if code:
         famous = FAMOUS_CODES.get(code.lower())
@@ -119,6 +123,8 @@ def score_url(url: str, title: str = "", hit_title: str = "") -> int:
             score -= 120
     blob = f"{hit_title} {title}".lower()
     score += _token_overlap(title, hit_title) * 8
+    if hit_title and "кодекс" in hit_title.lower() and _token_overlap(title, hit_title) == 0:
+        score -= 100
     if title:
         significant = [t for t in _tokens(title) if len(t) >= 5]
         if significant and sum(1 for t in significant if t in low or t in blob) >= 2:
@@ -126,22 +132,35 @@ def score_url(url: str, title: str = "", hit_title: str = "") -> int:
     return score
 
 
+def _search_phrase(title: str) -> str:
+    quoted = _quoted_name(title)
+    phrase = quoted or title
+    phrase = re.sub(r"республики\s+беларусь", "", phrase, flags=re.I)
+    phrase = re.sub(r"[«»\"„“”'`]+", " ", phrase)
+    return re.sub(r"\s+", " ", phrase).strip(" .,:;")
+
+
 def build_search_queries(search_queries: list[str] | None, title: str | None) -> list[str]:
     expanded: list[str] = []
     title = (title or "").strip()
-    if title:
-        expanded.append(f"site:pravo.by {title}")
-        quoted = _quoted_name(title)
-        if quoted and quoted.lower() not in title.lower():
-            expanded.append(f"site:pravo.by {quoted}")
-        elif quoted:
-            expanded.append(f"site:pravo.by {quoted}")
-        low = title.lower()
-        if "нбрб" in low or "национальн" in low:
-            expanded.append(f"site:nbrb.by {title}")
-        if "минфин" in low:
-            expanded.append(f"site:minfin.gov.by {title}")
-        expanded.append(f"site:etalonline.by {title}")
+    phrase = _search_phrase(title) if title else ""
+    low = title.lower()
+    domains: list[str] = []
+    if any(token in low for token in ("нбрб", "национальн", "банк")):
+        domains.append("nbrb.by")
+    if any(token in low for token in ("минфин", "бухгалтер")):
+        domains.append("minfin.gov.by")
+    domains.extend(["pravo.by", "etalonline.by"])
+
+    if phrase:
+        for domain in domains:
+            expanded.append(f"site:{domain} {phrase}")
+        number = _NUM_RE.search(title)
+        if number:
+            expanded.append(f"site:pravo.by {phrase} № {number.group(1)}")
+            expanded.append(f"site:nbrb.by {phrase} {number.group(1)}")
+        if phrase != title:
+            expanded.append(f"site:pravo.by {title}")
     for query in search_queries or []:
         q = (query or "").strip()
         if not q:
@@ -170,6 +189,8 @@ async def find_candidate_urls(
     """Allowlisted URLs, strongest first. Empty if nothing official was found."""
     queries = build_search_queries(search_queries, title)
     hits: list[tuple[str, str, str]] = []
+    if title:
+        hits.extend(await _from_official_sites(title))
     for query in queries:
         found = await _search_engines(query)
         hits.extend(found)
@@ -190,7 +211,7 @@ async def find_candidate_urls(
             seen.add(variant)
             ranked.append((score_url(variant, title or "", hit_title), variant, source))
     ranked.sort(key=lambda row: row[0], reverse=True)
-    return [(url, source) for score, url, source in ranked if score > -40][:MAX_CANDIDATES]
+    return [(url, source) for score, url, source in ranked if score >= 20][:MAX_CANDIDATES]
 
 
 async def find_best_url(search_queries: list[str], title: str | None = None) -> dict | None:
@@ -204,8 +225,15 @@ async def find_best_url(search_queries: list[str], title: str | None = None) -> 
 async def _search_engines(query: str) -> list[tuple[str, str, str]]:
     tasks = [
         _safe_hits("searxng", _from_searxng, query),
-        _safe_hits("duckduckgo", _from_html_search, query, "https://html.duckduckgo.com/html/", True),
-        _safe_hits("bing", _from_html_search, query, "https://www.bing.com/search", False),
+        _safe_hits("duckduckgo", _from_html_search, query, "https://html.duckduckgo.com/html/", True, None),
+        _safe_hits(
+            "bing",
+            _from_html_search,
+            query,
+            "https://www.bing.com/search",
+            False,
+            {"setlang": "ru", "cc": "by", "mkt": "ru-BY"},
+        ),
     ]
     buckets = await asyncio.gather(*tasks)
     out: list[tuple[str, str, str]] = []
@@ -236,19 +264,98 @@ async def _from_html_search(
     query: str,
     endpoint: str,
     as_post: bool,
+    extra_params: dict | None,
 ) -> list[tuple[str, str, str]]:
+    params = {"q": query}
+    if extra_params:
+        params.update(extra_params)
     async with httpx.AsyncClient(
         timeout=12.0,
         follow_redirects=True,
         headers=BROWSER_HEADERS,
     ) as client:
         if as_post:
-            resp = await client.post(endpoint, data={"q": query})
+            resp = await client.post(endpoint, data=params)
         else:
-            resp = await client.get(endpoint, params={"q": query})
+            resp = await client.get(endpoint, params=params)
         resp.raise_for_status()
         body = resp.text
-    return [(url, source, "") for url in _urls_from_html(body)]
+        page_url = str(resp.url)
+    return _links_from_page(source, body, page_url)
+
+
+async def _from_official_sites(title: str) -> list[tuple[str, str, str]]:
+    phrase = _search_phrase(title)
+    if not phrase:
+        return []
+    tasks = [
+        _safe_hits(
+            "pravo",
+            _from_get_search,
+            "https://pravo.by/pravovaya-informatsiya/pravovye-akty-po-temam/poisk-v-tbd/",
+            {"p0": phrase},
+        ),
+        _safe_hits(
+            "etalonline",
+            _from_get_search,
+            "https://etalonline.by/search/",
+            {"search_str": phrase, "s": "1", "force": "1", "d": "1"},
+        ),
+        _safe_hits(
+            "nbrb",
+            _from_get_search,
+            "https://www.nbrb.by/search",
+            {"search": phrase},
+        ),
+    ]
+    buckets = await asyncio.gather(*tasks)
+    out: list[tuple[str, str, str]] = []
+    for bucket in buckets:
+        out.extend(bucket)
+    return out
+
+
+async def _from_get_search(
+    source: str,
+    endpoint: str,
+    params: dict,
+) -> list[tuple[str, str, str]]:
+    async with httpx.AsyncClient(
+        timeout=20.0,
+        follow_redirects=True,
+        headers=BROWSER_HEADERS,
+    ) as client:
+        resp = await client.get(endpoint, params=params)
+        resp.raise_for_status()
+        return _links_from_page(source, resp.text, str(resp.url))
+
+
+def _links_from_page(source: str, body: str, page_url: str) -> list[tuple[str, str, str]]:
+    soup = BeautifulSoup(body or "", "lxml")
+    out: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for tag in soup.find_all("a", href=True):
+        href = _unwrap_redirect(urljoin(page_url, str(tag.get("href") or "")))
+        cleaned = usable_url(href)
+        if not cleaned or cleaned in seen or not host_allowed(cleaned):
+            continue
+        hit_title = " ".join((tag.get_text() or "").split())
+        if len(hit_title) < 8:
+            continue
+        low = cleaned.lower()
+        if not any(
+            marker in low
+            for marker in ("/document/", "guid=", "regnum=", "webnpa", ".pdf", "/upload/docs/")
+        ):
+            continue
+        seen.add(cleaned)
+        out.append((cleaned, source, hit_title))
+    for url in _urls_from_html(body):
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append((url, source, ""))
+    return out
 
 
 def _urls_from_html(body: str) -> list[str]:

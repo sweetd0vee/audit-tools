@@ -1,9 +1,9 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.1.8
+version: 0.2.1
 license: MIT
-description: Агент проверки. Собирает документы, саммари и программу проверки в Word, отвечает по базе знаний.
+description: Агент проверки. Собирает документы, саммари, total саммари и программу. Вопрос по базе — с префиксом «вопрос»; иначе обычный чат с LLM.
 requirements: httpx
 """
 
@@ -29,6 +29,13 @@ EXTRA_MARK_RE = re.compile(
     r"(?:\bплюс\b|\bдобавь(?:те)?\b|\bдополнительно\b|\bи\s+ещ[её]\b|\bещ[её]\s*:|\s\+\s)\s*[:\-–+]?\s*",
     re.I,
 )
+KB_ASK_RE = re.compile(
+    r"^\s*(?:"
+    r"вопрос(?:\s+по\s+(?:базе(?:\s+знаний)?|нпа|документам?))?"
+    r"|/ask|/вопрос"
+    r")\s*[:\-–]?\s*(.*)\s*$",
+    re.I | re.S,
+)
 HELP = """Я помогаю собрать документы для проверки и отвечать по ним.
 
 Напишите, что проверяете, например:
@@ -43,11 +50,13 @@ HELP = """Я помогаю собрать документы для прове�
 или отдельно: добавь Инструкция о порядке проведения валютных операций
 
 Когда документы скачаются:
-— задавайте вопросы по базе знаний (приложенным документам);
+— вопрос по базе знаний: начните сообщение со слова `вопрос`, например:
+  `вопрос Какой срок регистрации договора аренды?`
+— обычный диалог (план, формулировки, риски) — пишите как в чате, без префикса;
 — напишите «саммари» — получите краткий обзор актов в Word;
+— напишите «total саммари» — получите конспект по теме из знаний модели (не из базы);
 — напишите «программа проверки» — получите программу аудиторской проверки в Word.
 
-Если в приложенных документах нет ответа — так и скажу.
 Посмотреть, что скачалось: напишите «документы».
 """
 
@@ -110,6 +119,18 @@ class Pipe:
                     __event_emitter__,
                 )
 
+            if _is_total(text):
+                if not case_id:
+                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
+                return await self._total(
+                    api,
+                    public,
+                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
+                    case_id,
+                    text,
+                    __event_emitter__,
+                )
+
             if _is_brief(text):
                 if not case_id:
                     return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
@@ -139,20 +160,28 @@ class Pipe:
                     return await self._status_case(api, timeout, case_id)
                 return await self._list_cases(api, timeout)
 
+            kb_question = _parse_kb_question(text)
+            if kb_question is not None:
+                if not case_id:
+                    return (
+                        "В этом чате ещё нет проверки. Сначала напишите, что проверяете, "
+                        "утвердите документы — потом: `вопрос …`."
+                    )
+                if not kb_question:
+                    return (
+                        "Напишите вопрос после слова `вопрос`, например:\n"
+                        "`вопрос Какой срок регистрации договора аренды?`\n"
+                        f"<!--audit-case:{case_id}-->"
+                    )
+                return await self._ask(
+                    api, timeout, case_id, kb_question, __event_emitter__
+                )
+
             parsed = _parse_new_case(text)
-            if parsed and not _looks_like_question(text):
+            if parsed and not case_id:
                 return await self._start(api, timeout, parsed, __event_emitter__)
 
-            if case_id and _looks_like_question(text):
-                return await self._ask(api, timeout, case_id, text, __event_emitter__)
-
-            if parsed:
-                return await self._start(api, timeout, parsed, __event_emitter__)
-
-            if case_id:
-                return await self._ask(api, timeout, case_id, text, __event_emitter__)
-
-            return HELP
+            return await self._chat(api, timeout, body, case_id, __event_emitter__)
         except httpx.HTTPError as exc:
             tip = ""
             if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
@@ -239,14 +268,31 @@ class Pipe:
                 "`утверждаю 1, 2 плюс Инструкция НБРБ № 38`.\n"
                 f"<!--audit-case:{case_id}-->"
             )
-        await _status(emitter, "Сохраняю ваш выбор…")
-        body: dict[str, Any] = {"document_ids": ids}
-        if manuals:
-            body["manual_urls"] = manuals
-        if extras:
-            body["extra_titles"] = extras
-            await _status(emitter, "Ищу документы по вашим названиям…")
-        await _req("POST", f"{api}/api/v1/cases/{case_id}/select", timeout, json=body)
+        status = str(state.get("status") or "")
+        selected_now = {d["id"] for d in docs if d.get("selected")}
+        skip_select = (
+            status == "downloading"
+            and not extras
+            and not manuals
+            and bool(ids)
+            and set(ids) <= selected_now
+        )
+        if skip_select:
+            await _status(emitter, "Документы уже скачиваются, жду окончания…")
+        else:
+            await _status(emitter, "Сохраняю ваш выбор…")
+            body: dict[str, Any] = {"document_ids": ids}
+            if manuals:
+                body["manual_urls"] = manuals
+            if extras:
+                body["extra_titles"] = extras
+                await _status(emitter, "Ищу документы по вашим названиям…")
+            try:
+                await _req("POST", f"{api}/api/v1/cases/{case_id}/select", timeout, json=body)
+            except RuntimeError as exc:
+                if "downloading" not in str(exc).lower():
+                    raise
+                await _status(emitter, "Документы уже скачиваются, жду окончания…")
         await _status(
             emitter,
             "Скачиваю выбранные документы"
@@ -308,9 +354,12 @@ class Pipe:
             + f". {kb}\n"
             f"{added}{extra}\n"
             f"{_download_links(public, case_id, name, with_summary=False)}\n\n"
-            "Дальше можно задавать вопросы по базе знаний (приложенным документам).\n"
-            "Чтобы получить краткий обзор актов в Word, напишите `саммари`.\n"
-            "Чтобы получить программу проверки в Word, напишите `программа проверки`.\n"
+            "Дальше:\n"
+            "— вопрос по базе: `вопрос …` (например `вопрос Какой срок…`);\n"
+            "— обычный диалог — пишите без префикса;\n"
+            "— `саммари` — обзор актов в Word;\n"
+            "— `total саммари` — конспект из знаний модели;\n"
+            "— `программа проверки` — программа в Word.\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -354,6 +403,33 @@ class Pipe:
             f"**Откуда в базе знаний:**\n{cite_block}\n"
             f"<!--audit-case:{case_id}-->"
         )
+
+    async def _chat(
+        self,
+        api: str,
+        timeout: float,
+        body: dict,
+        case_id: Optional[str],
+        emitter: Emitter,
+    ) -> str:
+        await _status(emitter, "Отвечаю как в обычном чате…")
+        messages = _messages_for_chat(body)
+        if not messages:
+            return HELP if not case_id else HELP + f"\n<!--audit-case:{case_id}-->"
+        try:
+            result = await _req(
+                "POST",
+                f"{api}/api/v1/chat",
+                timeout,
+                json={"messages": messages},
+            )
+        except Exception as exc:  # noqa: BLE001
+            tip = f"\n<!--audit-case:{case_id}-->" if case_id else ""
+            return f"Не получилось ответить в чате: {exc}{tip}"
+        answer = (result.get("answer") or "").strip() or "Пустой ответ модели."
+        if case_id:
+            return f"{answer}\n<!--audit-case:{case_id}-->"
+        return answer
 
     async def _brief(
         self,
@@ -410,6 +486,69 @@ class Pipe:
                 name = "proverka"
         return (
             f"{_download_links(public, case_id, name, with_archive=False, with_summary=True)}\n"
+            f"<!--audit-case:{case_id}-->"
+        )
+
+    async def _total(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
+        await _status(
+            emitter,
+            "Готовлю total саммари — конспект из знаний модели (не из базы). Это может занять несколько минут…",
+        )
+        result: dict[str, Any] | None = None
+        url = f"{api}/api/v1/cases/{case_id}/knowledge/total/stream"
+        if force:
+            url += "?force=true"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("GET", url) as response:
+                    if response.status_code >= 400:
+                        detail = (await response.aread())[:400].decode("utf-8", "replace")
+                        raise RuntimeError(f"{response.status_code}: {detail}")
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        try:
+                            event = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            continue
+                        kind = event.get("type")
+                        if kind == "status":
+                            await _status(
+                                emitter, event.get("message") or "Готовлю total саммари…"
+                            )
+                        elif kind == "error":
+                            raise RuntimeError(event.get("message") or "total саммари error")
+                        elif kind == "result":
+                            result = event
+        except Exception as exc:  # noqa: BLE001
+            return (
+                f"Не получилось собрать total саммари: {exc}\n"
+                "Нужна созданная проверка в этом чате. Напишите тему проверки, если кейса ещё нет.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        if not result:
+            return (
+                "Total саммари не получился. Напишите ещё раз: `total саммари`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        name = result.get("inspection_name") or ""
+        if not name:
+            try:
+                state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
+                name = state.get("inspection_name") or "proverka"
+            except Exception:
+                name = "proverka"
+        return (
+            f"{_download_links(public, case_id, name, with_archive=False, with_total=True)}\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -492,8 +631,11 @@ class Pipe:
         lines.append("")
         lines.append(_download_links(public, case_id, name, with_summary=False))
         lines.append("")
-        lines.append("Дальше можно задавать вопросы по базе знаний (приложенным документам).")
+        lines.append("Дальше: вопрос по базе — `вопрос …`; обычный диалог — без префикса.")
         lines.append("Чтобы получить краткий обзор актов в Word, напишите `саммари`.")
+        lines.append(
+            "Чтобы получить конспект из знаний модели, напишите `total саммари`."
+        )
         lines.append("Чтобы получить программу проверки в Word, напишите `программа проверки`.")
         lines.append(f"<!--audit-case:{case_id}-->")
         return "\n".join(lines)
@@ -605,8 +747,34 @@ def _is_program(text: str) -> bool:
     )
 
 
+def _is_total(text: str) -> bool:
+    t = text.strip().lower()
+    if t in {
+        "total",
+        "тотал",
+        "/total",
+        "total саммари",
+        "саммари total",
+        "конспект модели",
+        "из головы",
+    }:
+        return True
+    return bool(
+        re.search(
+            r"(\btotal\s+саммари\b|\bсаммари\s+total\b|\btotal\b|тотал|"
+            r"сводк\w*\s+total|"
+            r"конспект\s+(модели|llm|из\s+голов)|"
+            r"из\s+голов\w*\s+модел|"
+            r"(обзор|конспект)\s+без\s+баз)",
+            t,
+        )
+    )
+
+
 def _is_brief(text: str) -> bool:
     t = text.strip().lower()
+    if _is_total(t):
+        return False
     if t in {"саммари", "сводка", "бриф", "docx", "word", "/brief", "/summary"}:
         return True
     if re.search(r"(статья|ст\.)\s*\d+", t) and not re.search(r"\bdocx\b|word-файл", t):
@@ -639,7 +807,7 @@ def _is_approve(text: str) -> bool:
 
 def _is_library(text: str) -> bool:
     t = text.strip().lower()
-    if _is_brief(t) or _is_program(t):
+    if _is_brief(t) or _is_program(t) or _is_total(t):
         return False
     if re.search(r"скачай|скачать|скачивай", t):
         return False
@@ -668,6 +836,7 @@ def _download_links(
     *,
     with_archive: bool = True,
     with_summary: bool = False,
+    with_total: bool = False,
     with_program: bool = False,
 ) -> str:
     stem = _file_stem(inspection_name)
@@ -681,6 +850,10 @@ def _download_links(
         lines.append(
             f"- обзор базы знаний (`{stem}_summary.docx`): {base}/knowledge/summary.docx"
         )
+    if with_total:
+        lines.append(
+            f"- total саммари (`{stem}_total.docx`): {base}/knowledge/total.docx"
+        )
     if with_program:
         lines.append(
             f"- программа проверки (`{stem}_programma.docx`): {base}/knowledge/program.docx"
@@ -693,27 +866,60 @@ def _is_status(text: str) -> bool:
     return t in {"статус", "status", "кейсы", "проверки", "/status"} or t.startswith("статус ")
 
 
-def _looks_like_question(text: str) -> bool:
-    t = text.strip().lower()
-    if t.endswith("?"):
-        return True
-    return bool(
-        re.match(
-            r"^(какой|какая|какие|каков|что |где |когда |срок|можно ли|нужно ли|какой срок)",
-            t,
-        )
-    )
+def _parse_kb_question(text: str) -> Optional[str]:
+    """Явный вопрос к базе знаний: «вопрос …» / «вопрос по базе: …» / `/ask …`.
+
+    Возвращает текст вопроса (может быть пустым), или None если это не команда ask.
+    """
+    match = KB_ASK_RE.match(text.strip())
+    if not match:
+        return None
+    return (match.group(1) or "").strip()
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in (None, "text"):
+                parts.append(str(item.get("text") or ""))
+        return "\n".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _messages_for_chat(body: dict) -> list[dict[str, str]]:
+    """История user/assistant для обычного чата без служебных меток кейса."""
+    out: list[dict[str, str]] = []
+    for message in body.get("messages") or []:
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = _message_text(message.get("content"))
+        text = CASE_MARK.sub("", text).strip()
+        text = re.sub(
+            r"\n*\*\*Откуда в базе знаний:\*\*.*$",
+            "",
+            text,
+            flags=re.S,
+        ).strip()
+        if not text:
+            continue
+        out.append({"role": role, "content": text})
+    return out[-24:]
 
 
 def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
     raw = text.strip()
     if len(raw) < 8:
         return None
+    if _parse_kb_question(raw) is not None:
+        return None
     if (
         _is_approve(raw)
         or _is_status(raw)
         or _is_library(raw)
         or _is_brief(raw)
+        or _is_total(raw)
         or _is_program(raw)
     ):
         return None
@@ -724,7 +930,7 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
     keywords = [part for part in parts[1:] if part]
     looks_like_case = bool(
         re.search(r"проверк|аудит|аренда|кредит|валют|касс|нпа", raw, re.I)
-    ) or (len(name) >= 12 and not _looks_like_question(raw))
+    ) or len(name) >= 12
     if not looks_like_case:
         return None
     return {

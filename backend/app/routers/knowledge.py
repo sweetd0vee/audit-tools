@@ -10,7 +10,15 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.http import require_case, sse_response
-from app.models import AskRequest, AskResponse, BriefRequest, OpenWebUISyncRequest
+from app.config import settings
+from app.models import (
+    AskRequest,
+    AskResponse,
+    BriefRequest,
+    ChatRequest,
+    ChatResponse,
+    OpenWebUISyncRequest,
+)
 from app.services.brief_flow import (
     brief_download_name,
     brief_status,
@@ -25,6 +33,13 @@ from app.services.program_flow import (
     program_status,
     resolve_program_file,
 )
+from app.services.total_flow import (
+    build_total,
+    build_total_events,
+    resolve_total_file,
+    total_download_name,
+    total_status,
+)
 from app.services.knowledge_flow import (
     add_uploaded_file,
     ask,
@@ -35,8 +50,14 @@ from app.services.knowledge_flow import (
     rebuild_index,
     sync_openwebui,
 )
+from app.services.ollama_client import chat_messages
 from app.services.openwebui_client import OpenWebUIError
 from app.storage import store
+
+CHAT_SYSTEM = """Ты — помощник внутреннего аудитора банка в Республике Беларусь.
+Отвечай по-русски, коротко и по делу. Не ставь аудиторское суждение и не подписывай выводы.
+Это обычный диалог: можно обсуждать план проверки, формулировки, риски, черновики процедур.
+Если нужна норма из приложенных документов кейса — попроси аудитора начать сообщение со слова «вопрос», тогда ответ пойдёт из базы знаний."""
 
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
 logger = logging.getLogger(__name__)
@@ -124,6 +145,27 @@ async def ask_knowledge(case_id: str, body: AskRequest) -> AskResponse:
     return AskResponse(**result)
 
 
+@router.post("/chat", response_model=ChatResponse)
+async def free_chat(body: ChatRequest) -> ChatResponse:
+    """Обычный диалог с LLM без RAG по базе знаний кейса."""
+    cleaned: list[dict[str, str]] = []
+    for msg in body.messages:
+        role = (msg.role or "").strip().lower()
+        content = (msg.content or "").strip()
+        if role not in {"system", "user", "assistant"} or not content:
+            continue
+        cleaned.append({"role": role, "content": content})
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Нужно хотя бы одно сообщение")
+    if cleaned[0]["role"] != "system":
+        cleaned.insert(0, {"role": "system", "content": (body.system or CHAT_SYSTEM).strip()})
+    try:
+        answer = await chat_messages(cleaned, timeout=settings.ollama_timeout_sec)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Chat failed: {exc}") from exc
+    return ChatResponse(answer=answer, model=settings.ollama_model)
+
+
 @router.get("/cases/{case_id}/knowledge/brief")
 def get_brief(case_id: str):
     require_case(case_id)
@@ -176,6 +218,59 @@ def download_brief_md(case_id: str):
         path,
         media_type="text/markdown; charset=utf-8",
         filename=brief_download_name(state.inspection_name, case_id, "md"),
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/total")
+def get_total(case_id: str):
+    require_case(case_id)
+    return total_status(case_id)
+
+
+@router.post("/cases/{case_id}/knowledge/total")
+async def post_total(case_id: str, body: Optional[BriefRequest] = None):
+    require_case(case_id)
+    force = bool(body and body.force)
+    try:
+        return await build_total(case_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Total failed: {exc}") from exc
+
+
+@router.get("/cases/{case_id}/knowledge/total/stream")
+async def total_stream(case_id: str, force: bool = Query(default=False)):
+    require_case(case_id)
+    return sse_response(build_total_events(case_id, force=force))
+
+
+@router.get("/cases/{case_id}/knowledge/total.docx")
+def download_total_docx(case_id: str):
+    state = require_case(case_id)
+    path = resolve_total_file(case_id, "docx")
+    if not path:
+        raise HTTPException(
+            status_code=404,
+            detail="Total саммари ещё нет. Напишите в чате «total саммари» или «конспект модели».",
+        )
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=total_download_name(state.inspection_name, case_id, "docx"),
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/total.md")
+def download_total_md(case_id: str):
+    state = require_case(case_id)
+    path = resolve_total_file(case_id, "md")
+    if not path:
+        raise HTTPException(status_code=404, detail="Markdown total саммари ещё нет.")
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=total_download_name(state.inspection_name, case_id, "md"),
     )
 
 

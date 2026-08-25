@@ -238,12 +238,71 @@ class TestDownloadNames(unittest.TestCase):
         self.assertIn("аренды", name)
         self.assertNotIn("abc", name)
 
+    def test_total_docx_uses_inspection_name(self):
+        from app.services.total_flow import total_download_name
+
+        name = total_download_name("Проверка аренды коммерческой недвижимости", "abc")
+        self.assertTrue(name.endswith("_total.docx"))
+        self.assertIn("аренды", name)
+        self.assertNotIn("abc", name)
+
     def test_archive_zip_uses_npa_suffix(self):
         from app.storage import CaseStore
 
         name = CaseStore.archive_filename("Проверка аренды коммерческой недвижимости", "abc")
         self.assertTrue(name.endswith("_npa.zip"))
         self.assertNotIn("abc", name)
+
+
+class TestTotalParse(unittest.TestCase):
+    def test_parse_sources_section(self):
+        from app.services.total_flow import parse_total_sources
+
+        md = """## Суть темы
+Аренда важна [1].
+
+## Источники
+[1] Гражданский кодекс РБ — Статья 625 — https://pravo.by/document/?guid=3871
+[2] Банковский кодекс РБ — глава о договорах — URL неизвестен
+"""
+        body, sources = parse_total_sources(md)
+        self.assertIn("Аренда важна", body)
+        self.assertNotIn("## Источники", body)
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(sources[0]["n"], 1)
+        self.assertIn("Гражданский", sources[0]["title"])
+        self.assertEqual(sources[0]["article"], "Статья 625")
+        self.assertIn("pravo.by", sources[0]["url"])
+        self.assertEqual(sources[1]["url"], "")
+
+    def test_writes_total_docx(self):
+        from app.services.brief_docx import write_total_docx
+
+        sources = [
+            {
+                "n": 1,
+                "title": "Гражданский кодекс Республики Беларусь",
+                "article": "Статья 625",
+                "url": "https://pravo.by/document/?guid=3871&p0=hk9800218",
+                "excerpt": "",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "total.docx"
+            write_total_docx(
+                path,
+                inspection_name="Проверка аренды",
+                period="2025",
+                keywords=["аренда"],
+                case_id="c1",
+                body="## Суть темы\nДоговор аренды [1].",
+                sources=sources,
+            )
+            self.assertTrue(path.exists())
+            with zipfile.ZipFile(path) as zf:
+                xml = zf.read("word/document.xml").decode("utf-8")
+            self.assertIn("знания модели", xml)
+            self.assertIn("cite_1", xml)
 
 
 class TestProgramDocx(unittest.TestCase):

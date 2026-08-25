@@ -258,6 +258,27 @@ async def chat_complete(
     num_predict: int | None = None,
 ) -> str:
     """Single-shot chat completion (no stream)."""
+    return await chat_messages(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=temperature,
+        timeout=timeout,
+        num_ctx=num_ctx,
+        num_predict=num_predict,
+    )
+
+
+async def chat_messages(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.2,
+    timeout: float | None = None,
+    num_ctx: int | None = None,
+    num_predict: int | None = None,
+) -> str:
+    """Multi-turn chat completion (no stream)."""
     options: dict[str, Any] = {"temperature": temperature}
     ctx = num_ctx if num_ctx is not None else settings.ollama_num_ctx
     if ctx:
@@ -269,10 +290,7 @@ async def chat_complete(
         "stream": False,
         "think": False,
         "options": options,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
     }
     async with httpx.AsyncClient(timeout=timeout or settings.ollama_timeout_sec) as client:
         resp = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)

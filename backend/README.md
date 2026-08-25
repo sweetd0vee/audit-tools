@@ -78,11 +78,15 @@ GET /api/v1/cases/{case_id}/library
 ```http
 POST /api/v1/cases/{case_id}/knowledge/brief
 GET  /api/v1/cases/{case_id}/knowledge/summary.docx
+POST /api/v1/cases/{case_id}/knowledge/total
+GET  /api/v1/cases/{case_id}/knowledge/total.docx
 POST /api/v1/cases/{case_id}/knowledge/program
 GET  /api/v1/cases/{case_id}/knowledge/program.docx
 ```
 
-Стрим прогресса: `GET …/brief/stream`, `GET …/program/stream`. `force=true` — пересобрать.
+Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`. `force=true` — пересобрать.
+
+`total саммари` — краткий конспект по теме из знаний модели (без опоры на скачанные акты), со ссылками на акты и статьи.
 
 ## Allowlist доменов
 

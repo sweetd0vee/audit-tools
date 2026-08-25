@@ -287,6 +287,104 @@ def write_program_docx(
     return path
 
 
+def write_total_docx(
+    path: Path,
+    *,
+    inspection_name: str,
+    period: str | None,
+    keywords: list[str],
+    case_id: str,
+    body: str,
+    sources: list[dict[str, Any]],
+) -> Path:
+    global _BOOKMARK_IDS
+    _BOOKMARK_IDS = 0
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Cm(21.0)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2.5)
+    section.right_margin = Cm(2.0)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fr = footer.add_run(
+        f"Total саммари · {inspection_name} · кейс {case_id} · знания модели · черновик"
+    )
+    _set_run_font(fr, size=9, italic=True)
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    tr = title.add_run("Конспект по теме (знания модели)")
+    _set_run_font(tr, size=20, bold=True)
+
+    sub = doc.add_paragraph()
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sr = sub.add_run(inspection_name)
+    _set_run_font(sr, size=14, bold=True)
+
+    meta = doc.add_paragraph()
+    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    period_s = period or "не указан"
+    kws = ", ".join(keywords) if keywords else "—"
+    mr = meta.add_run(f"Период: {period_s}. Ключевые слова: {kws}")
+    _set_run_font(mr, size=11, italic=True)
+
+    note = doc.add_paragraph()
+    _style_paragraph(note)
+    nr = note.add_run(
+        "Краткий конспект самого важного по теме из знаний языковой модели, "
+        "без опоры на скачанные акты базы знаний кейса. "
+        "Номера [n] ведут к списку актов и статей в конце. "
+        "Редакции и точные формулировки нужно сверять с первоисточником. "
+        "Это черновик, не аудиторское суждение."
+    )
+    _set_run_font(nr, size=11, italic=True)
+
+    sources_by_n = {int(s["n"]): s for s in sources}
+    add_markdown_block(doc, body, sources_by_n)
+
+    if sources:
+        h = doc.add_heading("Источники: акты и статьи", level=1)
+        for run in h.runs:
+            _set_run_font(run, size=16, bold=True)
+        intro = doc.add_paragraph()
+        _style_paragraph(intro)
+        ir = intro.add_run(
+            "Ссылки [n] в тексте указывают на акт ниже. "
+            "URL — если модель его помнит; иначе сверяйте на pravo.by / nbrb.by."
+        )
+        _set_run_font(ir, size=11, italic=True)
+        for src in sources:
+            n = int(src["n"])
+            p = doc.add_paragraph()
+            _style_paragraph(p)
+            add_bookmark(p, f"cite_{n}")
+            _add_plain_run(p, f"[{n}] ", bold=True)
+            article = (src.get("article") or "").strip()
+            src_title = (src.get("title") or "акт").strip()
+            if article:
+                _add_plain_run(p, f"{src_title} — {article}. ")
+            else:
+                _add_plain_run(p, f"{src_title}. ")
+            url = (src.get("url") or "").strip()
+            if url:
+                add_hyperlink(p, url, url)
+            excerpt = (src.get("excerpt") or "").strip()
+            if excerpt:
+                q = doc.add_paragraph()
+                _style_paragraph(q)
+                q.paragraph_format.left_indent = Cm(1.0)
+                _add_plain_run(q, excerpt, italic=True)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+    return path
+
+
 def write_brief_docx(
     path: Path,
     *,

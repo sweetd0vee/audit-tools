@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
@@ -18,6 +20,15 @@ from app.services.library_flow import run_download, run_propose, run_propose_eve
 from app.storage import store
 
 router = APIRouter(prefix="/api/v1", tags=["library"])
+_CASE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _case_lock(case_id: str) -> asyncio.Lock:
+    lock = _CASE_LOCKS.get(case_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CASE_LOCKS[case_id] = lock
+    return lock
 
 
 @router.post("/cases", response_model=CreateCaseResponse)
@@ -90,18 +101,19 @@ async def propose_stream(case_id: str):
 
 
 @router.post("/cases/{case_id}/select", response_model=SelectDocumentsResponse)
-def select(case_id: str, body: SelectDocumentsRequest) -> SelectDocumentsResponse:
-    try:
-        state = run_select(
-            case_id,
-            body.document_ids,
-            body.manual_urls,
-            extra_titles=body.extra_titles,
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+async def select(case_id: str, body: SelectDocumentsRequest) -> SelectDocumentsResponse:
+    async with _case_lock(case_id):
+        try:
+            state = run_select(
+                case_id,
+                body.document_ids,
+                body.manual_urls,
+                extra_titles=body.extra_titles,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return SelectDocumentsResponse(
         case_id=state.case_id,
@@ -114,12 +126,13 @@ def select(case_id: str, body: SelectDocumentsRequest) -> SelectDocumentsRespons
 @router.post("/cases/{case_id}/download", response_model=DownloadResponse)
 async def download(case_id: str) -> DownloadResponse:
     require_case(case_id)
-    try:
-        state = await run_download(case_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Download failed: {exc}") from exc
+    async with _case_lock(case_id):
+        try:
+            state = await run_download(case_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Download failed: {exc}") from exc
 
     selected = [d for d in state.documents if d.selected]
     ok = sum(1 for d in selected if d.download_status == "ok")

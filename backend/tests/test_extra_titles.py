@@ -109,6 +109,23 @@ class TestSelectExtraTitles(unittest.TestCase):
         self.assertIn(self.state.documents[0].id, selected_ids)
         self.assertEqual(len(selected_ids), 2)
 
+    def test_select_allowed_while_downloading(self):
+        first = self.state.documents[0].id
+        self.state.status = CaseStatus.downloading
+        self.state.documents[0].selected = True
+        self.store.save(self.state)
+        out = run_select(self.state.case_id, [first])
+        self.assertEqual(out.status, CaseStatus.selected)
+        self.assertTrue(any(d.id == first and d.selected for d in out.documents))
+
+    def test_select_rejected_before_propose(self):
+        self.state.status = CaseStatus.created
+        self.store.save(self.state)
+        with self.assertRaises(ValueError) as ctx:
+            run_select(self.state.case_id, [self.state.documents[0].id])
+        self.assertIn("created", str(ctx.exception))
+        self.assertNotIn("CaseStatus.", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

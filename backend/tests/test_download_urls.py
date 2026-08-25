@@ -4,7 +4,7 @@ from app.models import ProposedDocument
 from app.services.downloader import is_usable_npa_page, usable_url
 from app.services.known_sources import lookup_known_url
 from app.services.library_flow import download_candidates
-from app.services.npa_search import expand_official_urls, score_url
+from app.services.npa_search import build_search_queries, expand_official_urls, score_url
 
 
 class TestUsableUrl(unittest.TestCase):
@@ -49,10 +49,45 @@ class TestKnownSources(unittest.TestCase):
     def test_civil_code_still_matches(self):
         self.assertIn("hk9800218", lookup_known_url("Гражданский кодекс Республики Беларусь") or "")
 
-    def test_internal_control_and_accounting_law(self):
+    def test_lease_and_internal_audit_aliases(self):
+        self.assertIn(
+            "W21833716",
+            lookup_known_url("Положение о бухгалтерском учете аренды") or "",
+        )
+        self.assertIn(
+            "P32300138",
+            lookup_known_url(
+                "Указ Президента Республики Беларусь "
+                "«О некоторых вопросах регулирования арендных отношений в сфере недвижимости»"
+            )
+            or "",
+        )
         self.assertIn(
             "B21326759",
-            lookup_known_url("Положение о внутреннем контроле") or "",
+            lookup_known_url(
+                "Инструкция НБРБ «О порядке проведения внутреннего аудита в банках Республики Беларусь»"
+            )
+            or "",
+        )
+        self.assertIn(
+            "B21529598",
+            lookup_known_url(
+                "Инструкция НБРБ «О требованиях к внутреннему контролю за проведением банковских операций»"
+            )
+            or "",
+        )
+        self.assertIn(
+            "B21428262",
+            lookup_known_url(
+                "Инструкция НБРБ «О порядке оформления и хранения банковских документов»"
+            )
+            or "",
+        )
+
+    def test_strips_trailing_backtick(self):
+        self.assertIn(
+            "B21326759",
+            lookup_known_url("Положение о внутреннем контроле`") or "",
         )
         self.assertIn(
             "H11300057",
@@ -83,6 +118,35 @@ class TestDownloadCandidates(unittest.TestCase):
         )
         candidates = download_candidates(doc)
         self.assertEqual(candidates[0], (manual, "manual"))
+
+    def test_news_manual_url_is_skipped_for_known_source(self):
+        doc = ProposedDocument(
+            title="Положение о бухгалтерском учете аренды",
+            doc_type="положение",
+            why_needed="x",
+            found_url="https://pravo.by/novosti/analitika/2023/december/76364/",
+        )
+        candidates = download_candidates(doc)
+        self.assertTrue(candidates)
+        self.assertTrue(all("/novosti/" not in url for url, _src in candidates))
+        self.assertIn("W21833716", candidates[0][0])
+
+
+class TestSearchQueries(unittest.TestCase):
+    def test_nbrb_title_searches_nbrb_and_etalonline(self):
+        queries = build_search_queries(
+            [],
+            "Инструкция НБРБ «О порядке проведения внутреннего аудита в банках Республики Беларусь»",
+        )
+        blob = "\n".join(queries)
+        self.assertIn("site:nbrb.by", blob)
+        self.assertIn("site:etalonline.by", blob)
+        self.assertTrue(any("внутреннего аудита" in q.lower() or "внутреннем аудите" in q.lower() for q in queries))
+
+    def test_does_not_stop_at_pravo_only(self):
+        queries = build_search_queries([], "Инструкция НБРБ № 38")
+        self.assertGreaterEqual(len(queries), 3)
+        self.assertTrue(any("nbrb.by" in q for q in queries))
 
 
 class TestOfficialUrlExpand(unittest.TestCase):
