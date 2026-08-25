@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     # Local LLM (Ollama)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3.6:35b"
+    ollama_model: str = "qwen3.8:27b"
     ollama_timeout_sec: float = 180.0
     ollama_num_ctx: int = 32768
 

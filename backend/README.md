@@ -1,6 +1,8 @@
-# Audit Tools — Step 1: библиотека НПА
+# Audit Tools — API библиотеки НПА и знаний
 
-Продуктовый вход для аудитора — чат Open WebUI, не этот API: [`docs/GUIDE.md`](../docs/GUIDE.md). Ниже — эндпоинты для разработки tools.
+Продуктовый вход для аудитора — чат Open WebUI, не этот API: [`docs/GUIDE.md`](../docs/GUIDE.md). Ниже — эндпоинты для разработки tools и отладки.
+
+В чате: `вопрос …` → `/knowledge/ask`. Сообщение без префикса → `POST /api/v1/chat` (не RAG).
 
 ## Что делает этот шаг
 
@@ -13,7 +15,13 @@
 data/audit_cases/{case_id}/
   case.json
   manifest.json
-  knowledge_raw/   ← скачанные файлы
+  knowledge_raw/      скачанные файлы
+  knowledge_text/     очищенный текст
+  summaries/          саммари по актам
+  totals/             конспект из знаний модели
+  programs/           программа проверки
+  knowledge_index.json
+  library.zip
 ```
 
 Клиентские данные в поиск **не отправляются**.
@@ -32,7 +40,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8100
 Swagger: http://localhost:8100/docs
 
 Нужны запущенные:
-- Ollama (`qwen3.6:35b`)
+- Ollama (`qwen3.8:27b`)
 - SearXNG на `http://localhost:8080` с `format=json`
 
 ## API flow
@@ -87,6 +95,15 @@ GET  /api/v1/cases/{case_id}/knowledge/program.docx
 Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`. `force=true` — пересобрать.
 
 `total саммари` — краткий конспект по теме из знаний модели (без опоры на скачанные акты), со ссылками на акты и статьи.
+
+Обычный диалог без RAG:
+
+```http
+POST /api/v1/chat
+{ "messages": [ { "role": "user", "content": "…" } ] }
+```
+
+Индекс после скачивания: `POST …/knowledge/index`. Загрузка файла акта (не Excel клиента): `POST …/knowledge/upload`.
 
 ## Allowlist доменов
 

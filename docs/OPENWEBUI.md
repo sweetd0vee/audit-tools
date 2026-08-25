@@ -12,7 +12,7 @@
 
 ## 1. Два контура — не путать
 
-Качество продукта **не** живёт в «голом» чате `qwen3.6:35b`.
+Качество продукта **не** живёт в «голом» чате `qwen3.8:27b`.
 
 ```
 Аудитор  →  модель «Аудитор» (Pipe)
@@ -24,7 +24,7 @@
 |---|---|---|
 | Модель **Аудитор**, фразы из GUIDE | Pipe + backend | Valves Pipe, `.env` backend, Ollama на хосте |
 | «вопрос …» по актам | Backend RAG (`/knowledge/ask`) | `OLLAMA_EMBED_MODEL`, `OLLAMA_NUM_CTX`, температура 0.1–0.2 **на сервере** |
-| Голый `qwen3.6:35b` + Knowledge / `#` | Open WebUI RAG | Admin → Документы, Advanced Params модели |
+| Голый `qwen3.8:27b` + Knowledge / `#` | Open WebUI RAG | Admin → Документы, Advanced Params модели |
 | Sync `.txt` в Workspace → Знания | Open WebUI Knowledge | API-ключ + те же Документы |
 
 Настройки **Документы** в Open WebUI нужны для опциональной коллекции Knowledge и для отладки голой модели. Продуктовый вопрос по норме идёт через сервер, не через «прикрепить Knowledge к Pipe».
@@ -42,7 +42,7 @@
 Скачайте модели:
 
 ```powershell
-ollama pull qwen3.6:35b
+ollama pull qwen3.8:27b
 ollama pull qwen3-embedding:latest
 ```
 
@@ -53,7 +53,7 @@ ollama list
 curl http://localhost:11434/api/tags
 ```
 
-`qwen3.6:35b` — чат. `qwen3-embedding:latest` — векторы для русского юр. языка. **Не** `all-MiniLM-L6-v2` (дефолт Open WebUI, слабый для НПА РБ).
+`qwen3.8:27b` — чат. `qwen3-embedding:latest` — векторы для русского юр. языка. **Не** `all-MiniLM-L6-v2` (дефолт Open WebUI, слабый для НПА РБ).
 
 ### 2.2. Стек
 
@@ -109,7 +109,7 @@ docker compose up -d --build
 | **RAG в system** (`RAG_SYSTEM_CONTEXT`) | **вкл** | Контекст не прыгает по истории, follow-up быстрее |
 | **Веб-поиск в чате** | **выкл** | SearXNG только на backend при download |
 
-Reranker (`BAAI/bge-reranker-v2-m3`) — второй по силе рычаг после embedding. Включайте **только** если есть GPU сверх 35B и доступ к весам (не air-gap). Иначе hybrid без rerank — нормальный прод.
+Reranker (`BAAI/bge-reranker-v2-m3`) — второй по силе рычаг после embedding. Включайте **только** если есть GPU сверх 27B и доступ к весам (не air-gap). Иначе hybrid без rerank — нормальный прод.
 
 ### 4.2. Шаблон RAG
 
@@ -121,11 +121,11 @@ Reranker (`BAAI/bge-reranker-v2-m3`) — второй по силе рычаг �
 
 ---
 
-## 5. Admin → Модели: `qwen3.6:35b`
+## 5. Admin → Модели: `qwen3.8:27b`
 
 Ollama подхватывается сама, если `OLLAMA_BASE_URL` живой. Если списка нет: Admin → **Настройки** → **Подключения** → Ollama URL `http://host.docker.internal:11434` → проверить соединение.
 
-Откройте модель `qwen3.6:35b` → **Advanced Params** (или «Параметры модели»). Это влияет на **голый** чат с иконкой `ol` и на запасной путь Tools. Pipe «Аудитор» для propose/ask/саммари вызывает Ollama **через backend**, там уже стоят те же числа.
+Откройте модель `qwen3.8:27b` → **Advanced Params** (или «Параметры модели»). Это влияет на **голый** чат с иконкой `ol` и на запасной путь Tools. Pipe «Аудитор» для propose/ask/саммари вызывает Ollama **через backend**, там уже стоят те же числа.
 
 | Параметр | Значение | Если оставить дефолт |
 |---|---|---|
@@ -135,7 +135,7 @@ Ollama подхватывается сама, если `OLLAMA_BASE_URL` жив�
 | **Repeat penalty** | **1.05–1.1** | |
 | **Seed** | пусто (или фиксировать для отладки) | |
 | **Think / reasoning** | **выкл** | Qwen3 иначе жрёт окно на «размышления» |
-| **Function calling** | Default / off для продукта | Native на 35B часто не вызывает tool или качает без «утверждаю» |
+| **Function calling** | Default / off для продукта | Native на 27B часто не вызывает tool или качает без «утверждаю» |
 | **Vision** | не нужен | |
 
 Математика окна (chunk 1600 × top-k 16 ≈ 25k токенов + история + ответ). На 8k контексте RAG физически не влезет — будут чинить «не ту embedding», хотя виноват `num_ctx`.
@@ -161,8 +161,8 @@ Workspace → Модели → **не** создавать вторую моде
 |---|---|---|
 | `AUDIT_API` | `http://backend:8100` | WebUI в Docker. С хоста без compose: `http://localhost:8100` |
 | `PUBLIC_API` | `http://localhost:8100` | Ссылки zip/docx в браузере аудитора |
-| `TIMEOUT_SEC` | `600` | Propose/download. 35B на списке актов — минуты |
-| `BRIEF_TIMEOUT_SEC` | `1800` | Саммари и программа в Word |
+| `TIMEOUT_SEC` | `600` | Propose/download. 27B на списке актов — минуты |
+| `BRIEF_TIMEOUT_SEC` | `1800` | Саммари, total саммари и программа в Word |
 | `OPENWEBUI_API_KEY` | пусто **или** ключ | Пусто = ответы только через индекс сервера. Ключ = ещё и коллекция Knowledge |
 
 Ключ: Open WebUI → **Настройки** → **Аккаунт** → **API Keys**. Тот же ключ можно положить в корневой `.env` как `OPENWEBUI_API_KEY=` — его подхватит backend для sync. В git ключ не коммитить.
@@ -197,7 +197,7 @@ Open WebUI не задаёт температуру propose/ask. Это `backend
 
 | Env / код | Значение | Смысл |
 |---|---|---|
-| `OLLAMA_MODEL` | `qwen3.6:35b` | Propose, карточки, вопрос, саммари |
+| `OLLAMA_MODEL` | `qwen3.8:27b` | Propose, карточки, ask, саммари, total, программа, обычный чат |
 | `OLLAMA_EMBED_MODEL` | `qwen3-embedding:latest` | Индекс кейса и вопрос |
 | `OLLAMA_NUM_CTX` | `32768` | Окно на сервере |
 | `OLLAMA_BASE_URL` | в compose: `http://host.docker.internal:11434` | |
@@ -216,7 +216,7 @@ Open WebUI не задаёт температуру propose/ask. Это `backend
 - [ ] В Документах embedding = Ollama `qwen3-embedding:latest`, не MiniLM.
 - [ ] Hybrid вкл, chunk 1600 / overlap 180, full context выкл.
 - [ ] Вставлен `RAG_TEMPLATE.txt`, есть `{{CONTEXT}}`.
-- [ ] У `qwen3.6:35b` context length 32768, temperature 0.2.
+- [ ] У `qwen3.8:27b` context length 32768, temperature 0.2.
 - [ ] Веб-поиск выключен.
 - [ ] Pipe `auditor` включён, Valves `AUDIT_API=http://backend:8100`.
 - [ ] Новый чат → в списке моделей **Аудитор** без иконки `ol`.
@@ -231,7 +231,7 @@ Open WebUI не задаёт температуру propose/ask. Это `backend
 | Симптом | Куда смотреть |
 |---|---|
 | Нет модели **Аудитор** | Functions: ID `auditor`, включено, F5. Не Workspace → Models |
-| Список актов пустой / таймаут | Ollama жив? 35B влезает в VRAM? `TIMEOUT_SEC` |
+| Список актов пустой / таймаут | Ollama жив? 27B влезает в VRAM? `TIMEOUT_SEC` |
 | Цитаты «из головы», блока «Откуда в базе» нет | Пишете в голый `ol`, не в Pipe. Или вопрос без префикса `вопрос` |
 | «База знаний пуста» | Нет `утверждаю`, download не закончился |
 | Видит не ту статью | Hybrid выкл / MiniLM / маленький top-k / `num_ctx=2048` |
@@ -239,7 +239,7 @@ Open WebUI не задаёт температуру propose/ask. Это `backend
 | `NoneType.encode` | Embedding не загрузилась. Save в Документах, `ollama run qwen3-embedding` |
 | Контейнер не видит Ollama | Windows: Expose to network |
 | Env из compose «не применился» | Старый volume. Править Admin или удалить `audit-tools_open-webui-data` (сотрёт чаты) |
-| CUDA OOM | 35B + embedding на одном GPU. Не эмбеддить во время длинной генерации; уменьшить batch |
+| CUDA OOM | 27B + embedding на одном GPU. Не эмбеддить во время длинной генерации; уменьшить batch |
 
 Не меняйте чат-модель первой. Сначала extractor (читаемый `.txt`), потом embedding, потом `num_ctx`, потом top-k.
 
@@ -249,7 +249,7 @@ Open WebUI не задаёт температуру propose/ask. Это `backend
 
 Workspace → Инструменты → [`tools/audit_case.py`](../seed/openwebui/tools/audit_case.py) + system [`SYSTEM_AUDITOR.txt`](../seed/openwebui/SYSTEM_AUDITOR.txt) + Function calling **Native**.
 
-35B часто вызовет `download` без утверждения. Для продукта — только Pipe.
+27B часто вызовет `download` без утверждения. Для продукта — только Pipe.
 
 ---
 
