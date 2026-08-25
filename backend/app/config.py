@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -54,7 +55,7 @@ class Settings(BaseSettings):
     openwebui_api_key: str = ""
 
     # LLM prompts (docs/prompts/*.txt). Compose: /app/prompts
-    prompts_dir: Path | None = None
+    prompts_dir: Optional[Path] = None
 
 
 settings = Settings()
