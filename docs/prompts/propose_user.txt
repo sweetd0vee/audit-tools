@@ -1,0 +1,24 @@
+Название проверки: {inspection_name}
+Ключевые термины: {keywords_str}
+Период: {period_str}
+
+Верни JSON вида:
+{
+  "topics": ["тема1", "тема2"],
+  "documents": [
+    {
+      "title": "Полное или общепринятое название НПА",
+      "doc_type": "закон|кодекс|инструкция|постановление|указ|положение|иное",
+      "why_needed": "Зачем аудитору этот документ для данной проверки",
+      "search_queries": [
+        "site:pravo.gov.by ...",
+        "site:nbrb.by ..."
+      ],
+      "priority": 1
+    }
+  ]
+}
+
+Нужно от {min_docs} до {max_docs} документов.
+priority: 1=обязательно, 2=желательно, 3=опционально.
+Добавь в search_queries site: для доменов РБ (pravo.gov.by, nbrb.by, minfin.gov.by, nalog.gov.by).

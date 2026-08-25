@@ -48,11 +48,7 @@ from app.services.knowledge_owui import export_pack_files, openwebui_status, syn
 from app.services.ollama_client import chat_messages
 from app.services.openwebui_client import OpenWebUIError
 from app.storage import store
-
-CHAT_SYSTEM = """Ты — помощник внутреннего аудитора банка в Республике Беларусь.
-Отвечай по-русски, коротко и по делу. Не ставь аудиторское суждение и не подписывай выводы.
-Это обычный диалог: можно обсуждать план проверки, формулировки, риски, черновики процедур.
-Если нужна норма из приложенных документов кейса — попроси аудитора начать сообщение со слова «вопрос», тогда ответ пойдёт из базы знаний."""
+from app.prompts import prompt
 
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
 logger = logging.getLogger(__name__)
@@ -188,7 +184,7 @@ async def free_chat(body: ChatRequest) -> ChatResponse:
     if not cleaned:
         raise HTTPException(status_code=400, detail="Нужно хотя бы одно сообщение")
     if cleaned[0]["role"] != "system":
-        cleaned.insert(0, {"role": "system", "content": (body.system or CHAT_SYSTEM).strip()})
+        cleaned.insert(0, {"role": "system", "content": (body.system or prompt("chat_system")).strip()})
     try:
         answer = await chat_messages(cleaned, timeout=settings.ollama_timeout_sec)
     except Exception as exc:  # noqa: BLE001

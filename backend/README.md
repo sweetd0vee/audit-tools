@@ -98,6 +98,8 @@ GET  /api/v1/cases/{case_id}/knowledge/program.docx
 
 Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`. `force=true` — пересобрать.
 
+Как устроен `саммари` (карточка акта, map-reduce, большая библиотека): [`docs/SAMMARI.md`](../docs/SAMMARI.md).
+
 `саммари total` — краткий конспект по теме из знаний модели (без опоры на скачанные акты), со ссылками на акты и статьи.
 
 Обычный диалог без RAG:

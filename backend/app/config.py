@@ -53,5 +53,8 @@ class Settings(BaseSettings):
     openwebui_url: str = "http://localhost:3000"
     openwebui_api_key: str = ""
 
+    # LLM prompts (docs/prompts/*.txt). Compose: /app/prompts
+    prompts_dir: Path | None = None
+
 
 settings = Settings()

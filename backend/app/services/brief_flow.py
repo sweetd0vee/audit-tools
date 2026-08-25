@@ -22,7 +22,7 @@ from app.services.document_artifact import (
     save_artifact_meta,
 )
 from app.services.knowledge_ingest import ingest_library
-from app.services.knowledge_flow import OVERVIEW_PROMPT, SUMMARY_SYSTEM
+from app.prompts import prompt
 from app.services.knowledge_summarize import (
     FRAGMENTS_PER_ITEM,
     fragments_from_item,
@@ -173,8 +173,9 @@ async def _synthesize_overview(state, chapters: list[dict]) -> str:
     cards = "\n\n".join(f"# {ch['title']}\n{ch['body']}" for ch in chapters)
     try:
         text = await chat_complete(
-            SUMMARY_SYSTEM,
-            OVERVIEW_PROMPT.format(
+            prompt("summary_system"),
+            prompt(
+                "overview",
                 inspection=state.inspection_name,
                 keywords=", ".join(state.keywords) or "не указаны",
                 cards=cards[:20000],

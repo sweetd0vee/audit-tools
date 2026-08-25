@@ -76,6 +76,7 @@ services:
       - "8100:8100"
     volumes:
       - ./backend/data:/app/data
+      - ./docs/prompts:/app/prompts:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -86,6 +87,7 @@ services:
       - SEARXNG_URL=http://searxng:8080/search
       - OPENWEBUI_URL=http://open-webui:8080
       - OPENWEBUI_API_KEY=${OPENWEBUI_API_KEY:-}
+      - PROMPTS_DIR=/app/prompts
     depends_on:
       - searxng
       - open-webui

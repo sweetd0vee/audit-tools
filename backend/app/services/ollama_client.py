@@ -9,20 +9,9 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.prompts import prompt
 
 _CLIENTS: dict[float, httpx.AsyncClient] = {}
-
-PROPOSE_SYSTEM = """Ты — старший методолог внутреннего аудита банка в Республике Беларусь.
-Твоя задача: по названию проверки и ключевым словам предложить список нормативных правовых актов (НПА),
-с которыми аудитор должен ознакомиться ДО анализа данных.
-
-Правила:
-1. Только законодательство / НПА / инструкции НБРБ / акты Минфина / МНС РБ — без методичек блогов.
-2. Документы должны быть релевантны теме проверки.
-3. Укажи поисковые запросы на русском для поиска на pravo.gov.by / nbrb.by / minfin.gov.by.
-4. Не выдумывай номера статей как факт — достаточно корректного названия акта и зачем он нужен.
-5. Ответь ТОЛЬКО валидным JSON без markdown.
-"""
 
 
 def _ollama_client(timeout: float | None) -> httpx.AsyncClient:
@@ -58,31 +47,14 @@ def build_user_prompt(
     max_docs = max_docs or settings.max_docs_to_propose
     keywords_str = ", ".join(keywords) if keywords else "(не указаны)"
     period_str = period or "не указан"
-    return f"""Название проверки: {inspection_name}
-Ключевые термины: {keywords_str}
-Период: {period_str}
-
-Верни JSON вида:
-{{
-  "topics": ["тема1", "тема2"],
-  "documents": [
-    {{
-      "title": "Полное или общепринятое название НПА",
-      "doc_type": "закон|кодекс|инструкция|постановление|указ|положение|иное",
-      "why_needed": "Зачем аудитору этот документ для данной проверки",
-      "search_queries": [
-        "site:pravo.gov.by ...",
-        "site:nbrb.by ..."
-      ],
-      "priority": 1
-    }}
-  ]
-}}
-
-Нужно от {max(8, max_docs - 3)} до {max_docs} документов.
-priority: 1=обязательно, 2=желательно, 3=опционально.
-Добавь в search_queries site: для доменов РБ (pravo.gov.by, nbrb.by, minfin.gov.by, nalog.gov.by).
-"""
+    return prompt(
+        "propose_user",
+        inspection_name=inspection_name,
+        keywords_str=keywords_str,
+        period_str=period_str,
+        min_docs=max(8, max_docs - 3),
+        max_docs=max_docs,
+    )
 
 
 def normalize_documents(parsed: dict[str, Any], max_docs: int) -> tuple[list[str], list[dict[str, Any]]]:
@@ -145,7 +117,7 @@ async def propose_documents_events(
     yield {
         "type": "chat",
         "role": "system",
-        "content": PROPOSE_SYSTEM,
+        "content": prompt("propose_system"),
         "elapsed_ms": elapsed_ms(),
     }
     yield {
@@ -170,7 +142,7 @@ async def propose_documents_events(
             "num_ctx": settings.ollama_num_ctx,
         },
         "messages": [
-            {"role": "system", "content": PROPOSE_SYSTEM},
+            {"role": "system", "content": prompt("propose_system")},
             {"role": "user", "content": user_prompt},
         ],
     }
@@ -226,7 +198,7 @@ async def propose_documents_events(
             "documents": clean_docs,
             "model": settings.ollama_model,
             "raw": content,
-            "system_prompt": PROPOSE_SYSTEM,
+            "system_prompt": prompt("propose_system"),
             "user_prompt": user_prompt,
             "elapsed_ms": total_ms,
         },
