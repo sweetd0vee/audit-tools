@@ -11,6 +11,7 @@ name: ai-auditor
 # Поиск:    http://localhost:8080  (внутренний, не для аудитора)
 #
 # Засев чата: seed/openwebui/README.md
+# Админский гайд (числа RAG, модели, Pipe): docs/OPENWEBUI.md
 # Если volume open-webui-data уже жил — env RAG ниже мог не примениться,
 # правьте Admin → Documents вручную.
 

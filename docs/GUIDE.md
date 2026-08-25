@@ -6,6 +6,7 @@
 В новом чате выберите модель **Аудитор**. Не `qwen3.6:35b` и не любую модель с иконкой `ol` — это обычный чат без рук и без стоп-крана.
 
 Поставить агент (один раз, админ): [`seed/openwebui/AGENT.md`](../seed/openwebui/AGENT.md).  
+Настроить Open WebUI под качество (модели, RAG, Valves): [`OPENWEBUI.md`](OPENWEBUI.md).  
 Краткая техническая шпаргалка фаз: [`AUDITOR.md`](AUDITOR.md).  
 API без чата: [`backend/README.md`](../backend/README.md).
 

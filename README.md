@@ -199,7 +199,7 @@ cd c:\Users\audit\Work\Arina\2026\audit-tools
 docker compose up -d --build
 ```
 
-После `up`: http://localhost:3000 → новый чат → модель **Аудитор**. Что писать — [`docs/GUIDE.md`](docs/GUIDE.md). Поставить Pipe: [`seed/openwebui/AGENT.md`](seed/openwebui/AGENT.md), засев Admin — [`seed/openwebui/README.md`](seed/openwebui/README.md).
+После `up`: http://localhost:3000 → новый чат → модель **Аудитор**. Что писать — [`docs/GUIDE.md`](docs/GUIDE.md). Настроить Open WebUI: [`docs/OPENWEBUI.md`](docs/OPENWEBUI.md). Поставить Pipe: [`seed/openwebui/AGENT.md`](seed/openwebui/AGENT.md), засев Admin — [`seed/openwebui/README.md`](seed/openwebui/README.md).
 
 Модели (см. `backend/.env.example`):
 
