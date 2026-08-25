@@ -16,16 +16,8 @@ from bs4 import BeautifulSoup
 
 from app.domains import host_allowed
 from app.services.downloader import usable_url
+from app.services.http_constants import BROWSER_HEADERS, NEWS_MARKERS
 from app.services.searxng_client import search_searxng
-
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-}
 
 _HREF_RE = re.compile(r"""https?://[^\s"'<>\\]+""", re.I)
 _DOC_CODE_RE = re.compile(
@@ -49,7 +41,6 @@ _STOP = {
     "национального",
 }
 
-NEWS_MARKERS = ("/novosti/", "/analitika/", "/news/")
 FAMOUS_CODES = {
     "hk9800218": "гражданский кодекс",
     "hk0200166": "налоговый кодекс",

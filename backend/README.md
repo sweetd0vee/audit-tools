@@ -58,6 +58,7 @@ POST /api/v1/cases
 ### 2. Предложить документы (LLM)
 ```http
 POST /api/v1/cases/{case_id}/propose
+GET  /api/v1/cases/{case_id}/propose/stream
 ```
 
 ### 3. Выбрать документы (валидация аудитора)
@@ -79,7 +80,10 @@ POST /api/v1/cases/{case_id}/download
 
 ### 5. Посмотреть библиотеку
 ```http
+GET /api/v1/cases
+GET /api/v1/cases/{case_id}
 GET /api/v1/cases/{case_id}/library
+GET /api/v1/cases/{case_id}/library/archive
 ```
 
 ### 6. Саммари и программа проверки
@@ -94,7 +98,7 @@ GET  /api/v1/cases/{case_id}/knowledge/program.docx
 
 Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`. `force=true` — пересобрать.
 
-`total саммари` — краткий конспект по теме из знаний модели (без опоры на скачанные акты), со ссылками на акты и статьи.
+`саммари total` — краткий конспект по теме из знаний модели (без опоры на скачанные акты), со ссылками на акты и статьи.
 
 Обычный диалог без RAG:
 
@@ -104,6 +108,18 @@ POST /api/v1/chat
 ```
 
 Индекс после скачивания: `POST …/knowledge/index`. Загрузка файла акта (не Excel клиента): `POST …/knowledge/upload`.
+
+Дополнительно для tools/отладки:
+
+```http
+GET  /health
+GET  /api/v1/cases/{case_id}/knowledge
+POST /api/v1/cases/{case_id}/knowledge/ingest
+GET  /api/v1/cases/{case_id}/knowledge/build/stream
+GET  /api/v1/cases/{case_id}/knowledge/export
+GET  /api/v1/knowledge/openwebui/status
+POST /api/v1/cases/{case_id}/knowledge/openwebui/sync
+```
 
 ## Allowlist доменов
 

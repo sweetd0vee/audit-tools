@@ -40,16 +40,11 @@ from app.services.total_flow import (
     total_download_name,
     total_status,
 )
-from app.services.knowledge_flow import (
-    add_uploaded_file,
-    ask,
-    build_knowledge_events,
-    export_pack_files,
-    ingest_library,
-    openwebui_status,
-    rebuild_index,
-    sync_openwebui,
-)
+from app.services.knowledge_ask import ask
+from app.services.knowledge_flow import build_knowledge_events
+from app.services.knowledge_index import rebuild_index
+from app.services.knowledge_ingest import add_uploaded_file, ingest_library
+from app.services.knowledge_owui import export_pack_files, openwebui_status, sync_openwebui
 from app.services.ollama_client import chat_messages
 from app.services.openwebui_client import OpenWebUIError
 from app.storage import store
@@ -61,6 +56,41 @@ CHAT_SYSTEM = """Ты — помощник внутреннего аудитор
 
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
 logger = logging.getLogger(__name__)
+
+
+async def _build_artifact(case_id: str, body: Optional[BriefRequest], builder, label: str):
+    require_case(case_id)
+    force = bool(body and body.force)
+    try:
+        return await builder(case_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"{label} failed: {exc}") from exc
+
+
+def _download_artifact(
+    case_id: str,
+    *,
+    kind: str,
+    resolver,
+    filename_builder,
+    not_found: str,
+):
+    state = require_case(case_id)
+    path = resolver(case_id, kind)
+    if not path:
+        raise HTTPException(status_code=404, detail=not_found)
+    media_type = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if kind == "docx"
+        else "text/markdown; charset=utf-8"
+    )
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename_builder(state.inspection_name, case_id, kind),
+    )
 
 
 @router.get("/cases/{case_id}/knowledge")
@@ -174,14 +204,7 @@ def get_brief(case_id: str):
 
 @router.post("/cases/{case_id}/knowledge/brief")
 async def post_brief(case_id: str, body: Optional[BriefRequest] = None):
-    require_case(case_id)
-    force = bool(body and body.force)
-    try:
-        return await build_brief(case_id, force=force)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Brief failed: {exc}") from exc
+    return await _build_artifact(case_id, body, build_brief, "Brief")
 
 
 @router.get("/cases/{case_id}/knowledge/brief/stream")
@@ -193,31 +216,24 @@ async def brief_stream(case_id: str, force: bool = Query(default=False)):
 @router.get("/cases/{case_id}/knowledge/summary.docx")
 @router.get("/cases/{case_id}/knowledge/brief.docx")
 def download_brief_docx(case_id: str):
-    state = require_case(case_id)
-    path = resolve_brief_file(case_id, "docx")
-    if not path:
-        raise HTTPException(
-            status_code=404,
-            detail="Обзора ещё нет. Напишите в чате «саммари».",
-        )
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=brief_download_name(state.inspection_name, case_id, "docx"),
+    return _download_artifact(
+        case_id,
+        kind="docx",
+        resolver=resolve_brief_file,
+        filename_builder=brief_download_name,
+        not_found="Обзора ещё нет. Напишите в чате «саммари».",
     )
 
 
 @router.get("/cases/{case_id}/knowledge/summary.md")
 @router.get("/cases/{case_id}/knowledge/brief.md")
 def download_brief_md(case_id: str):
-    state = require_case(case_id)
-    path = resolve_brief_file(case_id, "md")
-    if not path:
-        raise HTTPException(status_code=404, detail="Markdown саммари ещё нет.")
-    return FileResponse(
-        path,
-        media_type="text/markdown; charset=utf-8",
-        filename=brief_download_name(state.inspection_name, case_id, "md"),
+    return _download_artifact(
+        case_id,
+        kind="md",
+        resolver=resolve_brief_file,
+        filename_builder=brief_download_name,
+        not_found="Markdown саммари ещё нет.",
     )
 
 
@@ -229,14 +245,7 @@ def get_total(case_id: str):
 
 @router.post("/cases/{case_id}/knowledge/total")
 async def post_total(case_id: str, body: Optional[BriefRequest] = None):
-    require_case(case_id)
-    force = bool(body and body.force)
-    try:
-        return await build_total(case_id, force=force)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Total failed: {exc}") from exc
+    return await _build_artifact(case_id, body, build_total, "Total")
 
 
 @router.get("/cases/{case_id}/knowledge/total/stream")
@@ -247,30 +256,23 @@ async def total_stream(case_id: str, force: bool = Query(default=False)):
 
 @router.get("/cases/{case_id}/knowledge/total.docx")
 def download_total_docx(case_id: str):
-    state = require_case(case_id)
-    path = resolve_total_file(case_id, "docx")
-    if not path:
-        raise HTTPException(
-            status_code=404,
-            detail="Total саммари ещё нет. Напишите в чате «total саммари» или «конспект модели».",
-        )
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=total_download_name(state.inspection_name, case_id, "docx"),
+    return _download_artifact(
+        case_id,
+        kind="docx",
+        resolver=resolve_total_file,
+        filename_builder=total_download_name,
+        not_found="Саммари total ещё нет. Напишите в чате «саммари total» или «конспект модели».",
     )
 
 
 @router.get("/cases/{case_id}/knowledge/total.md")
 def download_total_md(case_id: str):
-    state = require_case(case_id)
-    path = resolve_total_file(case_id, "md")
-    if not path:
-        raise HTTPException(status_code=404, detail="Markdown total саммари ещё нет.")
-    return FileResponse(
-        path,
-        media_type="text/markdown; charset=utf-8",
-        filename=total_download_name(state.inspection_name, case_id, "md"),
+    return _download_artifact(
+        case_id,
+        kind="md",
+        resolver=resolve_total_file,
+        filename_builder=total_download_name,
+        not_found="Markdown саммари total ещё нет.",
     )
 
 
@@ -282,14 +284,7 @@ def get_program(case_id: str):
 
 @router.post("/cases/{case_id}/knowledge/program")
 async def post_program(case_id: str, body: Optional[BriefRequest] = None):
-    require_case(case_id)
-    force = bool(body and body.force)
-    try:
-        return await build_program(case_id, force=force)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as extra:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Program failed: {extra}") from extra
+    return await _build_artifact(case_id, body, build_program, "Program")
 
 
 @router.get("/cases/{case_id}/knowledge/program/stream")
@@ -300,30 +295,23 @@ async def program_stream(case_id: str, force: bool = Query(default=False)):
 
 @router.get("/cases/{case_id}/knowledge/program.docx")
 def download_program_docx(case_id: str):
-    state = require_case(case_id)
-    path = resolve_program_file(case_id, "docx")
-    if not path:
-        raise HTTPException(
-            status_code=404,
-            detail="Программы проверки ещё нет. Напишите в чате «программа проверки».",
-        )
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=program_download_name(state.inspection_name, case_id, "docx"),
+    return _download_artifact(
+        case_id,
+        kind="docx",
+        resolver=resolve_program_file,
+        filename_builder=program_download_name,
+        not_found="Программы проверки ещё нет. Напишите в чате «программа проверки».",
     )
 
 
 @router.get("/cases/{case_id}/knowledge/program.md")
 def download_program_md(case_id: str):
-    state = require_case(case_id)
-    path = resolve_program_file(case_id, "md")
-    if not path:
-        raise HTTPException(status_code=404, detail="Markdown программы проверки ещё нет.")
-    return FileResponse(
-        path,
-        media_type="text/markdown; charset=utf-8",
-        filename=program_download_name(state.inspection_name, case_id, "md"),
+    return _download_artifact(
+        case_id,
+        kind="md",
+        resolver=resolve_program_file,
+        filename_builder=program_download_name,
+        not_found="Markdown программы проверки ещё нет.",
     )
 
 

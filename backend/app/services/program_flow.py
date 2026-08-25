@@ -2,18 +2,40 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
-from app.filenames import safe_stem
 from app.models import CaseState
 from app.services.brief_docx import write_program_docx
 from app.services.brief_flow import collect_brief_sources
-from app.services.citations import pages_estimate
-from app.services.knowledge_flow import ingest_library
+from app.services.document_artifact import (
+    ArtifactSpec,
+    ElapsedTimer,
+    artifact_dir,
+    artifact_docx_path,
+    artifact_download_name,
+    artifact_md_path,
+    artifact_sources_path,
+    artifact_status,
+    event_result,
+    resolve_artifact_file,
+    save_artifact_meta,
+)
+from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete
 from app.storage import store
+
+PROGRAM_SPEC = ArtifactSpec(
+    meta_key="program",
+    directory="programs",
+    file_prefix="programma",
+    md_name="program.md",
+    sources_name="program_sources.json",
+    download_suffix="programma",
+    docx_endpoint="/api/v1/cases/{case_id}/knowledge/program.docx",
+    md_endpoint="/api/v1/cases/{case_id}/knowledge/program.md",
+    docx_glob="programma_*.docx",
+)
 
 PROGRAM_SYSTEM = """Ты — внутренний аудитор банка в Республике Беларусь, сотрудник службы внутреннего аудита.
 Тебе поручено подготовить черновик ПРОГРАММЫ АУДИТОРСКОЙ ПРОВЕРКИ по конкретной теме.
@@ -86,66 +108,32 @@ PROGRAM_SECTIONS = """
 
 
 def _program_dir(case_id: str) -> Path:
-    path = store.case_dir(case_id) / "programs"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return artifact_dir(case_id, PROGRAM_SPEC)
 
 
 def _docx_path(case_id: str, inspection_name: str) -> Path:
-    stem = safe_stem(inspection_name or "proverka")
-    return _program_dir(case_id) / f"programma_{stem}_{case_id}.docx"
+    return artifact_docx_path(case_id, inspection_name, PROGRAM_SPEC)
 
 
 def _md_path(case_id: str) -> Path:
-    return _program_dir(case_id) / "program.md"
+    return artifact_md_path(case_id, PROGRAM_SPEC)
 
 
 def _sources_path(case_id: str) -> Path:
-    return _program_dir(case_id) / "program_sources.json"
+    return artifact_sources_path(case_id, PROGRAM_SPEC)
 
 
 def program_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
     _ = case_id
-    stem = safe_stem(inspection_name or "proverka")
-    suffix = (ext or "docx").lstrip(".")
-    if suffix == "md":
-        return f"{stem}_programma.md"
-    return f"{stem}_programma.{suffix}"
+    return artifact_download_name(inspection_name, PROGRAM_SPEC, ext=ext)
 
 
 def resolve_program_file(case_id: str, kind: str) -> Path | None:
-    state = store.get(case_id)
-    meta = state.meta.get("program") or {}
-    key = "docx_path" if kind == "docx" else "md_path"
-    stored = meta.get(key)
-    if stored and Path(stored).exists():
-        return Path(stored)
-    if kind == "docx":
-        candidate = _docx_path(case_id, state.inspection_name)
-        if candidate.exists():
-            return candidate
-        found = sorted(_program_dir(case_id).glob("programma_*.docx"))
-        return found[-1] if found else None
-    candidate = _md_path(case_id)
-    return candidate if candidate.exists() else None
+    return resolve_artifact_file(case_id, PROGRAM_SPEC, kind)
 
 
 def program_status(case_id: str) -> dict:
-    state = store.get(case_id)
-    meta = dict(state.meta.get("program") or {})
-    docx = Path(meta["docx_path"]) if meta.get("docx_path") else _docx_path(case_id, state.inspection_name)
-    ready = docx.exists()
-    meta.update(
-        {
-            "case_id": case_id,
-            "ready": ready,
-            "docx_path": str(docx) if ready else meta.get("docx_path"),
-            "download": f"/api/v1/cases/{case_id}/knowledge/program.docx",
-            "markdown": f"/api/v1/cases/{case_id}/knowledge/program.md",
-            "inspection_name": state.inspection_name,
-        }
-    )
-    return meta
+    return artifact_status(case_id, PROGRAM_SPEC)
 
 
 def _program_stale(state: CaseState) -> bool:
@@ -224,24 +212,18 @@ def _save_program_meta(
     sources: list[dict],
     body: str,
 ) -> dict:
-    meta = {
-        "built_at": datetime.utcnow().isoformat(),
-        "docx_path": str(docx),
-        "md_path": str(md),
-        "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
-        "keywords": list(state.keywords),
-        "citations": len(sources),
-        "chars": len(body),
-        "pages_estimate": pages_estimate(body, settings.brief_chars_per_page),
-        "download": f"/api/v1/cases/{state.case_id}/knowledge/program.docx",
-        "markdown": f"/api/v1/cases/{state.case_id}/knowledge/program.md",
-        "ready": True,
-        "case_id": state.case_id,
-        "inspection_name": state.inspection_name,
-    }
-    state.meta["program"] = meta
-    store.save(state)
-    return meta
+    return save_artifact_meta(
+        state,
+        PROGRAM_SPEC,
+        docx=docx,
+        md=md,
+        sources=sources,
+        body=body,
+        extra={
+            "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
+            "keywords": list(state.keywords),
+        },
+    )
 
 
 def _write_markdown(
@@ -323,10 +305,8 @@ async def _compose_program(state: CaseState, sources: list[dict]) -> str:
 
 
 async def build_program_events(case_id: str, force: bool = False) -> AsyncIterator[dict]:
-    t0 = datetime.utcnow()
-
-    def elapsed() -> int:
-        return int((datetime.utcnow() - t0).total_seconds() * 1000)
+    timer = ElapsedTimer()
+    elapsed = timer.ms
 
     yield {"type": "status", "message": "Собираю материалы проверки…", "elapsed_ms": elapsed()}
     state = ingest_library(case_id)
@@ -395,10 +375,7 @@ async def build_program_events(case_id: str, force: bool = False) -> AsyncIterat
 
 
 async def build_program(case_id: str, force: bool = False) -> dict:
-    result: dict | None = None
-    async for event in build_program_events(case_id, force=force):
-        if event.get("type") == "result":
-            result = event
-    if not result:
-        raise ValueError("Программа проверки не собрана")
-    return result
+    return await event_result(
+        build_program_events(case_id, force=force),
+        "Программа проверки не собрана",
+    )

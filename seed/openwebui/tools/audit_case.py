@@ -21,6 +21,10 @@ class Tools:
             default="http://backend:8100",
             description="Audit Tool Server. Compose: http://backend:8100. Хост: http://localhost:8100",
         )
+        PUBLIC_API: str = Field(
+            default="http://localhost:8100",
+            description="Публичный URL для ссылок на docx/zip в браузере аудитора",
+        )
         TIMEOUT_SEC: int = Field(default=300)
 
     def __init__(self) -> None:
@@ -28,6 +32,9 @@ class Tools:
 
     def _base(self) -> str:
         return self.valves.AUDIT_API.rstrip("/")
+
+    def _public(self) -> str:
+        return (self.valves.PUBLIC_API or self.valves.AUDIT_API).rstrip("/")
 
     async def create_case(
         self,
@@ -117,8 +124,16 @@ class Tools:
         extra = "; ".join(fails) if fails else "все ок"
         return (
             f"status={data.get('status')} downloaded={data.get('downloaded')} "
-            f"failed={data.get('failed')} ({extra}). Дальше sync_knowledge."
+            f"failed={data.get('failed')} ({extra}). Дальше index_knowledge или sync_knowledge."
         )
+
+    async def index_knowledge(self, case_id: str) -> str:
+        """
+        Построить серверный индекс базы НПА после download_npa.
+        Нужен для вопросов через ask_npa даже без Open WebUI Knowledge sync.
+        """
+        data = await self._req("POST", f"/api/v1/cases/{case_id}/knowledge/index", {})
+        return f"index ready chunks={data.get('chunks')} items={len(data.get('items') or [])}"
 
     async def sync_knowledge(self, case_id: str) -> str:
         """Залить очищенные тексты кейса в Open WebUI Knowledge. После download_npa."""
@@ -184,13 +199,13 @@ class Tools:
         cites = data.get("citations")
         return (
             f"brief ready pages={pages} citations={cites}. "
-            f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
+            f"Скачать: {self._public()}{data.get('download') or path + '.docx'}"
         )
 
     async def build_total(self, case_id: str, force: bool = False) -> str:
         """
-        Собрать total саммари — конспект по теме из знаний LLM (не из базы знаний) в Word.
-        Вызывай, когда аудитор просит total саммари / total / конспект модели / из головы.
+        Собрать саммари total — конспект по теме из знаний LLM (не из базы знаний) в Word.
+        Вызывай, когда аудитор просит саммари total / конспект модели / из головы.
         Достаточно созданного кейса; download_npa не обязателен.
         """
         path = f"/api/v1/cases/{case_id}/knowledge/total"
@@ -201,8 +216,8 @@ class Tools:
         pages = data.get("pages_estimate")
         cites = data.get("citations")
         return (
-            f"total саммари ready pages={pages} citations={cites}. "
-            f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
+            f"саммари total ready pages={pages} citations={cites}. "
+            f"Скачать: {self._public()}{data.get('download') or path + '.docx'}"
         )
 
     async def build_program(self, case_id: str, force: bool = False) -> str:
@@ -219,7 +234,7 @@ class Tools:
         cites = data.get("citations")
         return (
             f"program ready pages={pages} citations={cites}. "
-            f"Скачать: {self._base()}{data.get('download') or path + '.docx'}"
+            f"Скачать: {self._public()}{data.get('download') or path + '.docx'}"
         )
 
     async def _req(self, method: str, path: str, json: Optional[dict] = None) -> dict:

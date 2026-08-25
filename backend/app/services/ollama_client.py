@@ -10,6 +10,8 @@ import httpx
 
 from app.config import settings
 
+_CLIENTS: dict[float, httpx.AsyncClient] = {}
+
 PROPOSE_SYSTEM = """Ты — старший методолог внутреннего аудита банка в Республике Беларусь.
 Твоя задача: по названию проверки и ключевым словам предложить список нормативных правовых актов (НПА),
 с которыми аудитор должен ознакомиться ДО анализа данных.
@@ -21,6 +23,15 @@ PROPOSE_SYSTEM = """Ты — старший методолог внутренн�
 4. Не выдумывай номера статей как факт — достаточно корректного названия акта и зачем он нужен.
 5. Ответь ТОЛЬКО валидным JSON без markdown.
 """
+
+
+def _ollama_client(timeout: float | None) -> httpx.AsyncClient:
+    value = float(timeout or settings.ollama_timeout_sec)
+    client = _CLIENTS.get(value)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(timeout=value)
+        _CLIENTS[value] = client
+    return client
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -165,30 +176,30 @@ async def propose_documents_events(
     }
 
     content_parts: list[str] = []
-    async with httpx.AsyncClient(timeout=settings.ollama_timeout_sec) as client:
-        async with client.stream(
-            "POST",
-            f"{settings.ollama_base_url}/api/chat",
-            json=payload,
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                piece = (chunk.get("message") or {}).get("content") or ""
-                if piece:
-                    content_parts.append(piece)
-                    yield {
-                        "type": "token",
-                        "content": piece,
-                        "elapsed_ms": elapsed_ms(),
-                    }
-                if chunk.get("done"):
-                    break
+    client = _ollama_client(settings.ollama_timeout_sec)
+    async with client.stream(
+        "POST",
+        f"{settings.ollama_base_url}/api/chat",
+        json=payload,
+    ) as resp:
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            piece = (chunk.get("message") or {}).get("content") or ""
+            if piece:
+                content_parts.append(piece)
+                yield {
+                    "type": "token",
+                    "content": piece,
+                    "elapsed_ms": elapsed_ms(),
+                }
+            if chunk.get("done"):
+                break
 
     content = "".join(content_parts)
     yield {
@@ -292,10 +303,10 @@ async def chat_messages(
         "options": options,
         "messages": messages,
     }
-    async with httpx.AsyncClient(timeout=timeout or settings.ollama_timeout_sec) as client:
-        resp = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    client = _ollama_client(timeout or settings.ollama_timeout_sec)
+    resp = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
+    resp.raise_for_status()
+    data = resp.json()
     message = data.get("message") or {}
     content = str(message.get("content") or "").strip()
     return _strip_think(content)
@@ -309,18 +320,18 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         "model": settings.ollama_embed_model,
         "input": texts,
     }
-    async with httpx.AsyncClient(timeout=settings.embed_timeout_sec) as client:
-        resp = await client.post(f"{settings.ollama_base_url}/api/embed", json=payload)
-        if resp.status_code == 404:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/embeddings",
-                json={"model": settings.ollama_embed_model, "prompt": texts[0]},
-            )
-            resp.raise_for_status()
-            one = resp.json().get("embedding") or []
-            return [one]
+    client = _ollama_client(settings.embed_timeout_sec)
+    resp = await client.post(f"{settings.ollama_base_url}/api/embed", json=payload)
+    if resp.status_code == 404:
+        resp = await client.post(
+            f"{settings.ollama_base_url}/api/embeddings",
+            json={"model": settings.ollama_embed_model, "prompt": texts[0]},
+        )
         resp.raise_for_status()
-        data = resp.json()
+        one = resp.json().get("embedding") or []
+        return [one]
+    resp.raise_for_status()
+    data = resp.json()
     vectors = data.get("embeddings") or []
     if not vectors and data.get("embedding"):
         vectors = [data["embedding"]]

@@ -1,9 +1,9 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.1
+version: 0.2.2
 license: MIT
-description: Агент проверки. Собирает документы, саммари, total саммари и программу. Вопрос по базе — с префиксом «вопрос»; иначе обычный чат с LLM.
+description: Агент проверки. Собирает документы, саммари, саммари total и программу. Вопрос по базе — с префиксом «вопрос»; иначе обычный чат с LLM.
 requirements: httpx
 """
 
@@ -53,8 +53,8 @@ HELP = """Я помогаю собрать документы для прове�
 — вопрос по базе знаний: начните сообщение со слова `вопрос`, например:
   `вопрос Какой срок регистрации договора аренды?`
 — обычный диалог (план, формулировки, риски) — пишите как в чате, без префикса;
-— напишите «саммари» — получите краткий обзор актов в Word;
-— напишите «total саммари» — получите конспект по теме из знаний модели (не из базы);
+— напишите «саммари» — получите карточки существенного по актам в Word;
+— напишите «саммари total» — получите конспект по теме из знаний модели (не из базы);
 — напишите «программа проверки» — получите программу аудиторской проверки в Word.
 
 Посмотреть, что скачалось: напишите «документы».
@@ -357,8 +357,8 @@ class Pipe:
             "Дальше:\n"
             "— вопрос по базе: `вопрос …` (например `вопрос Какой срок…`);\n"
             "— обычный диалог — пишите без префикса;\n"
-            "— `саммари` — обзор актов в Word;\n"
-            "— `total саммари` — конспект из знаний модели;\n"
+            "— `саммари` — карточки существенного по актам в Word;\n"
+            "— `саммари total` — конспект из знаний модели;\n"
             "— `программа проверки` — программа в Word.\n"
             f"<!--audit-case:{case_id}-->"
         )
@@ -431,7 +431,7 @@ class Pipe:
             return f"{answer}\n<!--audit-case:{case_id}-->"
         return answer
 
-    async def _brief(
+    async def _stream_build(
         self,
         api: str,
         public: str,
@@ -439,11 +439,19 @@ class Pipe:
         case_id: str,
         text: str,
         emitter: Emitter,
+        *,
+        endpoint: str,
+        start_message: str,
+        fallback_status: str,
+        error_label: str,
+        retry_hint: str,
+        empty_message: str,
+        link_flags: dict[str, bool],
     ) -> str:
         force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
-        await _status(emitter, "Готовлю обзор базы знаний в Word. Это может занять несколько минут…")
+        await _status(emitter, start_message)
         result: dict[str, Any] | None = None
-        url = f"{api}/api/v1/cases/{case_id}/knowledge/brief/stream"
+        url = f"{api}/api/v1/cases/{case_id}/knowledge/{endpoint}/stream"
         if force:
             url += "?force=true"
         try:
@@ -461,20 +469,20 @@ class Pipe:
                             continue
                         kind = event.get("type")
                         if kind == "status":
-                            await _status(emitter, event.get("message") or "Готовлю обзор…")
+                            await _status(emitter, event.get("message") or fallback_status)
                         elif kind == "error":
-                            raise RuntimeError(event.get("message") or "brief error")
+                            raise RuntimeError(event.get("message") or f"{endpoint} error")
                         elif kind == "result":
                             result = event
         except Exception as exc:  # noqa: BLE001
             return (
-                f"Не получилось собрать обзор: {exc}\n"
-                "Сначала должны быть скачаны документы. Напишите `документы` или `утверждаю 1, 2`.\n"
+                f"Не получилось собрать {error_label}: {exc}\n"
+                f"{retry_hint}\n"
                 f"<!--audit-case:{case_id}-->"
             )
         if not result:
             return (
-                "Обзор не получился. Напишите ещё раз: `саммари`.\n"
+                f"{empty_message}\n"
                 f"<!--audit-case:{case_id}-->"
             )
         name = result.get("inspection_name") or ""
@@ -485,8 +493,33 @@ class Pipe:
             except Exception:
                 name = "proverka"
         return (
-            f"{_download_links(public, case_id, name, with_archive=False, with_summary=True)}\n"
+            f"{_download_links(public, case_id, name, with_archive=False, **link_flags)}\n"
             f"<!--audit-case:{case_id}-->"
+        )
+
+    async def _brief(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        return await self._stream_build(
+            api,
+            public,
+            timeout,
+            case_id,
+            text,
+            emitter,
+            endpoint="brief",
+            start_message="Готовлю карточки существенного по актам в Word. Это может занять несколько минут…",
+            fallback_status="Готовлю саммари…",
+            error_label="обзор",
+            retry_hint="Сначала должны быть скачаны документы. Напишите `документы` или `утверждаю 1, 2`.",
+            empty_message="Обзор не получился. Напишите ещё раз: `саммари`.",
+            link_flags={"with_summary": True},
         )
 
     async def _total(
@@ -498,58 +531,20 @@ class Pipe:
         text: str,
         emitter: Emitter,
     ) -> str:
-        force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
-        await _status(
+        return await self._stream_build(
+            api,
+            public,
+            timeout,
+            case_id,
+            text,
             emitter,
-            "Готовлю total саммари — конспект из знаний модели (не из базы). Это может занять несколько минут…",
-        )
-        result: dict[str, Any] | None = None
-        url = f"{api}/api/v1/cases/{case_id}/knowledge/total/stream"
-        if force:
-            url += "?force=true"
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("GET", url) as response:
-                    if response.status_code >= 400:
-                        detail = (await response.aread())[:400].decode("utf-8", "replace")
-                        raise RuntimeError(f"{response.status_code}: {detail}")
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        try:
-                            event = json.loads(line[6:])
-                        except json.JSONDecodeError:
-                            continue
-                        kind = event.get("type")
-                        if kind == "status":
-                            await _status(
-                                emitter, event.get("message") or "Готовлю total саммари…"
-                            )
-                        elif kind == "error":
-                            raise RuntimeError(event.get("message") or "total саммари error")
-                        elif kind == "result":
-                            result = event
-        except Exception as exc:  # noqa: BLE001
-            return (
-                f"Не получилось собрать total саммари: {exc}\n"
-                "Нужна созданная проверка в этом чате. Напишите тему проверки, если кейса ещё нет.\n"
-                f"<!--audit-case:{case_id}-->"
-            )
-        if not result:
-            return (
-                "Total саммари не получился. Напишите ещё раз: `total саммари`.\n"
-                f"<!--audit-case:{case_id}-->"
-            )
-        name = result.get("inspection_name") or ""
-        if not name:
-            try:
-                state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
-                name = state.get("inspection_name") or "proverka"
-            except Exception:
-                name = "proverka"
-        return (
-            f"{_download_links(public, case_id, name, with_archive=False, with_total=True)}\n"
-            f"<!--audit-case:{case_id}-->"
+            endpoint="total",
+            start_message="Готовлю саммари total — конспект из знаний модели (не из базы). Это может занять несколько минут…",
+            fallback_status="Готовлю саммари total…",
+            error_label="саммари total",
+            retry_hint="Нужна созданная проверка в этом чате. Напишите тему проверки, если кейса ещё нет.",
+            empty_message="Саммари total не получился. Напишите ещё раз: `саммари total`.",
+            link_flags={"with_total": True},
         )
 
     async def _program(
@@ -561,59 +556,20 @@ class Pipe:
         text: str,
         emitter: Emitter,
     ) -> str:
-        force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
-        await _status(
+        return await self._stream_build(
+            api,
+            public,
+            timeout,
+            case_id,
+            text,
             emitter,
-            "Готовлю программу аудиторской проверки в Word. Это может занять несколько минут…",
-        )
-        result: dict[str, Any] | None = None
-        url = f"{api}/api/v1/cases/{case_id}/knowledge/program/stream"
-        if force:
-            url += "?force=true"
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("GET", url) as response:
-                    if response.status_code >= 400:
-                        detail = (await response.aread())[:400].decode("utf-8", "replace")
-                        raise RuntimeError(f"{response.status_code}: {detail}")
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        try:
-                            event = json.loads(line[6:])
-                        except json.JSONDecodeError:
-                            continue
-                        kind = event.get("type")
-                        if kind == "status":
-                            await _status(
-                                emitter, event.get("message") or "Готовлю программу проверки…"
-                            )
-                        elif kind == "error":
-                            raise RuntimeError(event.get("message") or "program error")
-                        elif kind == "result":
-                            result = event
-        except Exception as exc:  # noqa: BLE001
-            return (
-                f"Не получилось собрать программу проверки: {exc}\n"
-                "Сначала должна быть создана проверка. Лучше, если акты уже скачаны: "
-                "напишите `документы` или `утверждаю 1, 2`.\n"
-                f"<!--audit-case:{case_id}-->"
-            )
-        if not result:
-            return (
-                "Программа проверки не получилась. Напишите ещё раз: `программа проверки`.\n"
-                f"<!--audit-case:{case_id}-->"
-            )
-        name = result.get("inspection_name") or ""
-        if not name:
-            try:
-                state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
-                name = state.get("inspection_name") or "proverka"
-            except Exception:
-                name = "proverka"
-        return (
-            f"{_download_links(public, case_id, name, with_archive=False, with_program=True)}\n"
-            f"<!--audit-case:{case_id}-->"
+            endpoint="program",
+            start_message="Готовлю программу аудиторской проверки в Word. Это может занять несколько минут…",
+            fallback_status="Готовлю программу проверки…",
+            error_label="программу проверки",
+            retry_hint="Сначала должна быть создана проверка. Лучше, если акты уже скачаны: напишите `документы` или `утверждаю 1, 2`.",
+            empty_message="Программа проверки не получилась. Напишите ещё раз: `программа проверки`.",
+            link_flags={"with_program": True},
         )
 
     async def _library(self, api: str, public: str, timeout: float, case_id: str) -> str:
@@ -632,9 +588,9 @@ class Pipe:
         lines.append(_download_links(public, case_id, name, with_summary=False))
         lines.append("")
         lines.append("Дальше: вопрос по базе — `вопрос …`; обычный диалог — без префикса.")
-        lines.append("Чтобы получить краткий обзор актов в Word, напишите `саммари`.")
+        lines.append("Чтобы получить карточки существенного по актам в Word, напишите `саммари`.")
         lines.append(
-            "Чтобы получить конспект из знаний модели, напишите `total саммари`."
+            "Чтобы получить конспект из знаний модели, напишите `саммари total`."
         )
         lines.append("Чтобы получить программу проверки в Word, напишите `программа проверки`.")
         lines.append(f"<!--audit-case:{case_id}-->")
@@ -750,22 +706,25 @@ def _is_program(text: str) -> bool:
 def _is_total(text: str) -> bool:
     t = text.strip().lower()
     if t in {
-        "total",
-        "тотал",
-        "/total",
-        "total саммари",
         "саммари total",
+        "саммари тотал",
+        "total саммари",
+        "/total",
         "конспект модели",
         "из головы",
     }:
         return True
     return bool(
         re.search(
-            r"(\btotal\s+саммари\b|\bсаммари\s+total\b|\btotal\b|тотал|"
+            r"("
+            r"саммари\s+total|"
+            r"саммари\s+тотал|"
+            r"total\s+саммари|"
             r"сводк\w*\s+total|"
             r"конспект\s+(модели|llm|из\s+голов)|"
             r"из\s+голов\w*\s+модел|"
-            r"(обзор|конспект)\s+без\s+баз)",
+            r"(обзор|конспект)\s+без\s+баз"
+            r")",
             t,
         )
     )
@@ -852,7 +811,7 @@ def _download_links(
         )
     if with_total:
         lines.append(
-            f"- total саммари (`{stem}_total.docx`): {base}/knowledge/total.docx"
+            f"- саммари total (`{stem}_total.docx`): {base}/knowledge/total.docx"
         )
     if with_program:
         lines.append(

@@ -4,34 +4,66 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
-from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
-from app.filenames import safe_stem
 from app.services.brief_docx import write_brief_docx
-from app.services.citations import pages_estimate
-from app.services.knowledge_flow import (
+from app.services.document_artifact import (
+    ArtifactSpec,
+    ElapsedTimer,
+    artifact_dir,
+    artifact_docx_path,
+    artifact_download_name,
+    artifact_md_path,
+    artifact_sources_path,
+    artifact_status,
+    event_result,
+    resolve_artifact_file,
+    save_artifact_meta,
+)
+from app.services.knowledge_ingest import ingest_library
+from app.services.knowledge_flow import OVERVIEW_PROMPT, SUMMARY_SYSTEM
+from app.services.knowledge_summarize import (
     FRAGMENTS_PER_ITEM,
-    _fragments_from_item,
-    ingest_library,
+    fragments_from_item,
     summarize_item,
 )
+from app.services.ollama_client import chat_complete
 from app.models import CaseState
 from app.storage import store
 
-BRIEF_SCHEMA = 2
+BRIEF_SCHEMA = 3
+BRIEF_SPEC = ArtifactSpec(
+    meta_key="brief",
+    directory="summaries",
+    file_prefix="sammari",
+    md_name="brief.md",
+    sources_name="brief_sources.json",
+    download_suffix="summary",
+    docx_endpoint="/api/v1/cases/{case_id}/knowledge/summary.docx",
+    md_endpoint="/api/v1/cases/{case_id}/knowledge/summary.md",
+    docx_glob="sammari_*.docx",
+)
+
+
+def _section_after(md: str, marker: str) -> str:
+    idx = (md or "").find(marker)
+    if idx < 0:
+        return ""
+    section = md[idx + len(marker) :]
+    nxt = re.search(r"\n##\s+", section)
+    if nxt:
+        section = section[: nxt.start()]
+    return section
 
 
 def _markdown_bullets(md: str) -> list[str]:
-    section = md or ""
-    marker = "## Основные положения"
-    idx = section.find(marker)
-    if idx >= 0:
-        section = section[idx:]
-        nxt = section.find("\n## ", 3)
-        if nxt > 0:
-            section = section[:nxt]
+    chunks: list[str] = []
+    for marker in ("## Ключевые нормы", "## Что проверять", "## Основные положения"):
+        piece = _section_after(md, marker)
+        if piece:
+            chunks.append(piece)
+    section = "\n".join(chunks) if chunks else (md or "")
     out: list[str] = []
     for ln in section.splitlines():
         s = ln.strip()
@@ -44,66 +76,32 @@ def _markdown_bullets(md: str) -> list[str]:
 
 
 def _brief_dir(case_id: str) -> Path:
-    path = store.case_dir(case_id) / "summaries"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return artifact_dir(case_id, BRIEF_SPEC)
 
 
 def _docx_path(case_id: str, inspection_name: str) -> Path:
-    stem = safe_stem(inspection_name or "proverka")
-    return _brief_dir(case_id) / f"sammari_{stem}_{case_id}.docx"
+    return artifact_docx_path(case_id, inspection_name, BRIEF_SPEC)
 
 
 def _md_path(case_id: str) -> Path:
-    return _brief_dir(case_id) / "brief.md"
+    return artifact_md_path(case_id, BRIEF_SPEC)
 
 
 def _sources_path(case_id: str) -> Path:
-    return _brief_dir(case_id) / "brief_sources.json"
+    return artifact_sources_path(case_id, BRIEF_SPEC)
 
 
 def brief_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
     _ = case_id
-    stem = safe_stem(inspection_name or "proverka")
-    suffix = (ext or "docx").lstrip(".")
-    if suffix == "md":
-        return f"{stem}_summary.md"
-    return f"{stem}_summary.{suffix}"
+    return artifact_download_name(inspection_name, BRIEF_SPEC, ext=ext)
 
 
 def resolve_brief_file(case_id: str, kind: str) -> Path | None:
-    state = store.get(case_id)
-    meta = state.meta.get("brief") or {}
-    key = "docx_path" if kind == "docx" else "md_path"
-    stored = meta.get(key)
-    if stored and Path(stored).exists():
-        return Path(stored)
-    if kind == "docx":
-        candidate = _docx_path(case_id, state.inspection_name)
-        if candidate.exists():
-            return candidate
-        found = sorted(_brief_dir(case_id).glob("sammari_*.docx"))
-        return found[-1] if found else None
-    candidate = _md_path(case_id)
-    return candidate if candidate.exists() else None
+    return resolve_artifact_file(case_id, BRIEF_SPEC, kind)
 
 
 def brief_status(case_id: str) -> dict:
-    state = store.get(case_id)
-    meta = dict(state.meta.get("brief") or {})
-    docx = Path(meta["docx_path"]) if meta.get("docx_path") else _docx_path(case_id, state.inspection_name)
-    ready = docx.exists()
-    meta.update(
-        {
-            "case_id": case_id,
-            "ready": ready,
-            "docx_path": str(docx) if ready else meta.get("docx_path"),
-            "download": f"/api/v1/cases/{case_id}/knowledge/summary.docx",
-            "markdown": f"/api/v1/cases/{case_id}/knowledge/summary.md",
-            "inspection_name": state.inspection_name,
-        }
-    )
-    return meta
+    return artifact_status(case_id, BRIEF_SPEC)
 
 
 def _brief_stale(state: CaseState) -> bool:
@@ -125,7 +123,7 @@ def collect_brief_sources(state) -> list[dict]:
     for item in state.knowledge:
         if item.extract_status != "ok":
             continue
-        frags = _fragments_from_item(state, item, start_n=n)[:FRAGMENTS_PER_ITEM]
+        frags = fragments_from_item(state, item, start_n=n)[:FRAGMENTS_PER_ITEM]
         if not frags:
             continue
         for i, fr in enumerate(frags):
@@ -139,25 +137,24 @@ def _synthesize(state, chapters: list[dict]) -> str:
     n = len(chapters)
     lines = [
         f"К проверке «{state.inspection_name}» приложено {n} документ(ов) из базы знаний.",
-        "Каждая карточка ниже — перечень основных положений акта по порядку текста, "
-        "чтобы не читать первоисточник целиком.",
+        "Каждая карточка ниже — существенное для этой проверки, не перечень всех статей акта.",
         "",
         "## Состав нормативной базы",
     ]
     for ch in chapters:
         bullets = _markdown_bullets(ch.get("body") or "")
-        lines.append(f"- **{ch['title']}** — в конспекте {len(bullets)} положений.")
+        lines.append(f"- **{ch['title']}** — в карточке {len(bullets)} опор.")
     lines.append("")
     lines.append("## Основные моменты по актам")
     for ch in chapters:
         lines.append(f"### {ch['title']}")
         bullets = _markdown_bullets(ch.get("body") or "")
-        preview = bullets[:15]
+        preview = bullets[:12]
         if preview:
             lines.extend(f"- {b}" for b in preview)
             extra = len(bullets) - len(preview)
             if extra > 0:
-                lines.append(f"- … ещё {extra} положений в карточке акта ниже")
+                lines.append(f"- … ещё {extra} опор в карточке акта ниже")
         else:
             first = next(
                 (
@@ -167,9 +164,30 @@ def _synthesize(state, chapters: list[dict]) -> str:
                 ),
                 "",
             )
-            lines.append(f"- {first[:240]}" if first else "- конспект в карточке акта ниже")
+            lines.append(f"- {first[:240]}" if first else "- карточка акта ниже")
         lines.append("")
     return "\n".join(lines).strip()
+
+
+async def _synthesize_overview(state, chapters: list[dict]) -> str:
+    cards = "\n\n".join(f"# {ch['title']}\n{ch['body']}" for ch in chapters)
+    try:
+        text = await chat_complete(
+            SUMMARY_SYSTEM,
+            OVERVIEW_PROMPT.format(
+                inspection=state.inspection_name,
+                keywords=", ".join(state.keywords) or "не указаны",
+                cards=cards[:20000],
+            ),
+            temperature=0.1,
+            timeout=settings.summary_timeout_sec,
+            num_predict=4096,
+        )
+        if (text or "").strip():
+            return text.strip()
+    except Exception:
+        pass
+    return _synthesize(state, chapters)
 
 
 def _write_markdown(
@@ -188,8 +206,8 @@ def _write_markdown(
         f"**{inspection_name}**",
         f"Период: {period or 'не указан'}. Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",
-        "Номера статей — из текста актов. Официальный URL — страница скачивания. "
-        "Конспект — перечень основных положений по порядку всего акта, не выборка по поиску.",
+        "Карточка по каждому акту — существенное для этой проверки, не перечень всех статей. "
+        "Номера статей — из текста актов. Официальный URL — страница скачивания.",
         "",
         "## Обзор проверки",
         overview.strip(),
@@ -224,31 +242,23 @@ def _digest(chapters: list[dict], limit: int = 6) -> list[str]:
 
 
 def _save_brief_meta(state, *, docx: Path, md: Path, sources: list[dict], body: str) -> dict:
-    meta = {
-        "built_at": datetime.utcnow().isoformat(),
-        "docx_path": str(docx),
-        "md_path": str(md),
-        "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
-        "schema": BRIEF_SCHEMA,
-        "citations": len(sources),
-        "chars": len(body),
-        "pages_estimate": pages_estimate(body, settings.brief_chars_per_page),
-        "download": f"/api/v1/cases/{state.case_id}/knowledge/summary.docx",
-        "markdown": f"/api/v1/cases/{state.case_id}/knowledge/summary.md",
-        "ready": True,
-        "case_id": state.case_id,
-        "inspection_name": state.inspection_name,
-    }
-    state.meta["brief"] = meta
-    store.save(state)
-    return meta
+    return save_artifact_meta(
+        state,
+        BRIEF_SPEC,
+        docx=docx,
+        md=md,
+        sources=sources,
+        body=body,
+        extra={
+            "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
+            "schema": BRIEF_SCHEMA,
+        },
+    )
 
 
 async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator[dict]:
-    t0 = datetime.utcnow()
-
-    def elapsed() -> int:
-        return int((datetime.utcnow() - t0).total_seconds() * 1000)
+    timer = ElapsedTimer()
+    elapsed = timer.ms
 
     yield {"type": "status", "message": "Собираю тексты библиотеки…", "elapsed_ms": elapsed()}
     state = ingest_library(case_id)
@@ -262,7 +272,7 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
         return
 
-    yield {"type": "status", "message": "Готовлю конспекты по полным текстам актов…", "elapsed_ms": elapsed()}
+    yield {"type": "status", "message": "Готовлю карточки существенного по актам…", "elapsed_ms": elapsed()}
     sources = collect_brief_sources(state)
 
     total = len(ok_items)
@@ -274,7 +284,7 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
 
         yield {
             "type": "status",
-            "message": f"Читаю акт {idx} из {total} целиком: {item.title}",
+            "message": f"Читаю акт {idx} из {total}: {item.title}",
             "elapsed_ms": elapsed(),
         }
         task = asyncio.create_task(summarize_item(state, item, on_status=on_status))
@@ -304,13 +314,13 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
             )
         chapters.append({"title": item.title, "body": body, "item_id": item.id})
 
-    yield {"type": "status", "message": "Собираю оглавление основных моментов по актам…", "elapsed_ms": elapsed()}
-    overview = _synthesize(state, chapters)
+    yield {"type": "status", "message": "Собираю обзор проверки по карточкам актов…", "elapsed_ms": elapsed()}
+    overview = await _synthesize_overview(state, chapters)
 
     body_for_pages = overview + "\n\n" + "\n\n".join(ch["body"] for ch in chapters)
     md = _md_path(case_id)
     docx = _docx_path(case_id, state.inspection_name)
-    yield {"type": "status", "message": "Собираю Word с конспектами актов…", "elapsed_ms": elapsed()}
+    yield {"type": "status", "message": "Собираю Word с карточками актов…", "elapsed_ms": elapsed()}
     _write_markdown(
         md,
         inspection_name=state.inspection_name,
@@ -341,10 +351,4 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
 
 
 async def build_brief(case_id: str, force: bool = False) -> dict:
-    result: dict | None = None
-    async for event in build_brief_events(case_id, force=force):
-        if event.get("type") == "result":
-            result = event
-    if not result:
-        raise ValueError("Саммари не собрано")
-    return result
+    return await event_result(build_brief_events(case_id, force=force), "Саммари не собрано")

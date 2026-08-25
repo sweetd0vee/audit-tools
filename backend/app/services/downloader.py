@@ -11,17 +11,9 @@ from bs4 import BeautifulSoup
 from app.config import settings
 from app.domains import host_allowed
 from app.filenames import slugify
+from app.services.http_constants import DOWNLOAD_BROWSER_HEADERS, NEWS_MARKERS
 
 _PLACEHOLDER = re.compile(r"(?:\.{3}|…)")
-NEWS_MARKERS = ("/novosti/", "/analitika/", "/news/")
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/pdf,text/html,application/xhtml+xml,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-}
 
 
 def usable_url(url: str | None) -> str | None:
@@ -138,7 +130,7 @@ async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict
     async with httpx.AsyncClient(
         timeout=settings.download_timeout_sec,
         follow_redirects=True,
-        headers=BROWSER_HEADERS,
+        headers=DOWNLOAD_BROWSER_HEADERS,
     ) as client:
         final_url, content, content_type = await _fetch(client, url)
         if not is_usable_npa_page(final_url, content, content_type):

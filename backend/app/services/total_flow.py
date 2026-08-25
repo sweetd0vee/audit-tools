@@ -3,18 +3,39 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import AsyncIterator
-from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
-from app.filenames import safe_stem
 from app.models import CaseState
 from app.services.brief_docx import write_total_docx
-from app.services.citations import pages_estimate
+from app.services.document_artifact import (
+    ArtifactSpec,
+    ElapsedTimer,
+    artifact_dir,
+    artifact_docx_path,
+    artifact_download_name,
+    artifact_md_path,
+    artifact_sources_path,
+    artifact_status,
+    event_result,
+    resolve_artifact_file,
+    save_artifact_meta,
+)
 from app.services.ollama_client import chat_complete
 from app.storage import store
 
 TOTAL_SCHEMA = 1
+TOTAL_SPEC = ArtifactSpec(
+    meta_key="total",
+    directory="totals",
+    file_prefix="total",
+    md_name="total.md",
+    sources_name="total_sources.json",
+    download_suffix="total",
+    docx_endpoint="/api/v1/cases/{case_id}/knowledge/total.docx",
+    md_endpoint="/api/v1/cases/{case_id}/knowledge/total.md",
+    docx_glob="total_*.docx",
+)
 
 TOTAL_SYSTEM = """Ты — опытный внутренний аудитор и консультант по праву Республики Беларусь.
 Тебе нужно подготовить краткий конспект по теме проверки, опираясь ТОЛЬКО на свои знания
@@ -66,66 +87,32 @@ _SOURCE_LINE_RE = re.compile(
 
 
 def _total_dir(case_id: str) -> Path:
-    path = store.case_dir(case_id) / "totals"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return artifact_dir(case_id, TOTAL_SPEC)
 
 
 def _docx_path(case_id: str, inspection_name: str) -> Path:
-    stem = safe_stem(inspection_name or "proverka")
-    return _total_dir(case_id) / f"total_{stem}_{case_id}.docx"
+    return artifact_docx_path(case_id, inspection_name, TOTAL_SPEC)
 
 
 def _md_path(case_id: str) -> Path:
-    return _total_dir(case_id) / "total.md"
+    return artifact_md_path(case_id, TOTAL_SPEC)
 
 
 def _sources_path(case_id: str) -> Path:
-    return _total_dir(case_id) / "total_sources.json"
+    return artifact_sources_path(case_id, TOTAL_SPEC)
 
 
 def total_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
     _ = case_id
-    stem = safe_stem(inspection_name or "proverka")
-    suffix = (ext or "docx").lstrip(".")
-    if suffix == "md":
-        return f"{stem}_total.md"
-    return f"{stem}_total.{suffix}"
+    return artifact_download_name(inspection_name, TOTAL_SPEC, ext=ext)
 
 
 def resolve_total_file(case_id: str, kind: str) -> Path | None:
-    state = store.get(case_id)
-    meta = state.meta.get("total") or {}
-    key = "docx_path" if kind == "docx" else "md_path"
-    stored = meta.get(key)
-    if stored and Path(stored).exists():
-        return Path(stored)
-    if kind == "docx":
-        candidate = _docx_path(case_id, state.inspection_name)
-        if candidate.exists():
-            return candidate
-        found = sorted(_total_dir(case_id).glob("total_*.docx"))
-        return found[-1] if found else None
-    candidate = _md_path(case_id)
-    return candidate if candidate.exists() else None
+    return resolve_artifact_file(case_id, TOTAL_SPEC, kind)
 
 
 def total_status(case_id: str) -> dict:
-    state = store.get(case_id)
-    meta = dict(state.meta.get("total") or {})
-    docx = Path(meta["docx_path"]) if meta.get("docx_path") else _docx_path(case_id, state.inspection_name)
-    ready = docx.exists()
-    meta.update(
-        {
-            "case_id": case_id,
-            "ready": ready,
-            "docx_path": str(docx) if ready else meta.get("docx_path"),
-            "download": f"/api/v1/cases/{case_id}/knowledge/total.docx",
-            "markdown": f"/api/v1/cases/{case_id}/knowledge/total.md",
-            "inspection_name": state.inspection_name,
-        }
-    )
-    return meta
+    return artifact_status(case_id, TOTAL_SPEC)
 
 
 def _total_stale(state: CaseState) -> bool:
@@ -217,26 +204,20 @@ def _save_total_meta(
     sources: list[dict],
     body: str,
 ) -> dict:
-    meta = {
-        "built_at": datetime.utcnow().isoformat(),
-        "docx_path": str(docx),
-        "md_path": str(md),
-        "keywords": list(state.keywords),
-        "period": state.period or None,
-        "schema": TOTAL_SCHEMA,
-        "citations": len(sources),
-        "chars": len(body),
-        "pages_estimate": pages_estimate(body, settings.brief_chars_per_page),
-        "download": f"/api/v1/cases/{state.case_id}/knowledge/total.docx",
-        "markdown": f"/api/v1/cases/{state.case_id}/knowledge/total.md",
-        "ready": True,
-        "case_id": state.case_id,
-        "inspection_name": state.inspection_name,
-        "source": "model_knowledge",
-    }
-    state.meta["total"] = meta
-    store.save(state)
-    return meta
+    return save_artifact_meta(
+        state,
+        TOTAL_SPEC,
+        docx=docx,
+        md=md,
+        sources=sources,
+        body=body,
+        extra={
+            "keywords": list(state.keywords),
+            "period": state.period or None,
+            "schema": TOTAL_SCHEMA,
+            "source": "model_knowledge",
+        },
+    )
 
 
 def _write_markdown(
@@ -295,10 +276,8 @@ async def _compose_total(state: CaseState) -> str:
 
 
 async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator[dict]:
-    t0 = datetime.utcnow()
-
-    def elapsed() -> int:
-        return int((datetime.utcnow() - t0).total_seconds() * 1000)
+    timer = ElapsedTimer()
+    elapsed = timer.ms
 
     yield {
         "type": "status",
@@ -311,7 +290,7 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
         meta = total_status(case_id)
         yield {
             "type": "status",
-            "message": "Total саммари уже собран — отдаю файл.",
+            "message": "Саммари total уже собран — отдаю файл.",
             "elapsed_ms": elapsed(),
         }
         yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
@@ -325,9 +304,9 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
     try:
         raw = await _compose_total(state)
     except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Модель не собрала total саммари: {exc}") from exc
+        raise ValueError(f"Модель не собрала саммари total: {exc}") from exc
     if not (raw or "").strip():
-        raise ValueError("Модель вернула пустой total саммари.")
+        raise ValueError("Модель вернула пустой саммари total.")
 
     body, sources = parse_total_sources(raw)
     if not body.strip():
@@ -337,7 +316,7 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
     docx = _docx_path(case_id, state.inspection_name)
     yield {
         "type": "status",
-        "message": "Собираю Word с total саммари…",
+        "message": "Собираю Word с саммари total…",
         "elapsed_ms": elapsed(),
     }
     _write_markdown(
@@ -368,10 +347,7 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
 
 
 async def build_total(case_id: str, force: bool = False) -> dict:
-    result: dict | None = None
-    async for event in build_total_events(case_id, force=force):
-        if event.get("type") == "result":
-            result = event
-    if not result:
-        raise ValueError("Total саммари не собран")
-    return result
+    return await event_result(
+        build_total_events(case_id, force=force),
+        "Саммари total не собран",
+    )

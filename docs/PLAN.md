@@ -25,7 +25,7 @@
 **Закрыто в коде**
 
 - FastAPI: кейс (`created → proposed → selected → downloading → ready / failed`), propose / select / download, extra_titles, manual URL, known_sources, SearXNG по allowlist, extract, индекс, ask, sync Open WebUI.
-- Word: обзор актов (`саммари`), конспект из знаний модели (`total саммари`), программа проверки (`программа проверки`). Стримы SSE, повтор `… заново`.
+- Word: обзор актов (`саммари`), конспект из знаний модели (`саммари total`), программа проверки (`программа проверки`). Стримы SSE, повтор `… заново`.
 - Pipe (`seed/openwebui/functions/audit_agent.py` v0.2.1): фазы **кодом**, HITL — download только после «утверждаю». Вопрос к базе — только с префиксом `вопрос …`. Иначе обычный диалог (`POST /api/v1/chat`), не RAG.
 - `GET /cases`, в чате `кейсы` / `статус`. Файловый store, без БД.
 - `docker-compose.yml`: SearXNG + Open WebUI + backend; frontend только `--profile lab`.
@@ -83,7 +83,7 @@
 - [x] Фазы в коде: «не выдумывай статьи»; клиентский текст в SearXNG не уходит.
 - [x] Sync в Knowledge после download — если задан `OPENWEBUI_API_KEY` (или сессионный токен).
 - [x] Сценарий аренды: список, `плюс …`, ручной URL (`к N url …`), повтор `скачай`, `саммари`, `вопрос …` с цитатой.
-- [x] Word-программа проверки и `total саммари` в том же диалоге.
+- [x] Word-программа проверки и `саммари total` в том же диалоге.
 - [x] Явный префикс `вопрос` отделяет RAG от обычного чата (иначе 27B путала норму и болтовню).
 - [ ] Засев Pipe при `compose up` без ручной вставки в Admin.
 

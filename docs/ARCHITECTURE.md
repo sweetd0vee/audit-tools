@@ -14,11 +14,11 @@
 │  Open WebUI — чат, Knowledge, citations, auth, Files        │
 │  Опционально позже: Continue.dev в IDE для правил/шаблонов  │
 └────────────────────────────┬────────────────────────────────┘
-                             │ Functions / Pipelines / OpenAPI tools
+                             │ Function Pipe / Tools / OpenAPI
 ┌────────────────────────────▼────────────────────────────────┐
 │  Клей агента (почти готовое + тонкие скрипты)               │
-│  Open WebUI Pipelines / Tools                               │
-│  Фазы: библиотека → вопросы к НПА → данные → тесты → WP     │
+│  Open WebUI Function Pipe «Аудитор» / Tools fallback         │
+│  Фазы сейчас: библиотека → вопрос к НПА → саммари/total/WP   │
 └────────────────────────────┬────────────────────────────────┘
                              │ HTTP
 ┌────────────────────────────▼────────────────────────────────┐
@@ -36,7 +36,7 @@
                     Open WebUI Chroma (индекс чата)
 ```
 
-**Правило стыковки:** Pipelines не содержат бизнес-логики. Они вызывают API сервера и показывают аудитору результат. Сервер не рисует UI.
+**Правило стыковки:** Pipe/Tools не содержат бизнес-логики. Они вызывают API сервера и показывают аудитору результат. Сервер не рисует UI.
 
 ---
 
@@ -44,15 +44,15 @@
 
 | Компонент | Роль | Свой код | Статус |
 |---|---|---|---|
-| **Open WebUI** | Единственная поверхность аудитора | Нет — ставим и **засеваем** (модель, RAG-шаблон, tools, pipeline) | выбран |
-| **Open WebUI Pipelines** | Фазы проверки, HITL в чате | Тонкий pipeline (~файл), не форк | план |
-| **Open WebUI Functions/Tools** | Pipe «Аудитор» вызывает API; Tools — запасной native FC | Тонкие HTTP-обёртки + Pipe | есть (чат) |
+| **Open WebUI** | Единственная поверхность аудитора | Нет — ставим и **засеваем** (модель, RAG-шаблон, Function Pipe, tools fallback) | выбран |
+| **Open WebUI Function Pipe** | Фазы проверки, HITL в чате | Один Python-файл, не форк | есть (чат) |
+| **Open WebUI Tools** | Запасной native FC путь | Тонкие HTTP-обёртки | есть (fallback) |
 | **Ollama** | LLM + embeddings | Нет | есть |
 | **SearXNG** | Добыча актов, не RAG в каждом вопросе | Нет — свой `settings.yml` с allowlist | есть |
 | **Chroma в Open WebUI** | Индекс Knowledge для чата | Нет | есть (sync) |
 | **DuckDB** | SQL по выгрузкам клиента, без своей аналитической UI | Нет — tool «выполни SQL» | план |
 | **python-docx / шаблоны банка** | Черновик WP в `.docx` | Шаблоны + заполнение полей | план |
-| **Docker Compose (+ Caddy)** | Коробка: один URL, один `up` | compose, env, seed | план |
+| **Docker Compose** | Open WebUI + backend + SearXNG; Ollama на хосте | `docker-compose.yml`, env, seed | есть |
 | **Audit Tool Server** | Система записи и домен РБ | **Да — главный custom** | есть (шаги 1–2) |
 | **React `frontend/`** | Лаборатория API | Не продукт. Не развивать | прототип |
 
@@ -149,7 +149,7 @@ data/audit_cases/{case_id}/
   knowledge_raw/         первоисточники НПА
   knowledge_text/        очищенный текст
   summaries/             карточки + Word-обзор
-  totals/                total саммари (не из файлов кейса)
+  totals/                саммари total (не из файлов кейса)
   programs/              Word-программа проверки
   knowledge_index.json
   library.zip

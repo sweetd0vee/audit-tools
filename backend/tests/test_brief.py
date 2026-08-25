@@ -378,8 +378,8 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
             async def fake_chat(system, user, **kwargs):
                 prompts.append(user)
                 return (
-                    "## Назначение и сфера действия\n- аренда\n"
-                    "## Основные положения\n"
+                    "## Зачем этот акт\nдля проверки аренды\n"
+                    "## Ключевые нормы\n"
                     "- ст. 1 — аренда\n- ст. 12 — расчёты\n- ст. 40 — неустойка"
                 )
 
@@ -391,8 +391,10 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Статья 1. Предмет", prompts[0])
             self.assertIn("Статья 40. Ответственность", prompts[0])
             self.assertIn("целиком", prompts[0].lower())
-            self.assertNotIn("Ключевые слова", prompts[0])
-            self.assertNotIn("валюта", prompts[0])
+            self.assertIn("Ключевые слова", prompts[0])
+            self.assertIn("валюта", prompts[0])
+            self.assertIn("Проверка аренды", prompts[0])
+            self.assertIn("Зачем этот акт", prompts[0])
 
     async def test_long_document_is_read_in_ordered_windows(self):
         from app.services.knowledge_flow import summarize_item
@@ -418,6 +420,14 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
 
             async def fake_chat(system, user, **kwargs):
                 prompts.append(user)
+                if "собери из заметок" in user.lower():
+                    return (
+                        "## Зачем этот акт\nКодекс задаёт рамку проверки.\n"
+                        "## Суть и сфера\nГражданские договоры.\n"
+                        "## Ключевые нормы\n- ст. 1 — предмет\n- ст. 7 — норма из конца акта\n"
+                        "## Что проверять\n- предмет договора\n"
+                        "## Чего нет в тексте\nв заметках нет отдельного раздела по расчётам"
+                    )
                 found = []
                 for i in range(1, 8):
                     if f"Статья {i}." in user and f"Статья {i}." not in found:
@@ -435,11 +445,12 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Статья 1.", joined)
             self.assertIn("Статья 7.", joined)
             self.assertTrue(any("часть 1 из" in p.lower() for p in prompts))
-            self.assertFalse(any("собери единый" in p.lower() for p in prompts))
-            self.assertFalse(any("ключевые слова" in p.lower() for p in prompts))
-            self.assertIn("Основные положения", result.summary)
-            self.assertIn("Статья 1.", result.summary)
-            self.assertIn("Статья 7.", result.summary)
+            self.assertTrue(any("собери из заметок" in p.lower() for p in prompts))
+            self.assertTrue(any("ключевые слова" in p.lower() for p in prompts))
+            self.assertTrue(any("валюта" in p.lower() for p in prompts))
+            self.assertIn("Ключевые нормы", result.summary)
+            self.assertIn("ст. 1", result.summary)
+            self.assertIn("ст. 7", result.summary)
             self.assertNotIn("валюта", result.summary.lower())
 
 
@@ -451,11 +462,11 @@ class TestOverviewAndAskHelpers(unittest.TestCase):
         chapters = [
             {
                 "title": "Инструкция № 1",
-                "body": "## Основные положения\n- ст. 1 — предмет\n- ст. 2 — сроки",
+                "body": "## Ключевые нормы\n- ст. 1 — предмет\n- ст. 2 — сроки",
             },
             {
                 "title": "Кодекс",
-                "body": "## Основные положения\n- ст. 625 — аренда\n- ст. 626 — плата",
+                "body": "## Ключевые нормы\n- ст. 625 — аренда\n- ст. 626 — плата",
             },
         ]
         overview = _synthesize(state, chapters)
