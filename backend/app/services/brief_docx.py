@@ -182,9 +182,11 @@ def _fill_cell(
     if center:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    add_text_with_cites(paragraph, text or "", sources_by_n or {})
-    for run in paragraph.runs:
-        _set_run_font(run, size=size, bold=bold, italic=italic)
+    if sources_by_n and CITE_RE.search(text or ""):
+        add_text_with_cites(paragraph, text or "", sources_by_n)
+        return
+    run = paragraph.add_run(text or "")
+    _set_run_font(run, size=size, bold=bold, italic=italic)
 
 
 def add_text_with_cites(paragraph, text: str, sources_by_n: dict[int, dict[str, Any]]) -> None:

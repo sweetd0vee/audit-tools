@@ -327,6 +327,10 @@ class TestProgramDocx(unittest.TestCase):
                 "filename": "gk.txt",
             }
         ]
+        questions = [
+            "Анализ договоров аренды. Критерий: [1].",
+            "Проверка полномочий при заключении договоров аренды.",
+        ]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "program.docx"
             write_program_docx(
@@ -335,17 +339,60 @@ class TestProgramDocx(unittest.TestCase):
                 period="2025",
                 keywords=["аренда", "НДС"],
                 case_id="3a23fb6db4a9",
-                body="## 7. Аудиторские процедуры\n\n### Процедура 1. Договор аренды\n- Критерий: [1].",
+                body="## Вопросы, подлежащие аудиту\n\n1. Анализ договоров аренды. Критерий: [1].",
                 sources=sources,
+                questions=questions,
             )
             self.assertTrue(path.exists())
             from docx import Document
 
             doc = Document(str(path))
             texts = "\n".join(p.text for p in doc.paragraphs)
-            self.assertIn("Программа аудиторской проверки", texts)
-            self.assertIn("Процедура 1", texts)
-            self.assertIn("[1]", texts)
+            self.assertIn("ПРОГРАММА", texts)
+            self.assertGreaterEqual(len(doc.tables), 2)
+            info = "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
+            self.assertIn("Название проверки", info)
+            self.assertIn("Проверка аренды коммерческой недвижимости", info)
+            questions_table = doc.tables[1]
+            header = " ".join(cell.text for cell in questions_table.rows[0].cells)
+            self.assertIn("Вопросы, подлежащие аудиту", header)
+            body_text = "\n".join(
+                cell.text for row in questions_table.rows[1:] for cell in row.cells
+            )
+            self.assertIn("Анализ договоров аренды", body_text)
+            self.assertIn("[1]", body_text)
+            self.assertIn("2.", body_text)
+
+
+class TestProgramItems(unittest.TestCase):
+    def test_normalize_default_and_range(self):
+        from app.services.program_flow import normalize_program_item_range
+
+        self.assertEqual(normalize_program_item_range(), (8, 11))
+        self.assertEqual(normalize_program_item_range(items="8"), (8, 8))
+        self.assertEqual(normalize_program_item_range(items="10-12"), (10, 12))
+        self.assertEqual(normalize_program_item_range(items="5 - 6"), (5, 6))
+        self.assertEqual(normalize_program_item_range(items_min=8, items_max=8), (8, 8))
+        self.assertEqual(normalize_program_item_range(items="1"), (3, 3))
+        self.assertEqual(normalize_program_item_range(items="99"), (20, 20))
+
+    def test_parse_questions_numbered_list(self):
+        from app.services.program_flow import parse_program_questions
+
+        body = """
+## Название проверки
+Проверка аренды
+
+## Вопросы, подлежащие аудиту
+
+1. Анализ ЛПА банка по аренде. Критерий [1].
+2. Проверка полномочий при заключении договоров.
+3. Анализ арендных платежей и коммунальных расходов.
+"""
+        questions = parse_program_questions(body)
+        self.assertEqual(len(questions), 3)
+        self.assertIn("Анализ ЛПА", questions[0])
+        self.assertIn("арендных платежей", questions[2])
 
 
 class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
