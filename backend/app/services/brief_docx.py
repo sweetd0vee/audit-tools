@@ -420,11 +420,10 @@ _PROGRAM_NOTE = (
 )
 
 _PROGRAM_FONT = 14
-_PROGRAM_OUTER_W = 17.73
 _PROGRAM_LABEL_W = 5.10
-_PROGRAM_VALUE_W = 11.65
-_PROGRAM_NUM_W = 1.21
-_PROGRAM_Q_W = 15.51
+_PROGRAM_VALUE_W = 11.90
+_PROGRAM_NUM_W = 1.50
+_PROGRAM_Q_W = 15.50
 _PROGRAM_SIGN_L = 7.63
 _PROGRAM_SIGN_R = 3.08
 
@@ -433,23 +432,6 @@ def _set_program_document_font(doc: Document) -> None:
     style = doc.styles["Normal"]
     style.font.name = "Times New Roman"
     style.font.size = Pt(_PROGRAM_FONT)
-
-
-def _program_inner_cell(doc: Document):
-    """Outer frame → wrapper table → cell that holds the two working tables."""
-    outer = doc.add_table(rows=1, cols=1)
-    outer.alignment = WD_TABLE_ALIGNMENT.CENTER
-    outer.autofit = False
-    _set_tbl_width(outer, _PROGRAM_OUTER_W)
-    _set_table_borders(outer, val="nil")
-    _set_cell_width(outer.rows[0].cells[0], _PROGRAM_OUTER_W)
-    wrapper = outer.rows[0].cells[0].add_table(rows=1, cols=1)
-    wrapper.autofit = False
-    _set_tbl_width(wrapper, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
-    _set_table_borders(wrapper, val="nil")
-    inner = wrapper.rows[0].cells[0]
-    _set_cell_width(inner, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
-    return outer, inner
 
 
 def write_program_docx(
@@ -486,56 +468,36 @@ def write_program_docx(
     _set_run_font(tr, size=_PROGRAM_FONT, bold=True)
 
     sources_by_n = {int(s["n"]): s for s in sources}
-    outer, inner = _program_inner_cell(doc)
+    info_widths = [_PROGRAM_LABEL_W, _PROGRAM_VALUE_W]
+    q_widths = [_PROGRAM_NUM_W, _PROGRAM_Q_W]
 
-    info = inner.add_table(rows=5, cols=2)
-    info.autofit = False
-    _set_tbl_width(info, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
-    _set_table_borders(info, val="nil")
-    title_cell = info.cell(0, 0).merge(info.cell(0, 1))
-    _set_cell_width(title_cell, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
-    _fill_cell(
-        title_cell,
-        inspection_name or "Название проверки",
-        size=_PROGRAM_FONT,
-        center=True,
-    )
+    info = _add_program_table(doc, 5, info_widths, bordered=True)
     info_rows = [
+        ("Название проверки", inspection_name or ""),
         ("Аудируемый период", period or "уточняется"),
         ("Сроки проведения", ""),
         ("Руководитель проверки", ""),
         ("Члены рабочей группы", ""),
     ]
-    for row, (label, value) in zip(info.rows[1:], info_rows):
-        _set_cell_width(row.cells[0], _PROGRAM_LABEL_W)
-        _set_cell_width(row.cells[1], _PROGRAM_VALUE_W)
+    for row, (label, value) in zip(info.rows, info_rows):
         _fill_cell(row.cells[0], label, size=_PROGRAM_FONT)
         _fill_cell(row.cells[1], value, sources_by_n, size=_PROGRAM_FONT)
 
-    q_rows = questions or []
-    qtable = inner.add_table(rows=1 + max(len(q_rows), 1), cols=2)
-    qtable.autofit = False
-    _set_tbl_width(qtable, _PROGRAM_NUM_W + _PROGRAM_Q_W)
-    _set_table_borders(qtable)
-    header = qtable.rows[0]
-    _set_cell_width(header.cells[0], _PROGRAM_NUM_W)
-    _set_cell_width(header.cells[1], _PROGRAM_Q_W)
-    _set_cell_borders(header.cells[0], val="double")
-    _set_cell_borders(header.cells[1], val="double")
-    _fill_cell(header.cells[0], "№ п/п", size=_PROGRAM_FONT, center=True)
+    gap = doc.add_paragraph()
+    gap.paragraph_format.space_before = Pt(6)
+    gap.paragraph_format.space_after = Pt(6)
+
+    q_rows = questions or [""]
+    qtable = _add_program_table(doc, 1 + len(q_rows), q_widths, bordered=True)
+    _fill_cell(qtable.rows[0].cells[0], "№ п/п", size=_PROGRAM_FONT, center=True)
     _fill_cell(
-        header.cells[1],
+        qtable.rows[0].cells[1],
         "Вопросы, подлежащие аудиту",
         size=_PROGRAM_FONT,
         center=True,
     )
-    body_rows = q_rows or [""]
-    for idx, question in enumerate(body_rows, start=1):
+    for idx, question in enumerate(q_rows, start=1):
         row = qtable.rows[idx]
-        _set_cell_width(row.cells[0], _PROGRAM_NUM_W)
-        _set_cell_width(row.cells[1], _PROGRAM_Q_W)
-        _set_cell_borders(row.cells[0])
-        _set_cell_borders(row.cells[1])
         _fill_cell(row.cells[0], f"{idx}.", size=_PROGRAM_FONT, center=True)
         _fill_cell(
             row.cells[1],
@@ -545,24 +507,19 @@ def write_program_docx(
             justify=True,
         )
 
-    outer_cell = outer.rows[0].cells[0]
-    pad = outer_cell.add_paragraph()
-    pad.paragraph_format.first_line_indent = Cm(1.0)
-    note = outer_cell.add_paragraph()
+    note = doc.add_paragraph()
     note.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     note.paragraph_format.first_line_indent = Cm(1.0)
+    note.paragraph_format.space_before = Pt(10)
     nr = note.add_run(_PROGRAM_NOTE)
     _set_run_font(nr, size=_PROGRAM_FONT)
 
     spacer = doc.add_paragraph()
     spacer.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    sign = doc.add_table(rows=1, cols=2)
-    sign.alignment = WD_TABLE_ALIGNMENT.CENTER
-    sign.autofit = False
-    _set_table_borders(sign, val="nil")
-    _set_cell_width(sign.rows[0].cells[0], _PROGRAM_SIGN_L)
-    _set_cell_width(sign.rows[0].cells[1], _PROGRAM_SIGN_R)
+    sign = _add_program_table(
+        doc, 1, [_PROGRAM_SIGN_L, _PROGRAM_SIGN_R], bordered=False
+    )
     _fill_cell(
         sign.rows[0].cells[0],
         "Менеджер по направлению деятельности",

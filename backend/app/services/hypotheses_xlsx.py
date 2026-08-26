@@ -13,7 +13,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 COLUMNS: list[tuple[str, str, int]] = [
     ("n", "№", 5),
     ("hypothesis", "Гипотеза", 42),
-    ("assertion", "Утверждение", 22),
+    ("priority", "Приоритет", 12),
     ("risk", "Риск", 28),
     ("plan_sections", "Разделы плана", 24),
     ("npa_criteria", "НПА / критерии", 36),
@@ -21,9 +21,10 @@ COLUMNS: list[tuple[str, str, int]] = [
     ("how_to_test", "Как проверить", 36),
     ("evidence_request", "Что запросить", 28),
     ("working_paper", "Рабочий документ", 24),
-    ("priority", "Приоритет", 12),
     ("basis", "Опора", 28),
 ]
+
+_PRIORITY_ORDER = {"высокий": 0, "средний": 1, "низкий": 2}
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 _HEADER_FONT = Font(color="FFFFFF", bold=True, name="Calibri", size=11)
@@ -63,7 +64,13 @@ def write_hypotheses_xlsx(
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     keys = [key for key, _, _ in COLUMNS]
-    for i, row in enumerate(rows, start=1):
+    ordered = sorted(
+        rows,
+        key=lambda r: _PRIORITY_ORDER.get(
+            str(r.get("priority") or "").strip().lower(), 1
+        ),
+    )
+    for i, row in enumerate(ordered, start=1):
         values = []
         for key in keys:
             if key == "n":
@@ -125,12 +132,14 @@ def write_hypotheses_xlsx(
     legend.append([])
     for _, title, _ in COLUMNS:
         legend.append([title])
-    legend["A15"] = (
+    note_row = 3 + len(COLUMNS)
+    legend[f"A{note_row}"] = (
         "Черновик для планирования СВА. Цитаты и номера статей сверять с файлами "
-        "библиотеки кейса. Клиентские факты в этот контур ещё не входят."
+        "библиотеки кейса. Клиентские факты в этот контур ещё не входят. "
+        "Строки отсортированы: высокий, средний, низкий приоритет."
     )
-    legend["A15"].alignment = _WRAP
+    legend[f"A{note_row}"].alignment = _WRAP
     legend.column_dimensions["A"].width = 90
-    legend.row_dimensions[15].height = 45
+    legend.row_dimensions[note_row].height = 45
 
     wb.save(path)

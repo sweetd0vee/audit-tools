@@ -33,7 +33,7 @@ from app.services.ollama_client import chat_complete, extract_json_value
 from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
 
-HYPOTHESES_SCHEMA = 1
+HYPOTHESES_SCHEMA = 2
 HYPOTHESES_SPEC = ArtifactSpec(
     meta_key="hypotheses",
     directory="hypotheses",
@@ -117,6 +117,14 @@ def _normalize_priority(value: str) -> str:
     return _PRIORITY_MAP.get(key, "средний")
 
 
+def _sort_rows_by_priority(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    order = {"высокий": 0, "средний": 1, "низкий": 2}
+    ranked = sorted(rows, key=lambda r: order.get(r.get("priority") or "", 1))
+    for i, row in enumerate(ranked, start=1):
+        row["n"] = str(i)
+    return ranked
+
+
 def _normalize_row(raw: dict[str, Any], index: int) -> dict[str, str]:
     row: dict[str, str] = {"n": str(index)}
     for field in _ROW_FIELDS:
@@ -162,6 +170,7 @@ def parse_hypotheses_payload(raw: str | dict | list) -> tuple[list[dict[str, str
         raise ValueError(f"Нужно 8–10 гипотез, модель вернула {len(rows)}")
     if len(rows) > 10:
         rows = rows[:10]
+    rows = _sort_rows_by_priority(rows)
     return rows, notes
 
 
@@ -189,6 +198,7 @@ def _write_markdown(
     lines.append("## Гипотезы")
     for row in rows:
         lines.append(f"### {row['n']}. {row['hypothesis']}")
+        lines.append(f"- Приоритет: {row['priority']}")
         lines.append(f"- Утверждение: {row['assertion']}")
         lines.append(f"- Риск: {row['risk']}")
         lines.append(f"- Разделы плана: {row['plan_sections']}")
@@ -197,7 +207,6 @@ def _write_markdown(
         lines.append(f"- Как проверить: {row['how_to_test']}")
         lines.append(f"- Что запросить: {row['evidence_request']}")
         lines.append(f"- Рабочий документ: {row['working_paper']}")
-        lines.append(f"- Приоритет: {row['priority']}")
         lines.append(f"- Опора: {row['basis']}")
         lines.append("")
     if sources:
