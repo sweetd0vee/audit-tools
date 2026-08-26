@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.6
+version: 0.0.1
 license: MIT
 description: Агент проверки. Документы, саммари, total, программа, гипотезы (xlsx). Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
