@@ -1,9 +1,9 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.0.1
+version: 0.2.7
 license: MIT
-description: Агент проверки. Документы, саммари, total, программа, гипотезы (xlsx). Вопрос по базе — «вопрос …»; иначе обычный чат.
+description: Агент проверки. Документы, саммари, total, программа, гипотезы, мнение, заключение. Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
 """
 
@@ -42,6 +42,8 @@ NEXT_STEPS = (
     "— `саммари` — основная информация по теме из базы знаний в Word;\n"
     "— `саммари total` — основная информация по теме из знаний модели;\n"
     "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
+    "— `аудиторское мнение` — черновик мнения в Word (после `утверждаю гипотезы …`);\n"
+    "— `аудиторское заключение` — черновик заключения в Word (после `утверждаю гипотезы …`);\n"
     "— `вопрос` — вопрос по базе знаний;\n"
     "— `документы` — посмотреть список документов в базе знаний;\n"
     "— обычный диалог — пишите без префикса."
@@ -129,6 +131,27 @@ class Pipe:
                 return await self._ask(
                     api, timeout, case_id, kb_question, __event_emitter__
                 )
+
+            if _is_select_hypotheses(text):
+                missing = _need_case(case_id)
+                if missing:
+                    return missing
+                assert case_id is not None
+                return _select_hypotheses_stub(case_id)
+
+            if _is_opinion(text):
+                missing = _need_case(case_id)
+                if missing:
+                    return missing
+                assert case_id is not None
+                return _closing_doc_stub("аудиторское мнение", case_id)
+
+            if _is_conclusion(text):
+                missing = _need_case(case_id)
+                if missing:
+                    return missing
+                assert case_id is not None
+                return _closing_doc_stub("аудиторское заключение", case_id)
 
             if _is_program(text):
                 return await self._dispatch_artifact(
@@ -745,6 +768,8 @@ def _has_explicit_picks(text: str) -> bool:
 
 def _is_program(text: str) -> bool:
     t = text.strip().lower()
+    if _is_opinion(t) or _is_conclusion(t):
+        return False
     if t in {"программа", "программу", "/program", "audit program"}:
         return True
     if re.match(r"^\s*(программа|программу)\s+\d", t):
@@ -824,6 +849,8 @@ def _is_total(text: str) -> bool:
 
 def _is_hypotheses(text: str) -> bool:
     t = text.strip().lower()
+    if _is_select_hypotheses(t) or _is_opinion(t) or _is_conclusion(t):
+        return False
     if t in {
         "гипотезы",
         "гипотеза",
@@ -847,9 +874,84 @@ def _is_hypotheses(text: str) -> bool:
     )
 
 
+def _is_select_hypotheses(text: str) -> bool:
+    t = text.strip().lower()
+    if not re.search(r"гипотез", t):
+        return False
+    if REJECT_APPROVE_RE.search(t):
+        return False
+    return bool(re.search(r"утвержд\w*|подтвержд\w*|выбираю", t))
+
+
+def _is_opinion(text: str) -> bool:
+    t = text.strip().lower()
+    if t in {
+        "аудиторское мнение",
+        "мнение аудитора",
+        "/opinion",
+        "/мнение",
+    }:
+        return True
+    return bool(
+        re.search(
+            r"("
+            r"аудиторск\w*\s+мнен|"
+            r"мнен\w*\s+аудитор|"
+            r"(сделай|составь|подготовь|напиши)\s+(аудиторск\w*\s+)?мнен|"
+            r"/opinion"
+            r")",
+            t,
+        )
+    )
+
+
+def _is_conclusion(text: str) -> bool:
+    t = text.strip().lower()
+    if t in {
+        "аудиторское заключение",
+        "заключение аудитора",
+        "/report",
+        "/conclusion",
+        "/заключение",
+    }:
+        return True
+    return bool(
+        re.search(
+            r"("
+            r"аудиторск\w*\s+заключен|"
+            r"заключен\w*\s+аудитор|"
+            r"(сделай|составь|подготовь|напиши)\s+(аудиторск\w*\s+)?заключен|"
+            r"/report|/conclusion"
+            r")",
+            t,
+        )
+    )
+
+
+def _closing_doc_stub(title: str, case_id: str) -> str:
+    return (
+        f"Команда `{title}` принята. Черновик Word ещё не собираю: "
+        "нет шаблона и списка гипотез, которые вы подтвердили.\n\n"
+        "Когда шаблон будет готов, эта же кнопка отдаст docx "
+        "из подтверждённых гипотез и документов проверки "
+        "(саммари, total, программа, НПА).\n\n"
+        "Сейчас: `гипотезы`, затем `утверждаю гипотезы 1, 3, 5`.\n"
+        f"<!--audit-case:{case_id}-->"
+    )
+
+
+def _select_hypotheses_stub(case_id: str) -> str:
+    return (
+        "Выбор гипотез принял. В мнение и заключение потом пойдут только отмеченные номера.\n"
+        "Сами Word ещё не собираю — нет шаблона.\n\n"
+        "Дальше: `аудиторское мнение` или `аудиторское заключение`.\n"
+        f"<!--audit-case:{case_id}-->"
+    )
+
+
 def _is_brief(text: str) -> bool:
     t = text.strip().lower()
-    if _is_total(t) or _is_hypotheses(t):
+    if _is_total(t) or _is_hypotheses(t) or _is_opinion(t) or _is_conclusion(t):
         return False
     if t in {"саммари", "сводка", "бриф", "docx", "word", "/brief", "/summary"}:
         return True
@@ -884,7 +986,15 @@ def _is_approve(text: str) -> bool:
 def _is_library(text: str) -> bool:
     """Команда списка/архива, не любой текст со словом «документ»."""
     t = text.strip().lower()
-    if _is_brief(t) or _is_program(t) or _is_total(t) or _is_hypotheses(t):
+    if (
+        _is_brief(t)
+        or _is_program(t)
+        or _is_total(t)
+        or _is_hypotheses(t)
+        or _is_opinion(t)
+        or _is_conclusion(t)
+        or _is_select_hypotheses(t)
+    ):
         return False
     if re.search(r"скачай|скачать|скачивай", t):
         return False
