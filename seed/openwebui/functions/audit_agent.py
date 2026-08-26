@@ -107,6 +107,25 @@ class Pipe:
         await _status(__event_emitter__, "Смотрю, на каком вы шаге…")
 
         try:
+            # «вопрос …» раньше library/brief: иначе «в данном документе» / «саммари»
+            # внутри текста уводило в чужую ветку.
+            kb_question = _parse_kb_question(text)
+            if kb_question is not None:
+                if not case_id:
+                    return (
+                        "В этом чате ещё нет проверки. Сначала напишите, что проверяете, "
+                        "утвердите документы — потом: `вопрос …`."
+                    )
+                if not kb_question:
+                    return (
+                        "Напишите вопрос после слова `вопрос`, например:\n"
+                        "`вопрос Какой срок регистрации договора аренды?`\n"
+                        f"<!--audit-case:{case_id}-->"
+                    )
+                return await self._ask(
+                    api, timeout, case_id, kb_question, __event_emitter__
+                )
+
             if _is_program(text):
                 if not case_id:
                     return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
@@ -159,23 +178,6 @@ class Pipe:
                 if case_id:
                     return await self._status_case(api, timeout, case_id)
                 return await self._list_cases(api, timeout)
-
-            kb_question = _parse_kb_question(text)
-            if kb_question is not None:
-                if not case_id:
-                    return (
-                        "В этом чате ещё нет проверки. Сначала напишите, что проверяете, "
-                        "утвердите документы — потом: `вопрос …`."
-                    )
-                if not kb_question:
-                    return (
-                        "Напишите вопрос после слова `вопрос`, например:\n"
-                        "`вопрос Какой срок регистрации договора аренды?`\n"
-                        f"<!--audit-case:{case_id}-->"
-                    )
-                return await self._ask(
-                    api, timeout, case_id, kb_question, __event_emitter__
-                )
 
             parsed = _parse_new_case(text)
             if parsed and not case_id:
@@ -765,22 +767,34 @@ def _is_approve(text: str) -> bool:
 
 
 def _is_library(text: str) -> bool:
+    """Команда списка/архива, не любой текст со словом «документ»."""
     t = text.strip().lower()
     if _is_brief(t) or _is_program(t) or _is_total(t):
         return False
     if re.search(r"скачай|скачать|скачивай", t):
         return False
-    keys = (
+    if t in {
+        "документы",
         "документ",
-        "библиотек",
-        "скача",
+        "библиотека",
+        "библиотеку",
         "файлы",
         "архив",
-        "посмотреть акты",
-        "покажи акты",
         "/library",
+    }:
+        return True
+    return bool(
+        re.search(
+            r"("
+            r"посмотреть\s+(акты|документы)|"
+            r"покажи\s+(акты|документы)|"
+            r"что\s+скача|"
+            r"список\s+документов|"
+            r"/library"
+            r")",
+            t,
+        )
     )
-    return any(k in t for k in keys)
 
 
 def _file_stem(inspection_name: str) -> str:
