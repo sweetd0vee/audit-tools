@@ -45,8 +45,6 @@ DEFAULT_ITEMS_MIN = 8
 DEFAULT_ITEMS_MAX = 11
 
 _ITEM_LINE_RE = re.compile(r"^(?:#{1,3}\s*)?(\d{1,2})[.)]\s+(.*)$")
-_ITEMS_SPEC_RE = re.compile(r"^\s*(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*$")
-_ITEM_ONE_RE = re.compile(r"^\s*(\d{1,2})\s*$")
 _QUESTIONS_HEADING_RE = re.compile(r"вопросы,\s*подлежащие\s*аудиту", re.I)
 
 
@@ -183,7 +181,12 @@ def program_status(case_id: str) -> dict:
     return artifact_status(case_id, PROGRAM_SPEC)
 
 
-def _program_stale(state: CaseState) -> bool:
+def _program_stale(
+    state: CaseState,
+    *,
+    items_min: int | None = None,
+    items_max: int | None = None,
+) -> bool:
     meta = state.meta.get("program") or {}
     path = Path(meta["docx_path"]) if meta.get("docx_path") else None
     if not path or not path.exists():
@@ -194,6 +197,10 @@ def _program_stale(state: CaseState) -> bool:
     if meta.get("keywords") != list(state.keywords):
         return True
     if meta.get("inspection_name") != state.inspection_name:
+        return True
+    if items_min is not None and meta.get("items_min") != items_min:
+        return True
+    if items_max is not None and meta.get("items_max") != items_max:
         return True
     return False
 
@@ -233,21 +240,16 @@ def _format_sources(sources: list[dict]) -> str:
     return "\n\n---\n\n".join(blocks) if blocks else "Фрагментов НПА нет."
 
 
-def _digest(body: str, limit: int = 8) -> list[str]:
+def _digest(questions: list[str], limit: int = 8) -> list[str]:
     out: list[str] = []
-    for line in (body or "").splitlines():
-        if line.startswith("### "):
-            title = line[4:].strip()
-            if title:
-                out.append(f"- {title}")
-            if len(out) >= limit:
-                return out
-    if not out:
-        for line in (body or "").splitlines():
-            if line.startswith("## "):
-                out.append(f"- {line[3:].strip()}")
-                if len(out) >= limit:
-                    break
+    for idx, question in enumerate(questions, start=1):
+        title = re.split(r"[.!?]\s", question, maxsplit=1)[0].strip()
+        if len(title) > 120:
+            title = title[:117].rstrip() + "…"
+        if title:
+            out.append(f"- {idx}. {title}")
+        if len(out) >= limit:
+            return out
     return out
 
 
@@ -258,6 +260,9 @@ def _save_program_meta(
     md: Path,
     sources: list[dict],
     body: str,
+    items_min: int,
+    items_max: int,
+    questions: list[str],
 ) -> dict:
     return save_artifact_meta(
         state,
@@ -269,6 +274,9 @@ def _save_program_meta(
         extra={
             "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
             "keywords": list(state.keywords),
+            "items_min": items_min,
+            "items_max": items_max,
+            "question_count": len(questions),
         },
     )
 
@@ -282,18 +290,34 @@ def _write_markdown(
     case_id: str,
     body: str,
     sources: list[dict],
+    questions: list[str],
 ) -> None:
     lines = [
-        "# Программа аудиторской проверки",
-        f"**{inspection_name}**",
-        f"Период: {period or 'не указан'}. Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
+        "# ПРОГРАММА",
+        "",
+        f"**Название проверки:** {inspection_name}",
+        f"**Аудируемый период:** {period or 'уточняется'}",
+        f"**Сроки проведения:**",
+        f"**Руководитель проверки:**",
+        f"**Члены рабочей группы:**",
+        f"Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",
         "Черновик программы внутренней аудиторской проверки банка РБ. "
         "Номера `[n]` — фрагменты в конце файла.",
         "",
-        body.strip(),
+        "## Вопросы, подлежащие аудиту",
         "",
+        "| № п/п | Вопросы, подлежащие аудиту |",
+        "| --- | --- |",
     ]
+    for idx, question in enumerate(questions, start=1):
+        cell = (question or "").replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {idx}. | {cell} |")
+    if not questions:
+        lines.append("| 1. | |")
+        if (body or "").strip():
+            lines.extend(["", body.strip()])
+    lines.append("")
     if sources:
         lines.append("## Источники: статьи и фрагменты")
         for src in sources:
@@ -308,19 +332,26 @@ def _write_markdown(
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
-async def _compose_program(state: CaseState, sources: list[dict]) -> str:
+async def _compose_program(
+    state: CaseState,
+    sources: list[dict],
+    *,
+    items_min: int,
+    items_max: int,
+) -> str:
     catalog = []
     for src in sources:
         article = src.get("article") or "фрагмент"
         url = src.get("url") or "нет URL"
         catalog.append(f"[{src['n']}] {src.get('title')} — {article} — {url}")
     cards = _existing_cards(state)
-    target = 8 * settings.brief_chars_per_page
+    per_item = max(400, settings.brief_chars_per_page // 3)
+    target = items_max * per_item
     cards_block = ""
     if cards:
         cards_block = (
             "\nКарточки актов (если уже собрано саммари — используй как ориентир, "
-            "но пиши программу процедур, а не пересказ карточек):\n"
+            "но пиши вопросы программы, а не пересказ карточек):\n"
             f"{cards}\n"
         )
     user = prompt(
@@ -332,9 +363,10 @@ async def _compose_program(state: CaseState, sources: list[dict]) -> str:
         catalog="\n".join(catalog) or "список пуст — не выдумывай номера статей как факт",
         fragments=_format_sources(sources),
         cards_block=cards_block,
-        sections=prompt("program_sections").strip(),
+        sections=prompt("program_sections", items_hint=program_items_hint(items_min, items_max)).strip(),
+        items_hint=program_items_hint(items_min, items_max),
         target=target,
-        target_hi=target + 2500,
+        target_hi=target + items_max * 200,
     )
     return await chat_complete(
         prompt("program_system"),
@@ -345,14 +377,32 @@ async def _compose_program(state: CaseState, sources: list[dict]) -> str:
     )
 
 
-async def build_program_events(case_id: str, force: bool = False) -> AsyncIterator[dict]:
+async def build_program_events(
+    case_id: str,
+    force: bool = False,
+    items_min: int | None = None,
+    items_max: int | None = None,
+    items: str | None = None,
+) -> AsyncIterator[dict]:
     timer = ElapsedTimer()
     elapsed = timer.ms
+    requested_min, requested_max = items_min, items_max
+    if items:
+        spec_min, spec_max = parse_program_items_spec(items)
+        if spec_min is not None:
+            requested_min = spec_min if requested_min is None else requested_min
+            requested_max = spec_max if requested_max is None else requested_max
+    specified = requested_min is not None or requested_max is not None
+    lo, hi = normalize_program_item_range(requested_min, requested_max)
 
     yield {"type": "status", "message": "Собираю материалы проверки…", "elapsed_ms": elapsed()}
     state = ingest_library(case_id)
 
-    if not force and not _program_stale(state):
+    if not force and not _program_stale(
+        state,
+        items_min=lo if specified else None,
+        items_max=hi if specified else None,
+    ):
         meta = program_status(case_id)
         yield {
             "type": "status",
@@ -369,17 +419,22 @@ async def build_program_events(case_id: str, force: bool = False) -> AsyncIterat
     }
     sources = collect_brief_sources(state)
 
+    hint = program_items_hint(lo, hi)
     yield {
         "type": "status",
-        "message": "Пишу программу аудиторской проверки банка РБ. Это может занять несколько минут…",
+        "message": f"Пишу программу аудиторской проверки банка РБ ({hint} пунктов). Это может занять несколько минут…",
         "elapsed_ms": elapsed(),
     }
     try:
-        body = await _compose_program(state, sources)
+        body = await _compose_program(state, sources, items_min=lo, items_max=hi)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Модель не собрала программу проверки: {exc}") from exc
     if not (body or "").strip():
         raise ValueError("Модель вернула пустую программу проверки.")
+
+    questions = parse_program_questions(body)
+    period = parse_program_heading(body, "Аудируемый период") or state.period
+    name = parse_program_heading(body, "Название проверки") or state.inspection_name
 
     md = _md_path(case_id)
     docx = _docx_path(case_id, state.inspection_name)
@@ -390,33 +445,56 @@ async def build_program_events(case_id: str, force: bool = False) -> AsyncIterat
     }
     _write_markdown(
         md,
-        inspection_name=state.inspection_name,
-        period=state.period,
+        inspection_name=name,
+        period=period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,
         sources=sources,
+        questions=questions,
     )
     write_program_docx(
         docx,
-        inspection_name=state.inspection_name,
-        period=state.period,
+        inspection_name=name,
+        period=period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,
         sources=sources,
+        questions=questions,
     )
     _sources_path(case_id).write_text(
         json.dumps(sources, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    meta = _save_program_meta(state, docx=docx, md=md, sources=sources, body=body)
-    meta["digest"] = _digest(body)
+    meta = _save_program_meta(
+        state,
+        docx=docx,
+        md=md,
+        sources=sources,
+        body=body,
+        items_min=lo,
+        items_max=hi,
+        questions=questions,
+    )
+    meta["digest"] = _digest(questions)
     yield {"type": "result", **meta, "elapsed_ms": elapsed()}
 
 
-async def build_program(case_id: str, force: bool = False) -> dict:
+async def build_program(
+    case_id: str,
+    force: bool = False,
+    items_min: int | None = None,
+    items_max: int | None = None,
+    items: str | None = None,
+) -> dict:
     return await event_result(
-        build_program_events(case_id, force=force),
+        build_program_events(
+            case_id,
+            force=force,
+            items_min=items_min,
+            items_max=items_max,
+            items=items,
+        ),
         "Программа проверки не собрана",
     )

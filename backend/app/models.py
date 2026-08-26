@@ -164,6 +164,9 @@ class OpenWebUISyncRequest(BaseModel):
 
 class BriefRequest(BaseModel):
     force: bool = False
+    items: Optional[str] = None
+    items_min: Optional[int] = Field(default=None, ge=3, le=20)
+    items_max: Optional[int] = Field(default=None, ge=3, le=20)
 
 
 class CaseSummary(BaseModel):

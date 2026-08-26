@@ -292,13 +292,40 @@ def get_program(case_id: str):
 
 @router.post("/cases/{case_id}/knowledge/program")
 async def post_program(case_id: str, body: Optional[BriefRequest] = None):
-    return await _build_artifact(case_id, body, build_program, "Program")
+    require_case(case_id)
+    force = bool(body and body.force)
+    try:
+        return await build_program(
+            case_id,
+            force=force,
+            items_min=body.items_min if body else None,
+            items_max=body.items_max if body else None,
+            items=body.items if body else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Program failed: {exc}") from exc
 
 
 @router.get("/cases/{case_id}/knowledge/program/stream")
-async def program_stream(case_id: str, force: bool = Query(default=False)):
+async def program_stream(
+    case_id: str,
+    force: bool = Query(default=False),
+    items: Optional[str] = Query(default=None),
+    items_min: Optional[int] = Query(default=None, ge=3, le=20),
+    items_max: Optional[int] = Query(default=None, ge=3, le=20),
+):
     require_case(case_id)
-    return sse_response(build_program_events(case_id, force=force))
+    return sse_response(
+        build_program_events(
+            case_id,
+            force=force,
+            items_min=items_min,
+            items_max=items_max,
+            items=items,
+        )
+    )
 
 
 @router.get("/cases/{case_id}/knowledge/program.docx")

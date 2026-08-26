@@ -220,16 +220,22 @@ class Tools:
             f"Скачать: {self._public()}{data.get('download') or path + '.docx'}"
         )
 
-    async def build_program(self, case_id: str, force: bool = False) -> str:
+    async def build_program(
+        self,
+        case_id: str,
+        force: bool = False,
+        items: str = "",
+    ) -> str:
         """
-        Собрать программу аудиторской проверки банка РБ в Word.
+        Собрать программу аудиторской проверки банка РБ в Word (таблица вопросов).
         Вызывай, когда аудитор пишет «программа проверки». После download_npa.
+        items: число пунктов или диапазон, например «8» или «10-12». Пусто = 8–11 пунктов.
         """
         path = f"/api/v1/cases/{case_id}/knowledge/program"
-        if force:
-            data = await self._req("POST", path, {"force": True})
-        else:
-            data = await self._req("POST", path, {})
+        payload: dict[str, object] = {"force": bool(force)}
+        if (items or "").strip():
+            payload["items"] = items.strip()
+        data = await self._req("POST", path, payload)
         pages = data.get("pages_estimate")
         cites = data.get("citations")
         return (

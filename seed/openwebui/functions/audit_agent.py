@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.3
+version: 0.2.4
 license: MIT
 description: Агент проверки. Документы, саммари, total, программа, гипотезы (xlsx). Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
@@ -51,7 +51,7 @@ HELP = """Я помогаю собрать документы для прове�
 или отдельно: добавь Инструкция о порядке проведения валютных операций
 
 Когда документы скачаются:
-— `программа проверки` — программа проверки в Word;
+— `программа проверки` — программа проверки в Word (можно задать число пунктов: `программа проверки 8` или `программа проверки 10-12`);
 — `саммари` — основная информация по теме из базы знаний в Word;
 — `саммари total` — основная информация по теме из знаний модели;
 — `гипотезы` — чеклист гипотез для проверки в Excel;
@@ -369,7 +369,7 @@ class Pipe:
             f"{added}{extra}\n"
             f"{_download_links(public, case_id, name, with_summary=False)}\n\n"
             "Дальше:\n"
-            "— `программа проверки` — программа проверки в Word;\n"
+            "— `программа проверки` — программа проверки в Word (можно задать число пунктов: `программа проверки 8` или `программа проверки 10-12`);\n"
             "— `саммари` — основная информация по теме из базы знаний в Word;\n"
             "— `саммари total` — основная информация по теме из знаний модели;\n"
             "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
@@ -463,13 +463,21 @@ class Pipe:
         retry_hint: str,
         empty_message: str,
         link_flags: dict[str, bool],
+        extra_query: Optional[dict[str, Any]] = None,
     ) -> str:
         force = bool(re.search(r"заново|пересобер|перегенер|force", text, re.I))
         await _status(emitter, start_message)
         result: dict[str, Any] | None = None
         url = f"{api}/api/v1/cases/{case_id}/knowledge/{endpoint}/stream"
+        params: list[str] = []
         if force:
-            url += "?force=true"
+            params.append("force=true")
+        for key, value in (extra_query or {}).items():
+            if value is None or value == "":
+                continue
+            params.append(f"{key}={value}")
+        if params:
+            url += "?" + "&".join(params)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("GET", url) as response:
@@ -572,6 +580,22 @@ class Pipe:
         text: str,
         emitter: Emitter,
     ) -> str:
+        items = _parse_program_items_spec(text)
+        if items:
+            lo, hi = items
+            count = f"{lo} вопросов" if lo == hi else f"{lo}–{hi} вопросов"
+            start_message = (
+                f"Готовлю программу аудиторской проверки в Word ({count}). "
+                "Это может занять несколько минут…"
+            )
+        else:
+            start_message = (
+                "Готовлю программу аудиторской проверки в Word. "
+                "Это может занять несколько минут…"
+            )
+        extra = {}
+        if items:
+            extra["items"] = f"{items[0]}-{items[1]}" if items[0] != items[1] else str(items[0])
         return await self._stream_build(
             api,
             public,
@@ -580,12 +604,13 @@ class Pipe:
             text,
             emitter,
             endpoint="program",
-            start_message="Готовлю программу аудиторской проверки в Word. Это может занять несколько минут…",
+            start_message=start_message,
             fallback_status="Готовлю программу проверки…",
             error_label="программу проверки",
             retry_hint="Сначала должна быть создана проверка. Лучше, если акты уже скачаны: напишите `документы` или `утверждаю 1, 2`.",
-            empty_message="Программа проверки не получилась. Напишите ещё раз: `программа проверки`.",
+            empty_message="Программа проверки не получилась. Напишите ещё раз: `программа проверки` или `программа проверки 10-12`.",
             link_flags={"with_program": True},
+            extra_query=extra,
         )
 
     async def _hypotheses(
@@ -629,7 +654,7 @@ class Pipe:
         lines.append(_download_links(public, case_id, name, with_summary=False))
         lines.append("")
         lines.append("Дальше:")
-        lines.append("— `программа проверки` — программа проверки в Word;")
+        lines.append("— `программа проверки` — программа проверки в Word (можно задать число пунктов: `программа проверки 8` или `программа проверки 10-12`);")
         lines.append("— `саммари` — основная информация по теме из базы знаний в Word;")
         lines.append("— `саммари total` — основная информация по теме из знаний модели;")
         lines.append("— `гипотезы` — чеклист гипотез для проверки в Excel;")
@@ -733,6 +758,8 @@ def _is_program(text: str) -> bool:
     t = text.strip().lower()
     if t in {"программа", "программу", "/program", "audit program"}:
         return True
+    if re.match(r"^\s*(программа|программу)\s+\d", t):
+        return True
     if re.search(r"(статья|ст\.)\s*\d+", t) and not re.search(r"программ", t):
         return False
     return bool(
@@ -744,6 +771,27 @@ def _is_program(text: str) -> bool:
             t,
         )
     )
+
+
+def _parse_program_items_spec(text: str) -> Optional[tuple[int, int]]:
+    cleaned = re.sub(r"заново|пересобер\w*|перегенер\w*|force", " ", text, flags=re.I)
+    match = re.search(
+        r"(?:программ\w*|audit\s+program|/program)[^\n\d]{0,80}"
+        r"(\d{1,2}\s*[-–—]\s*\d{1,2}|\d{1,2})",
+        cleaned,
+        re.I,
+    )
+    if not match:
+        return None
+    spec = re.sub(r"\s+", "", match.group(1))
+    ranged = re.fullmatch(r"(\d{1,2})[-–—](\d{1,2})", spec)
+    if ranged:
+        lo, hi = int(ranged.group(1)), int(ranged.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        return max(3, min(20, lo)), max(3, min(20, hi))
+    n = max(3, min(20, int(spec)))
+    return n, n
 
 
 def _is_total(text: str) -> bool:
