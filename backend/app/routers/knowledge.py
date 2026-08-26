@@ -26,6 +26,13 @@ from app.services.brief_flow import (
     build_brief_events,
     resolve_brief_file,
 )
+from app.services.hypotheses_flow import (
+    build_hypotheses,
+    build_hypotheses_events,
+    hypotheses_download_name,
+    hypotheses_status,
+    resolve_hypotheses_file,
+)
 from app.services.program_flow import (
     build_program,
     build_program_events,
@@ -313,6 +320,45 @@ def download_program_md(case_id: str):
         resolver=resolve_program_file,
         filename_builder=program_download_name,
         not_found="Markdown программы проверки ещё нет.",
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/hypotheses")
+def get_hypotheses(case_id: str):
+    require_case(case_id)
+    return hypotheses_status(case_id)
+
+
+@router.post("/cases/{case_id}/knowledge/hypotheses")
+async def post_hypotheses(case_id: str, body: Optional[BriefRequest] = None):
+    return await _build_artifact(case_id, body, build_hypotheses, "Hypotheses")
+
+
+@router.get("/cases/{case_id}/knowledge/hypotheses/stream")
+async def hypotheses_stream(case_id: str, force: bool = Query(default=False)):
+    require_case(case_id)
+    return sse_response(build_hypotheses_events(case_id, force=force))
+
+
+@router.get("/cases/{case_id}/knowledge/hypotheses.xlsx")
+def download_hypotheses_xlsx(case_id: str):
+    return _download_artifact(
+        case_id,
+        kind="xlsx",
+        resolver=resolve_hypotheses_file,
+        filename_builder=hypotheses_download_name,
+        not_found="Чеклист гипотез ещё нет. Напишите в чате «гипотезы».",
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/hypotheses.md")
+def download_hypotheses_md(case_id: str):
+    return _download_artifact(
+        case_id,
+        kind="md",
+        resolver=resolve_hypotheses_file,
+        filename_builder=hypotheses_download_name,
+        not_found="Markdown гипотез ещё нет.",
     )
 
 

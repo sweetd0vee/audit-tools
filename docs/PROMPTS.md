@@ -40,6 +40,7 @@ docker compose up -d backend
 | `саммари` — обзор в начале Word | тот же | [`overview.txt`](prompts/overview.txt) |
 | `саммари total` | [`total_system.txt`](prompts/total_system.txt) | [`total_user.txt`](prompts/total_user.txt) + [`total_sections.txt`](prompts/total_sections.txt) |
 | `программа проверки` | [`program_system.txt`](prompts/program_system.txt) | [`program_user.txt`](prompts/program_user.txt) + [`program_sections.txt`](prompts/program_sections.txt) |
+| `гипотезы` | [`hypotheses_system.txt`](prompts/hypotheses_system.txt) | [`hypotheses_user.txt`](prompts/hypotheses_user.txt) + [`hypotheses_schema.txt`](prompts/hypotheses_schema.txt) |
 | `вопрос …` | [`ask_system.txt`](prompts/ask_system.txt) | [`ask_user.txt`](prompts/ask_user.txt) |
 | Обычный чат без команд | [`chat_system.txt`](prompts/chat_system.txt) | история сообщений |
 | `помощь` | — | [`pipe_help.txt`](prompts/pipe_help.txt) (текст Pipe, не LLM) |
@@ -453,6 +454,16 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 ---
 
+## 4б. Гипотезы (`гипотезы`)
+
+Чеклист 8–10 гипотез в Excel. Контекст: карточки саммари, `total.md`, `program.md`, фрагменты НПА + знания модели. Ответ модели — JSON.
+
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{document_catalog}`, `{catalog}`, `{fragments}`, `{cards_block}`, `{total_block}`, `{program_block}`, `{schema}`.
+
+Файлы: [`hypotheses_system.txt`](prompts/hypotheses_system.txt), [`hypotheses_user.txt`](prompts/hypotheses_user.txt), [`hypotheses_schema.txt`](prompts/hypotheses_schema.txt).
+
+---
+
 ## 5. Вопрос по базе (`вопрос …`)
 
 Ответ по карточкам + дословным фрагментам индекса. Без префикса `вопрос` этот промпт не вызывается.
@@ -518,6 +529,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 — `программа проверки` — программа проверки в Word;
 — `саммари` — основная информация по теме из базы знаний в Word;
 — `саммари total` — основная информация по теме из знаний модели;
+— `гипотезы` — чеклист гипотез проверки в Excel;
 — `вопрос` — вопрос по базе знаний (например `вопрос Какой срок…`);
 — `документы` — посмотреть список документов в базе знаний;
 — обычный диалог — пишите без префикса.

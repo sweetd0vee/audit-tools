@@ -1,9 +1,9 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.2
+version: 0.2.3
 license: MIT
-description: Агент проверки. Собирает документы, саммари, саммари total и программу. Вопрос по базе — с префиксом «вопрос»; иначе обычный чат с LLM.
+description: Агент проверки. Документы, саммари, total, программа, гипотезы (xlsx). Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
 """
 
@@ -54,6 +54,7 @@ HELP = """Я помогаю собрать документы для прове�
 — `программа проверки` — программа проверки в Word;
 — `саммари` — основная информация по теме из базы знаний в Word;
 — `саммари total` — основная информация по теме из знаний модели;
+— `гипотезы` — чеклист гипотез проверки в Excel;
 — `вопрос` — вопрос по базе знаний (например `вопрос Какой срок…`);
 — `документы` — посмотреть список документов в базе знаний;
 — обычный диалог — пишите без префикса.
@@ -141,6 +142,18 @@ class Pipe:
                 if not case_id:
                     return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
                 return await self._total(
+                    api,
+                    public,
+                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
+                    case_id,
+                    text,
+                    __event_emitter__,
+                )
+
+            if _is_hypotheses(text):
+                if not case_id:
+                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
+                return await self._hypotheses(
                     api,
                     public,
                     max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
@@ -359,6 +372,7 @@ class Pipe:
             "— `программа проверки` — программа проверки в Word;\n"
             "— `саммари` — основная информация по теме из базы знаний в Word;\n"
             "— `саммари total` — основная информация по теме из знаний модели;\n"
+            "— `гипотезы` — чеклист гипотез проверки в Excel;\n"
             "— `вопрос` — вопрос по базе знаний (например `вопрос Какой срок…`);\n"
             "— `документы` — посмотреть список документов в базе знаний;\n"
             "— обычный диалог — пишите без префикса.\n"
@@ -574,6 +588,31 @@ class Pipe:
             link_flags={"with_program": True},
         )
 
+    async def _hypotheses(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        return await self._stream_build(
+            api,
+            public,
+            timeout,
+            case_id,
+            text,
+            emitter,
+            endpoint="hypotheses",
+            start_message="Формулирую чеклист гипотез проверки в Excel. Лучше, если уже есть саммари / total / программа…",
+            fallback_status="Формулирую гипотезы…",
+            error_label="гипотезы",
+            retry_hint="Нужна проверка с документами. Желательно сначала `саммари`, `саммари total`, `программа проверки`.",
+            empty_message="Гипотезы не получились. Напишите ещё раз: `гипотезы`.",
+            link_flags={"with_hypotheses": True},
+        )
+
     async def _library(self, api: str, public: str, timeout: float, case_id: str) -> str:
         data = await _req("GET", f"{api}/api/v1/cases/{case_id}/library", timeout)
         name = data.get("inspection_name") or "proverka"
@@ -593,6 +632,7 @@ class Pipe:
         lines.append("— `программа проверки` — программа проверки в Word;")
         lines.append("— `саммари` — основная информация по теме из базы знаний в Word;")
         lines.append("— `саммари total` — основная информация по теме из знаний модели;")
+        lines.append("— `гипотезы` — чеклист гипотез проверки в Excel;")
         lines.append("— `вопрос` — вопрос по базе знаний (например `вопрос Какой срок…`);")
         lines.append("— `документы` — посмотреть список документов в базе знаний;")
         lines.append("— обычный диалог — пишите без префикса.")
@@ -733,9 +773,34 @@ def _is_total(text: str) -> bool:
     )
 
 
+def _is_hypotheses(text: str) -> bool:
+    t = text.strip().lower()
+    if t in {
+        "гипотезы",
+        "гипотеза",
+        "checklist",
+        "чеклист",
+        "чеклист гипотез",
+        "/hypotheses",
+        "/hypothesis",
+    }:
+        return True
+    return bool(
+        re.search(
+            r"("
+            r"гипотез\w*|"
+            r"чеклист\s+гипотез|"
+            r"(сделай|составь|подготовь|сформулируй)\s+гипотез|"
+            r"/hypothes"
+            r")",
+            t,
+        )
+    )
+
+
 def _is_brief(text: str) -> bool:
     t = text.strip().lower()
-    if _is_total(t):
+    if _is_total(t) or _is_hypotheses(t):
         return False
     if t in {"саммари", "сводка", "бриф", "docx", "word", "/brief", "/summary"}:
         return True
@@ -770,7 +835,7 @@ def _is_approve(text: str) -> bool:
 def _is_library(text: str) -> bool:
     """Команда списка/архива, не любой текст со словом «документ»."""
     t = text.strip().lower()
-    if _is_brief(t) or _is_program(t) or _is_total(t):
+    if _is_brief(t) or _is_program(t) or _is_total(t) or _is_hypotheses(t):
         return False
     if re.search(r"скачай|скачать|скачивай", t):
         return False
@@ -812,6 +877,7 @@ def _download_links(
     with_summary: bool = False,
     with_total: bool = False,
     with_program: bool = False,
+    with_hypotheses: bool = False,
 ) -> str:
     stem = _file_stem(inspection_name)
     base = f"{public}/api/v1/cases/{case_id}"
@@ -831,6 +897,10 @@ def _download_links(
     if with_program:
         lines.append(
             f"- программа проверки (`{stem}_programma.docx`): {base}/knowledge/program.docx"
+        )
+    if with_hypotheses:
+        lines.append(
+            f"- чеклист гипотез (`{stem}_gipotezy.xlsx`): {base}/knowledge/hypotheses.xlsx"
         )
     return "\n".join(lines)
 
@@ -895,6 +965,7 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
         or _is_brief(raw)
         or _is_total(raw)
         or _is_program(raw)
+        or _is_hypotheses(raw)
     ):
         return None
     parts = [p.strip(" .;") for p in re.split(r"[,;\n]", raw) if p.strip()]
