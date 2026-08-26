@@ -9,6 +9,7 @@ one LLM call over the selected spans, not map-reduce over the whole act.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Sequence
 
 from app.config import settings
@@ -23,6 +24,64 @@ from app.services.chunker import (
 )
 
 EmbedFn = Callable[[list[str]], Awaitable[list[list[float]]]]
+
+# «ст. 625», «статья 12.1», «ст 38» — BM25 must see the canonical heading, not just the digits.
+ARTICLE_MENTION_RE = re.compile(
+    r"(?i)(?:статьи|статью|статьёй|статьей|статье|статья|ст\.?)\s*№?\s*(\d+(?:\.\d+)?)"
+)
+ARTICLE_HEADING_RE = re.compile(
+    r"(?im)^\s*(?:статья|ст\.)\s+(\d+(?:\.\d+)?)\b"
+)
+
+
+def article_query_variants(question: str) -> list[str]:
+    """Turn 'ст. 625 ГК' into heading-shaped queries so BM25 hits 'Статья 625'."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in ARTICLE_MENTION_RE.finditer(question or ""):
+        num = match.group(1)
+        if num in seen:
+            continue
+        seen.add(num)
+        out.extend([f"Статья {num}", f"Ст. {num}", f"статья {num}"])
+    return out
+
+
+def ask_queries(question: str) -> list[str]:
+    q = " ".join((question or "").split())
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in [q, *article_query_variants(q)]:
+        key = item.lower()
+        if len(item) < 3 or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out or [question or "проверка"]
+
+
+def _article_num(text: str) -> str | None:
+    match = ARTICLE_HEADING_RE.search(text or "")
+    return match.group(1) if match else None
+
+
+def _heading_boosts(queries: list[str], lookup: dict[str, dict]) -> dict[str, float]:
+    """RRF is ~0.03/ranker; a heading match must outrank a cross-reference to the same number."""
+    nums: list[str] = []
+    seen: set[str] = set()
+    for match in ARTICLE_MENTION_RE.finditer(" ".join(queries)):
+        num = match.group(1)
+        if num not in seen:
+            seen.add(num)
+            nums.append(num)
+    if not nums:
+        return {}
+    boosts: dict[str, float] = {}
+    for cid, ch in lookup.items():
+        head_num = _article_num((ch.get("text") or "")[:240])
+        if head_num and head_num in seen:
+            boosts[cid] = 2.0
+    return boosts
 
 
 def retrieval_queries(state: CaseState, extra: Sequence[str] | None = None) -> list[str]:
@@ -112,11 +171,16 @@ def _expand_neighbors(lookup: dict[str, dict], picked: list[str], radius: int) -
             continue
         item_id, idx = parsed
         group = by_item.get(item_id) or {}
+        origin_num = _article_num((lookup.get(cid) or {}).get("text") or "")
         for j in range(idx - radius, idx + radius + 1):
             nid = group.get(j)
-            if nid and nid not in seen:
-                seen.add(nid)
-                out.append(nid)
+            if not nid or nid in seen:
+                continue
+            other_num = _article_num((lookup.get(nid) or {}).get("text") or "")
+            if origin_num and other_num and other_num != origin_num:
+                continue
+            seen.add(nid)
+            out.append(nid)
     return out
 
 
@@ -274,6 +338,8 @@ async def select_evidence(
             dense_rankings.append(_rank_ids(pairs))
 
     fused = rrf_fuse(rankings + dense_rankings) if dense_rankings else fused_lex
+    for cid, boost in _heading_boosts(queries, lookup).items():
+        fused[cid] = fused.get(cid, 0.0) + boost
     if always_include_first and ids:
         fused[ids[0]] = fused.get(ids[0], 0.0) + 1.0 / 60.0
 
@@ -298,6 +364,24 @@ async def select_evidence(
 
     expanded = _expand_neighbors(lookup, picked, radius)
     return _merge_consecutive(lookup, expanded, budget)
+
+
+async def retrieve_for_ask(
+    chunks: list[dict],
+    question: str,
+    *,
+    top_k: int | None = None,
+    embed_fn: EmbedFn | None = None,
+) -> list[dict]:
+    """Library-wide hybrid retrieve for `вопрос …`. No preamble injection."""
+    return await select_evidence(
+        chunks,
+        ask_queries(question),
+        top_k=top_k or settings.rag_top_k,
+        budget_chars=max(settings.summary_max_chars, 24000),
+        always_include_first=False,
+        embed_fn=embed_fn,
+    )
 
 
 def _keyword_overlap(text: str, query_tokens: list[str]) -> float:
