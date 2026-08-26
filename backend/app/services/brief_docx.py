@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
+from docx.shared import Cm, Emu, Pt, RGBColor
 
 from app.services.citations import CITE_RE
 
@@ -127,6 +128,63 @@ def _style_paragraph(paragraph, *, first_line: bool = False) -> None:
 def _add_plain_run(paragraph, text: str, *, italic: bool = False, bold: bool = False) -> None:
     run = paragraph.add_run(text)
     _set_run_font(run, italic=italic, bold=bold)
+
+
+def _set_table_borders(table) -> None:
+    tbl = table._tbl
+    tbl_pr = tbl.tblPr
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        tbl.insert(0, tbl_pr)
+    existing = tbl_pr.find(qn("w:tblBorders"))
+    if existing is not None:
+        tbl_pr.remove(existing)
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        el = OxmlElement(f"w:{edge}")
+        el.set(qn("w:val"), "single")
+        el.set(qn("w:sz"), "4")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "000000")
+        borders.append(el)
+    tbl_pr.append(borders)
+
+
+def _set_cell_width(cell, cm: float) -> None:
+    dxa = str(int(Cm(cm)))
+    cell.width = Cm(cm)
+    tc = cell._tc
+    tc_pr = tc.get_or_add_tcPr()
+    tc_w = tc_pr.find(qn("w:tcW"))
+    if tc_w is None:
+        tc_w = OxmlElement("w:tcW")
+        tc_pr.append(tc_w)
+    tc_w.set(qn("w:w"), dxa)
+    tc_w.set(qn("w:type"), "dxa")
+
+
+def _fill_cell(
+    cell,
+    text: str,
+    sources_by_n: dict[int, dict[str, Any]] | None = None,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+    size: int = 12,
+    center: bool = False,
+) -> None:
+    cell.text = ""
+    paragraph = cell.paragraphs[0]
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(2)
+    fmt.space_after = Pt(2)
+    fmt.line_spacing = 1.15
+    if center:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    add_text_with_cites(paragraph, text or "", sources_by_n or {})
+    for run in paragraph.runs:
+        _set_run_font(run, size=size, bold=bold, italic=italic)
 
 
 def add_text_with_cites(paragraph, text: str, sources_by_n: dict[int, dict[str, Any]]) -> None:
