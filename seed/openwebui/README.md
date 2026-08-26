@@ -25,6 +25,6 @@
 5. Агент: Admin → Functions, вставить `functions/audit_agent.py` — см. [AGENT.md](AGENT.md). Сценарий аудитора: [`docs/GUIDE.md`](../../docs/GUIDE.md).
 6. Веб-поиск в чате **выключен**. SearXNG только для добычи актов через backend.
 
-`RAG_*` в compose — PersistentConfig: срабатывают при **первом** создании volume. Если `open-webui-data` уже был — правьте Admin вручную или `docker compose down` и удалите volume (сотрёт чаты).
+`RAG_*` в compose применяются **каждый** старт (`ENABLE_PERSISTENT_CONFIG=false`): hybrid, qwen embedding, top-k 16, шаблон. MiniLM и `top-k=3` со старого volume больше не живут. Context length модели в Admin всё ещё проверьте: **32k+**, не 2048 (это не env).
 
 Золотые тесты: [`docs/RAG_для_разработчика.md`](../../docs/RAG_для_разработчика.md) §12.

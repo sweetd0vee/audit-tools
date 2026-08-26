@@ -12,8 +12,8 @@ name: ai-auditor
 #
 # Засев чата: seed/openwebui/README.md
 # Админский гайд (числа RAG, модели, Pipe): docs/OPENWEBUI.md
-# Если volume open-webui-data уже жил — env RAG ниже мог не примениться,
-# правьте Admin → Documents вручную.
+# Если volume open-webui-data уже жил — RAG-env всё равно применяется:
+# ENABLE_PERSISTENT_CONFIG=false, иначе остаются MiniLM / hybrid off / top-k=3.
 
 services:
   searxng:
@@ -44,18 +44,24 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       WEBUI_NAME: Аудитор
       ENABLE_WEB_SEARCH: "false"
+      # Иначе старый volume держит MiniLM / hybrid off / top-k=3 / «не ту статью».
+      ENABLE_PERSISTENT_CONFIG: "false"
       RAG_EMBEDDING_ENGINE: ollama
       RAG_OLLAMA_BASE_URL: http://host.docker.internal:11434
       RAG_EMBEDDING_MODEL: ${OLLAMA_EMBED_MODEL:-qwen3-embedding:latest}
       ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_HYBRID_BM25_WEIGHT: "0.65"
+      ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS: "true"
       RAG_TEXT_SPLITTER: token
+      ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER: "true"
       CHUNK_SIZE: "1600"
       CHUNK_OVERLAP: "180"
+      CHUNK_MIN_SIZE_TARGET: "1000"
       RAG_TOP_K: "16"
+      RAG_TOP_K_RERANKER: "10"
       RAG_FULL_CONTEXT: "false"
       RAG_SYSTEM_CONTEXT: "true"
-      # PersistentConfig: на уже существующем volume откройте Admin и вставьте
-      # seed/openwebui/RAG_TEMPLATE.txt, если шаблон не подхватился.
+      # Шаблон тоже из compose (PersistentConfig выключен — Admin его не перебьёт).
       RAG_TEMPLATE: |
         Используй ТОЛЬКО фрагменты ниже.
         Если ответа нет во фрагментах — скажи об этом прямо. Не выдумывай статьи, пункты, даты и номера актов.

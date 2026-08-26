@@ -11,7 +11,6 @@ from app.models import CaseState, KnowledgeItem
 from app.prompts import prompt
 from app.services.chunker import (
     chunk_text,
-    cosine,
     even_sample,
     keyword_score,
     sequential_windows,
@@ -20,6 +19,7 @@ from app.services.chunker import (
 from app.services.knowledge_retrieve import (
     chunks_from_item,
     retrieval_queries,
+    retrieve_for_ask,
     select_evidence,
 )
 from app.services.citations import (
@@ -558,41 +558,7 @@ async def build_knowledge_events(case_id: str) -> AsyncIterator[dict]:
     }
 
 
-def _diversify_chunks(ranked: list[tuple[float, dict]], top_k: int) -> list[dict]:
-    """Cover several documents first, then fill remaining slots from global rank."""
-    by_item: dict[str, list[dict]] = {}
-    for _score, ch in ranked:
-        key = str(ch.get("item_id") or ch.get("title") or "")
-        by_item.setdefault(key, []).append(ch)
-    picked: list[dict] = []
-    seen: set[str] = set()
-
-    def _take(ch: dict) -> bool:
-        cid = str(ch.get("id") or id(ch))
-        if cid in seen:
-            return False
-        seen.add(cid)
-        picked.append(ch)
-        return True
-
-    for group in by_item.values():
-        if group:
-            _take(group[0])
-        if len(picked) >= top_k:
-            return picked
-    for group in by_item.values():
-        if len(group) > 1:
-            _take(group[1])
-        if len(picked) >= top_k:
-            return picked
-    for _score, ch in ranked:
-        _take(ch)
-        if len(picked) >= top_k:
-            break
-    return picked
-
-
-def _summary_context(state: CaseState, question: str, budget: int = 18000) -> str:
+def _summary_context(state: CaseState, question: str, budget: int = 8000) -> str:
     q_tokens = list(tokenize(question)) + [question]
     scored: list[tuple[float, str, str]] = []
     for item in state.knowledge:
@@ -615,6 +581,19 @@ def _summary_context(state: CaseState, question: str, budget: int = 18000) -> st
     return "\n\n".join(blocks)
 
 
+def _drop_stale_embeddings(index: dict) -> bool:
+    """Do not cosine-compare a qwen query vector with leftover MiniLM rows."""
+    stored = (index.get("embed_model") or "").strip()
+    current = (settings.ollama_embed_model or "").strip()
+    if not stored or stored == current:
+        return False
+    for ch in index.get("chunks") or []:
+        ch["embedding"] = []
+    index["embed_model"] = current
+    index["embedded"] = 0
+    return True
+
+
 async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
     top_k = top_k or settings.rag_top_k
     state = store.get(case_id)
@@ -627,43 +606,39 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
     if not chunks:
         raise ValueError("База знаний пуста. Сначала утвердите акты и дождитесь скачивания.")
 
-    q_tokens = set(tokenize(question))
-    q_emb: list[float] | None = None
-    try:
-        vectors = await embed_texts([question])
-        q_emb = vectors[0] if vectors else None
-    except Exception:
-        q_emb = None
+    if _drop_stale_embeddings(index):
+        chunks = index.get("chunks") or []
+        _save_index(case_id, index)
 
-    ranked: list[tuple[float, dict]] = []
-    for ch in chunks:
-        lex = keyword_score(ch["text"], list(q_tokens) + [question])
-        ctok = set(tokenize(ch["text"]))
-        if q_tokens:
-            lex += 3.0 * len(q_tokens & ctok) / max(1, len(q_tokens))
-        vec = 0.0
-        if q_emb and ch.get("embedding"):
-            vec = cosine(q_emb, ch["embedding"]) * 12.0
-        ranked.append((lex + vec, ch))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    positive = [(s, c) for s, c in ranked if s > 0] or ranked
-    picked = _diversify_chunks(positive, top_k)
+    evidence = await retrieve_for_ask(
+        chunks, question, top_k=top_k, embed_fn=embed_texts
+    )
+    _persist_item_embeddings(case_id, chunks)
+    if not evidence:
+        evidence = chunks[:top_k]
 
     context_parts = []
     sources = []
-    for i, ch in enumerate(picked, start=1):
-        context_parts.append(f"[{i}] {ch['title']}\n{ch['text']}")
+    used_embeddings = False
+    for i, ch in enumerate(evidence, start=1):
+        article = extract_article_ref(ch.get("text") or "")
+        title = ch.get("title") or ""
+        label = f"{title} — {article}" if article else title
+        context_parts.append(f"[{i}] {label}\n{ch['text']}")
         sources.append(
             {
                 "n": i,
-                "title": ch["title"],
+                "title": title,
                 "filename": ch.get("filename"),
-                "excerpt": ch["text"][:400],
+                "article": article,
+                "excerpt": excerpt_for_cite(ch.get("text") or ""),
             }
         )
+        if ch.get("embedding"):
+            used_embeddings = True
     summaries = _summary_context(state, question)
     summary_block = (
-        f"Конспекты актов (основные положения по полным текстам):\n{summaries}\n\n"
+        f"Конспекты актов (ориентир, не источник номера статьи):\n{summaries}\n\n"
         if summaries
         else ""
     )
@@ -676,13 +651,17 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
         context="\n".join(context_parts),
     )
     answer = await chat_complete(
-        prompt("ask_system"), user, timeout=settings.ollama_timeout_sec
+        prompt("ask_system"),
+        user,
+        temperature=0.1,
+        timeout=settings.ollama_timeout_sec,
+        num_ctx=settings.ollama_num_ctx,
     )
     return {
         "answer": answer,
         "sources": sources,
         "model": settings.ollama_model,
-        "used_embeddings": bool(q_emb),
+        "used_embeddings": used_embeddings,
         "used_summaries": bool(summaries),
     }
 

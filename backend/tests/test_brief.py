@@ -659,16 +659,106 @@ class TestOverviewAndAskHelpers(unittest.TestCase):
         self.assertIn("ст. 1 — предмет", overview)
         self.assertIn("ст. 625 — аренда", overview)
 
-    def test_diversify_covers_each_document(self):
-        from app.services.knowledge_flow import _diversify_chunks
 
-        ranked = [
-            (10.0, {"id": "a1", "item_id": "A", "title": "A"}),
-            (9.0, {"id": "a2", "item_id": "A", "title": "A"}),
-            (3.0, {"id": "b1", "item_id": "B", "title": "B"}),
+class TestAskRetrieval(unittest.IsolatedAsyncioTestCase):
+    def test_article_query_variants(self):
+        from app.services.knowledge_retrieve import article_query_variants, ask_queries
+
+        variants = article_query_variants("Какой срок в ст. 625 ГК?")
+        self.assertIn("Статья 625", variants)
+        queries = ask_queries("ст. 625 аренда")
+        self.assertTrue(any(q.startswith("Статья 625") for q in queries))
+
+    async def test_heading_beats_cross_reference(self):
+        from app.services.knowledge_retrieve import retrieve_for_ask
+
+        chunks = [
+            {
+                "id": "instr:0",
+                "item_id": "instr",
+                "title": "Инструкция",
+                "filename": "i.txt",
+                "text": "Статья 12. Общие положения\nсм. также статью 625 Гражданского кодекса про аренду.",
+                "embedding": [],
+            },
+            {
+                "id": "gk:0",
+                "item_id": "gk",
+                "title": "Гражданский кодекс",
+                "filename": "gk.txt",
+                "text": "Статья 624. Преимущественное право\nканцелярия " * 20,
+                "embedding": [],
+            },
+            {
+                "id": "gk:1",
+                "item_id": "gk",
+                "title": "Гражданский кодекс",
+                "filename": "gk.txt",
+                "text": "Статья 625. Договор аренды\nсрок регистрации договора аренды недвижимости " * 20,
+                "embedding": [],
+            },
+            {
+                "id": "gk:2",
+                "item_id": "gk",
+                "title": "Гражданский кодекс",
+                "filename": "gk.txt",
+                "text": "Статья 626. Арендная плата\nканцелярия " * 20,
+                "embedding": [],
+            },
         ]
-        picked = _diversify_chunks(ranked, 2)
-        self.assertEqual({c["item_id"] for c in picked}, {"A", "B"})
+
+        async def fake_embed(texts):
+            out = []
+            for t in texts:
+                low = t.lower()
+                out.append([1.0 if "625" in low or "аренда" in low else 0.0, 0.2])
+            return out
+
+        picked = await retrieve_for_ask(chunks, "вопрос ст. 625 срок аренды", top_k=1, embed_fn=fake_embed)
+        self.assertTrue(picked)
+        self.assertIn("Статья 625.", picked[0]["text"])
+        blob = " ".join(p["text"] for p in picked)
+        self.assertNotIn("Статья 12.", blob)
+        self.assertNotIn("Статья 624.", blob)
+        self.assertNotIn("Статья 626.", blob)
+
+    async def test_neighbor_does_not_glue_next_article(self):
+        from app.services.knowledge_retrieve import select_evidence
+
+        chunks = [
+            {
+                "id": "doc:0",
+                "item_id": "doc",
+                "title": "Кодекс",
+                "filename": "c.txt",
+                "text": "Статья 3. Аренда валюта расчёты\n" + ("аренда валюта " * 40),
+                "embedding": [],
+            },
+            {
+                "id": "doc:1",
+                "item_id": "doc",
+                "title": "Кодекс",
+                "filename": "c.txt",
+                "text": "Статья 4. Канцелярия\n" + ("канцелярия " * 40),
+                "embedding": [],
+            },
+        ]
+
+        async def fake_embed(texts):
+            return [[1.0 if "аренда" in t.lower() else 0.0, 0.1] for t in texts]
+
+        picked = await select_evidence(
+            chunks,
+            ["аренда"],
+            top_k=1,
+            candidates=4,
+            neighbor=1,
+            always_include_first=False,
+            embed_fn=fake_embed,
+        )
+        blob = " ".join(p["text"] for p in picked)
+        self.assertIn("Статья 3.", blob)
+        self.assertNotIn("Статья 4.", blob)
 
 
 if __name__ == "__main__":

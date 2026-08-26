@@ -66,7 +66,7 @@ docker compose up -d --build
 - API: http://localhost:8100/docs
 - SearXNG: внутренний, аудитору не открывать
 
-Часть RAG-env из `docker-compose.yml` — **PersistentConfig**: применяется при **первом** создании volume `audit-tools_open-webui-data`. Если volume уже жил со старыми дефолтами — правьте Admin вручную (раздел 4). Сносить volume только если готовы потерять чаты.
+Часть RAG-env из `docker-compose.yml` всегда перекрывает Admin: `ENABLE_PERSISTENT_CONFIG=false`. Hybrid, `qwen3-embedding`, top-k 16 и шаблон едут из compose даже на старом volume. Сносить volume не нужно.
 
 ---
 
@@ -203,7 +203,7 @@ Open WebUI не задаёт температуру propose/ask. Это `backend
 | `OLLAMA_BASE_URL` | в compose: `http://host.docker.internal:11434` | |
 | температура propose | `0.2` | `ollama_client.py` |
 | температура карточек саммари | `0.1` | меньше вольности в формулировках |
-| `rag_top_k` | `12` | сколько чанков сервер кладёт в ask |
+| `rag_top_k` | `16` | сколько чанков сервер кладёт в ask |
 
 Сменили embedding — пересобрать индекс кейса (заново download/ingest), не только Reindex в WebUI.
 
@@ -234,11 +234,11 @@ Open WebUI не задаёт температуру propose/ask. Это `backend
 | Список актов пустой / таймаут | Ollama жив? 27B влезает в VRAM? `TIMEOUT_SEC` |
 | Цитаты «из головы», блока «Откуда в базе» нет | Пишете в голый `ol`, не в Pipe. Или вопрос без префикса `вопрос` |
 | «База знаний пуста» | Нет `утверждаю`, download не закончился |
-| Видит не ту статью | Hybrid выкл / MiniLM / маленький top-k / `num_ctx=2048` |
+| Видит не ту статью | Старый индекс без hybrid / MiniLM в чанках / вопрос без номера статьи. Пересоберите индекс кейса; в compose hybrid и qwen embedding уже включены, `num_ctx=32768`, top-k=16 |
 | После смены embedding бред | Нет reindex (OWUI) и нет пересборки `knowledge_index.json` (сервер) |
 | `NoneType.encode` | Embedding не загрузилась. Save в Документах, `ollama run qwen3-embedding` |
 | Контейнер не видит Ollama | Windows: Expose to network |
-| Env из compose «не применился» | Старый volume. Править Admin или удалить `audit-tools_open-webui-data` (сотрёт чаты) |
+| Env из compose «не применился» | Перезапустите `open-webui`: `ENABLE_PERSISTENT_CONFIG=false`, hybrid/embedding/top-k берутся из compose |
 | CUDA OOM | 27B + embedding на одном GPU. Не эмбеддить во время длинной генерации; уменьшить batch |
 
 Не меняйте чат-модель первой. Сначала extractor (читаемый `.txt`), потом embedding, потом `num_ctx`, потом top-k.
@@ -257,7 +257,7 @@ Workspace → Инструменты → [`tools/audit_case.py`](../seed/openweb
 
 | Файл | Куда |
 |---|---|
-| `docker-compose.yml` → `open-webui.environment` | Стартовые RAG-env на чистом volume |
+| `docker-compose.yml` → `open-webui.environment` | RAG-env каждый старт (`ENABLE_PERSISTENT_CONFIG=false`) |
 | `seed/openwebui/RAG_TEMPLATE.txt` | Admin → Документы → шаблон |
 | `seed/openwebui/functions/audit_agent.py` | Admin → Функции |
 | `seed/openwebui/SYSTEM_AUDITOR.txt` | только Tools+Ollama |

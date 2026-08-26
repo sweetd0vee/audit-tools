@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # Knowledge / RAG
     ollama_embed_model: str = "qwen3-embedding:latest"
-    chunk_size: int = 1400
+    chunk_size: int = 1600
     chunk_overlap: int = 180
     summary_max_chars: int = 14000
     # Short acts still go one-shot. Longer acts: query-focused RAG (hybrid + RRF + MMR).
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     summary_rag_candidates: int = 80
     summary_rag_neighbor: int = 1
     summary_rag_mmr_lambda: float = 0.7
-    rag_top_k: int = 12
+    rag_top_k: int = 16
     embed_timeout_sec: float = 120.0
     brief_chars_per_page: int = 1800
     brief_timeout_sec: float = 1800.0

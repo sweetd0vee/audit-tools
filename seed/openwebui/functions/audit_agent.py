@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.5
+version: 0.2.6
 license: MIT
 description: Агент проверки. Документы, саммари, total, программа, гипотезы (xlsx). Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
@@ -378,10 +378,12 @@ class Pipe:
         cites = []
         for s in sources[:6]:
             title = s.get("title") or s.get("filename") or "документ"
+            article = (s.get("article") or "").strip()
+            label = f"{title} — {article}" if article else title
             excerpt = (s.get("excerpt") or "").replace("\n", " ").strip()
             if len(excerpt) > 220:
                 excerpt = excerpt[:220] + "…"
-            cites.append(f"- {title}: {excerpt}")
+            cites.append(f"- {label}: {excerpt}")
         cite_block = (
             "\n".join(cites)
             if cites
