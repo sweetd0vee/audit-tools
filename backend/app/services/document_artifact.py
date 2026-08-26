@@ -25,6 +25,7 @@ class ArtifactSpec:
     docx_endpoint: str
     md_endpoint: str
     docx_glob: str
+    primary_ext: str = "docx"
 
 
 class ElapsedTimer:
@@ -43,7 +44,8 @@ def artifact_dir(case_id: str, spec: ArtifactSpec) -> Path:
 
 def artifact_docx_path(case_id: str, inspection_name: str, spec: ArtifactSpec) -> Path:
     stem = safe_stem(inspection_name or "proverka")
-    return artifact_dir(case_id, spec) / f"{spec.file_prefix}_{stem}_{case_id}.docx"
+    ext = (spec.primary_ext or "docx").lstrip(".")
+    return artifact_dir(case_id, spec) / f"{spec.file_prefix}_{stem}_{case_id}.{ext}"
 
 
 def artifact_md_path(case_id: str, spec: ArtifactSpec) -> Path:
@@ -68,16 +70,20 @@ def artifact_download_name(
 def resolve_artifact_file(case_id: str, spec: ArtifactSpec, kind: str) -> Path | None:
     state = store.get(case_id)
     meta = state.meta.get(spec.meta_key) or {}
-    key = "docx_path" if kind == "docx" else "md_path"
-    stored = meta.get(key)
-    if stored and Path(stored).exists():
-        return Path(stored)
-    if kind == "docx":
+    primary_kinds = {"docx", "xlsx", "primary"}
+    if kind in primary_kinds:
+        for key in ("docx_path", "xlsx_path"):
+            stored = meta.get(key)
+            if stored and Path(stored).exists():
+                return Path(stored)
         candidate = artifact_docx_path(case_id, state.inspection_name, spec)
         if candidate.exists():
             return candidate
         found = sorted(artifact_dir(case_id, spec).glob(spec.docx_glob))
         return found[-1] if found else None
+    stored = meta.get("md_path")
+    if stored and Path(stored).exists():
+        return Path(stored)
     candidate = artifact_md_path(case_id, spec)
     return candidate if candidate.exists() else None
 

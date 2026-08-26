@@ -77,11 +77,16 @@ def _download_artifact(
     path = resolver(case_id, kind)
     if not path:
         raise HTTPException(status_code=404, detail=not_found)
-    media_type = (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        if kind == "docx"
-        else "text/markdown; charset=utf-8"
-    )
+    if kind == "docx":
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    elif kind == "xlsx":
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        media_type = "text/markdown; charset=utf-8"
     return FileResponse(
         path,
         media_type=media_type,

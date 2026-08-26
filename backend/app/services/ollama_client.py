@@ -24,7 +24,15 @@ def _ollama_client(timeout: float | None) -> httpx.AsyncClient:
 
 
 def _extract_json(text: str) -> dict[str, Any]:
-    text = text.strip()
+    parsed = extract_json_value(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM did not return a JSON object")
+    return parsed
+
+
+def extract_json_value(text: str) -> Any:
+    """Parse JSON object or array from model output (raw or fenced)."""
+    text = (text or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -32,10 +40,14 @@ def _extract_json(text: str) -> dict[str, Any]:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        raise ValueError("LLM did not return JSON")
-    return json.loads(match.group(0))
+    for pattern in (r"\{[\s\S]*\}", r"\[[\s\S]*\]"):
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                continue
+    raise ValueError("LLM did not return JSON")
 
 
 def build_user_prompt(
