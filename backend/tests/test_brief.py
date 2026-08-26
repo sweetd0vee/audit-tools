@@ -426,6 +426,47 @@ class TestProgramItems(unittest.TestCase):
         self.assertIn("Восьмой", clipped[-1])
         self.assertTrue(all("лишний" not in q for q in clipped))
 
+    def test_program_prompts_require_three_to_four_sentences(self):
+        from app.prompts import prompt
+        from app.services.program_flow import program_items_hint
+
+        sections = prompt("program_sections", items_hint=program_items_hint(8, 8))
+        system = prompt("program_system")
+        user = prompt(
+            "program_user",
+            inspection="Проверка аренды",
+            keywords="аренда",
+            period="2025",
+            document_catalog="",
+            catalog="",
+            fragments="",
+            cards_block="",
+            sections=sections,
+            items_hint=program_items_hint(8, 8),
+            target=4800,
+            target_hi=5760,
+        )
+        self.assertIn("3–4", sections)
+        self.assertIn("3–4", system)
+        self.assertIn("3–4", user)
+        self.assertNotIn("~40 слов", sections)
+        self.assertNotIn("1–2 коротких", sections)
+
+    def test_parse_questions_keeps_multi_sentence_item(self):
+        from app.services.program_flow import parse_program_questions
+
+        body = """
+## Вопросы, подлежащие аудиту
+
+1. Проверка существенных условий договоров аренды: описание объекта, срок и размер платы. Сопоставить основной договор с допсоглашениями на согласованность предмета и расчётов. Запросить договоры, допсоглашения и приложения. Критерий [3].
+2. Верификация полномочий арендодателя на сдачу имущества. Сверить правоустанавливающие документы с условиями договора. Запросить выписки ЕГР, доверенности, уставы. Критерий [3].
+"""
+        questions = parse_program_questions(body)
+        self.assertEqual(len(questions), 2)
+        self.assertIn("Сопоставить основной договор", questions[0])
+        self.assertIn("Критерий [3]", questions[0])
+        self.assertIn("правоустанавливающие документы", questions[1])
+
     def test_parse_questions_ignores_restarted_list(self):
         from app.services.program_flow import parse_program_questions
 

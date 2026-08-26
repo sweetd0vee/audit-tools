@@ -246,6 +246,7 @@ def _fill_cell(
     size: int = 12,
     center: bool = False,
     justify: bool = False,
+    valign: str = "center",
 ) -> None:
     cell.text = ""
     paragraph = cell.paragraphs[0]
@@ -257,7 +258,11 @@ def _fill_cell(
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     elif justify:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    cell.vertical_alignment = (
+        WD_CELL_VERTICAL_ALIGNMENT.TOP
+        if valign == "top"
+        else WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    )
     if sources_by_n and CITE_RE.search(text or ""):
         add_text_with_cites(paragraph, text or "", sources_by_n, size=size)
         return
@@ -505,6 +510,7 @@ def write_program_docx(
             sources_by_n,
             size=_PROGRAM_FONT,
             justify=True,
+            valign="top",
         )
 
     note = doc.add_paragraph()

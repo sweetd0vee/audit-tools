@@ -25,7 +25,7 @@ from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete
 from app.prompts import prompt
 
-PROGRAM_SCHEMA = 4
+PROGRAM_SCHEMA = 5
 PROGRAM_SPEC = ArtifactSpec(
     meta_key="program",
     directory="programs",
@@ -308,7 +308,7 @@ async def _compose_program(
         url = src.get("url") or "нет URL"
         catalog.append(f"[{src['n']}] {src.get('title')} — {article} — {url}")
     cards = existing_cards(state)
-    per_item = 180
+    per_item = 600
     target = items_max * per_item
     cards_block = ""
     if cards:
@@ -329,14 +329,14 @@ async def _compose_program(
         sections=prompt("program_sections", items_hint=program_items_hint(items_min, items_max)).strip(),
         items_hint=program_items_hint(items_min, items_max),
         target=target,
-        target_hi=target + items_max * 40,
+        target_hi=target + items_max * 120,
     )
     return await chat_complete(
         prompt("program_system"),
         user,
         timeout=settings.brief_timeout_sec,
         num_ctx=settings.ollama_num_ctx,
-        num_predict=min(2048, max(1024, items_max * 160)),
+        num_predict=min(4096, max(2048, items_max * 320)),
     )
 
 

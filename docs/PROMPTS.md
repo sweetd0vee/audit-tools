@@ -355,7 +355,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 **Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{document_catalog}`, `{catalog}`, `{fragments}`, `{cards_block}`, `{sections}`, `{items_hint}`, `{target}`, `{target_hi}`. В `program_sections.txt` — `{items_hint}`.
 
-Канонические файлы: [`program_system.txt`](prompts/program_system.txt), [`program_user.txt`](prompts/program_user.txt), [`program_sections.txt`](prompts/program_sections.txt). Модель возвращает markdown с `## Вопросы, подлежащие аудиту` и нумерованным списком; сервер собирает Word-таблицу.
+Канонические файлы: [`program_system.txt`](prompts/program_system.txt), [`program_user.txt`](prompts/program_user.txt), [`program_sections.txt`](prompts/program_sections.txt). Модель возвращает markdown с `## Вопросы, подлежащие аудиту` и нумерованным списком; каждый пункт — 3–4 предложения (что проверить, как сверить, какие документы, критерий `[n]`); сервер собирает Word-таблицу.
 ---
 
 ## 4б. Гипотезы (`гипотезы`)
