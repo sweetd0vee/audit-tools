@@ -190,6 +190,40 @@ def _set_tbl_width(table, cm: float) -> None:
     tbl_w.set(qn("w:type"), "dxa")
 
 
+def _set_tbl_grid(table, widths_cm: list[float]) -> None:
+    tbl = table._tbl
+    tbl_pr = tbl.tblPr
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        tbl.insert(0, tbl_pr)
+    layout = tbl_pr.find(qn("w:tblLayout"))
+    if layout is None:
+        layout = OxmlElement("w:tblLayout")
+        tbl_pr.append(layout)
+    layout.set(qn("w:type"), "fixed")
+    grid = tbl.tblGrid
+    for child in list(grid):
+        grid.remove(child)
+    for width in widths_cm:
+        col = OxmlElement("w:gridCol")
+        col.set(qn("w:w"), _dxa(width))
+        grid.append(col)
+    _set_tbl_width(table, sum(widths_cm))
+    table.autofit = False
+    for row in table.rows:
+        for cell, width in zip(row.cells, widths_cm):
+            _set_cell_width(cell, width)
+
+
+def _add_program_table(doc: Document, rows: int, widths_cm: list[float], *, bordered: bool):
+    table = doc.add_table(rows=rows, cols=len(widths_cm))
+    table.alignment = WD_TABLE_ALIGNMENT.LEFT
+    table.autofit = False
+    _set_tbl_grid(table, widths_cm)
+    _set_table_borders(table, val="single" if bordered else "nil")
+    return table
+
+
 def _set_cell_width(cell, cm: float) -> None:
     cell.width = Cm(cm)
     tc = cell._tc
