@@ -36,8 +36,7 @@ docker compose up -d backend
 |---|---|---|
 | Описание проверки → список НПА | [`propose_system.txt`](prompts/propose_system.txt) | [`propose_user.txt`](prompts/propose_user.txt) |
 | `саммари` — короткий акт | [`summary_system.txt`](prompts/summary_system.txt) | [`oneshot_card.txt`](prompts/oneshot_card.txt) |
-| `саммари` — длинный акт, кусок | тот же | [`map_essential.txt`](prompts/map_essential.txt), при пустых заметках [`retry_essential.txt`](prompts/retry_essential.txt) |
-| `саммари` — склейка карточки | тот же | [`reduce_card.txt`](prompts/reduce_card.txt) |
+| `саммари` — длинный акт (RAG) | тот же | [`rag_card.txt`](prompts/rag_card.txt) |
 | `саммари` — обзор в начале Word | тот же | [`overview.txt`](prompts/overview.txt) |
 | `саммари total` | [`total_system.txt`](prompts/total_system.txt) | [`total_user.txt`](prompts/total_user.txt) + [`total_sections.txt`](prompts/total_sections.txt) |
 | `программа проверки` | [`program_system.txt`](prompts/program_system.txt) | [`program_user.txt`](prompts/program_user.txt) + [`program_sections.txt`](prompts/program_sections.txt) |
@@ -104,9 +103,9 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 ## 2. Саммари по актам (`саммари`)
 
 Роль одна на все вызовы карточки и обзора: `summary_system.txt`.  
-Короткий акт — один вызов `oneshot_card`. Длинный — куски `map_essential` (+ `retry_essential`, если заметки пустые), затем `reduce_card`. Обзор Word — `overview`.
+Короткий акт — один вызов `oneshot_card`. Длинный — query-focused RAG (`rag_card` по отобранным фрагментам). Обзор Word — `overview`.
 
-**Плейсхолдеры:** `{inspection}`, `{keywords}`, `{title}`, `{source}`, `{outline}`, `{body}`, `{idx}`, `{total}`, `{previous}`, `{chars}`, `{parts}`, `{notes}`, `{cards}`.
+**Плейсхолдеры:** `{inspection}`, `{keywords}`, `{title}`, `{source}`, `{outline}`, `{body}`, `{chars}`, `{cards}`.
 
 ### `summary_system.txt`
 

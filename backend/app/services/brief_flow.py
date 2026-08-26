@@ -23,6 +23,7 @@ from app.services.document_artifact import (
 )
 from app.services.knowledge_ingest import ingest_library
 from app.prompts import prompt
+from app.services.knowledge_index import rebuild_index, embed_index
 from app.services.knowledge_summarize import (
     FRAGMENTS_PER_ITEM,
     fragments_from_item,
@@ -32,7 +33,7 @@ from app.services.ollama_client import chat_complete
 from app.models import CaseState
 from app.storage import store
 
-BRIEF_SCHEMA = 3
+BRIEF_SCHEMA = 4
 BRIEF_SPEC = ArtifactSpec(
     meta_key="brief",
     directory="summaries",
@@ -118,12 +119,33 @@ def _brief_stale(state: CaseState) -> bool:
 
 
 def collect_brief_sources(state) -> list[dict]:
+    """Prefer RAG citations from cards; fall back to even sample of the act."""
     sources: list[dict] = []
     n = 1
     for item in state.knowledge:
         if item.extract_status != "ok":
             continue
-        frags = fragments_from_item(state, item, start_n=n)[:FRAGMENTS_PER_ITEM]
+        cites = list(item.citations or [])
+        if cites:
+            frags = []
+            for cite in cites[:FRAGMENTS_PER_ITEM]:
+                text = (cite.get("text") or cite.get("excerpt") or "").strip()
+                if not text:
+                    continue
+                frags.append(
+                    {
+                        "n": 0,
+                        "item_id": item.id,
+                        "title": cite.get("title") or item.title,
+                        "filename": cite.get("filename") or item.filename,
+                        "article": cite.get("article"),
+                        "excerpt": cite.get("excerpt") or text[:420],
+                        "text": text,
+                        "url": cite.get("url"),
+                    }
+                )
+        else:
+            frags = fragments_from_item(state, item, start_n=n)[:FRAGMENTS_PER_ITEM]
         if not frags:
             continue
         for i, fr in enumerate(frags):
@@ -273,8 +295,20 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
         return
 
+    yield {"type": "status", "message": "Нарезаю акты на чанки для RAG…", "elapsed_ms": elapsed()}
+    rebuild_index(case_id, state=state)
+    try:
+        kws = list(state.keywords) + list(state.topics) + [state.inspection_name]
+        yield {"type": "status", "message": "Эмбеддинги для саммари…", "elapsed_ms": elapsed()}
+        await embed_index(case_id, kws)
+    except Exception as exc:  # noqa: BLE001
+        yield {
+            "type": "status",
+            "message": f"Эмбеддинги частично недоступны ({exc}) — BM25 всё равно отработает.",
+            "elapsed_ms": elapsed(),
+        }
+
     yield {"type": "status", "message": "Готовлю карточки существенного по актам…", "elapsed_ms": elapsed()}
-    sources = collect_brief_sources(state)
 
     total = len(ok_items)
     for idx, item in enumerate(ok_items, start=1):
@@ -285,7 +319,7 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
 
         yield {
             "type": "status",
-            "message": f"Читаю акт {idx} из {total}: {item.title}",
+            "message": f"Саммари акта {idx} из {total}: {item.title}",
             "elapsed_ms": elapsed(),
         }
         task = asyncio.create_task(summarize_item(state, item, on_status=on_status))
@@ -302,6 +336,7 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         store.save(state)
 
     state = store.get(case_id)
+    sources = collect_brief_sources(state)
     chapters = []
     for item in state.knowledge:
         if item.extract_status != "ok":

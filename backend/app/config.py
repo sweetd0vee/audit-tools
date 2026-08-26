@@ -40,11 +40,14 @@ class Settings(BaseSettings):
     chunk_size: int = 1400
     chunk_overlap: int = 180
     summary_max_chars: int = 14000
-    # Small enough that the model actually reads the window; large enough
-    # that a typical instruction is a handful of sequential calls, not RAG.
+    # Short acts still go one-shot. Longer acts: query-focused RAG (hybrid + RRF + MMR).
     summary_section_chars: int = 10000
     summary_section_overlap: int = 300
     summary_timeout_sec: float = 420.0
+    summary_rag_top_k: int = 16
+    summary_rag_candidates: int = 80
+    summary_rag_neighbor: int = 1
+    summary_rag_mmr_lambda: float = 0.7
     rag_top_k: int = 12
     embed_timeout_sec: float = 120.0
     brief_chars_per_page: int = 1800

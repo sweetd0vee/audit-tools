@@ -193,3 +193,94 @@ def cosine(a: list[float], b: list[float]) -> float:
     if na <= 0 or nb <= 0:
         return 0.0
     return dot / (math.sqrt(na) * math.sqrt(nb))
+
+
+def jaccard(a: list[str] | set[str], b: list[str] | set[str]) -> float:
+    left = set(a)
+    right = set(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def bm25_scores(
+    query_tokens: list[str],
+    docs: list[list[str]],
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    """Okapi BM25 over already-tokenized documents. No extra dependencies."""
+    n = len(docs)
+    if n == 0:
+        return []
+    avgdl = sum(len(doc) for doc in docs) / n
+    df: dict[str, int] = {}
+    for doc in docs:
+        for tok in set(doc):
+            df[tok] = df.get(tok, 0) + 1
+    query = [t for t in query_tokens if t]
+    out: list[float] = []
+    for doc in docs:
+        tf: dict[str, int] = {}
+        for tok in doc:
+            tf[tok] = tf.get(tok, 0) + 1
+        dl = len(doc) or 1
+        score = 0.0
+        for tok in query:
+            n_qi = df.get(tok, 0)
+            if n_qi <= 0:
+                continue
+            idf = math.log(1.0 + (n - n_qi + 0.5) / (n_qi + 0.5))
+            freq = tf.get(tok, 0)
+            denom = freq + k1 * (1.0 - b + b * dl / max(avgdl, 1e-9))
+            score += idf * (freq * (k1 + 1.0)) / denom
+        out.append(score)
+    return out
+
+
+def rrf_fuse(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
+    """Reciprocal Rank Fusion — scale-agnostic merge of BM25 and dense ranks."""
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        seen: set[str] = set()
+        rank = 0
+        for cid in ranking:
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            rank += 1
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+    return scores
+
+
+def mmr_select(
+    candidates: list[tuple[float, str]],
+    pairwise: dict[tuple[str, str], float],
+    top_k: int,
+    lambda_mult: float = 0.7,
+) -> list[str]:
+    """Maximal Marginal Relevance: relevance minus redundancy (Carbonell & Goldstein)."""
+    if top_k <= 0 or not candidates:
+        return []
+    remaining = list(candidates)
+    selected: list[str] = []
+    first = max(remaining, key=lambda x: x[0])
+    selected.append(first[1])
+    remaining = [c for c in remaining if c[1] != first[1]]
+    while remaining and len(selected) < top_k:
+        best_id = remaining[0][1]
+        best_score = float("-inf")
+        for rel, cid in remaining:
+            redundancy = 0.0
+            for other in selected:
+                pair = pairwise.get((cid, other), pairwise.get((other, cid), 0.0))
+                if pair > redundancy:
+                    redundancy = pair
+            score = lambda_mult * rel - (1.0 - lambda_mult) * redundancy
+            if score > best_score:
+                best_score = score
+                best_id = cid
+        selected.append(best_id)
+        remaining = [c for c in remaining if c[1] != best_id]
+    return selected

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +16,11 @@ from app.services.chunker import (
     keyword_score,
     sequential_windows,
     tokenize,
+)
+from app.services.knowledge_retrieve import (
+    chunks_from_item,
+    retrieval_queries,
+    select_evidence,
 )
 from app.services.citations import (
     excerpt_for_cite,
@@ -256,7 +260,6 @@ async def embed_index(case_id: str, keywords: list[str]) -> dict:
 
 FRAGMENTS_PER_ITEM = 24
 Progress = Callable[[str], Awaitable[None]]
-_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)]|ст\.|статья|п\.)\s+", re.I)
 
 
 def _format_outline(text: str, limit: int = 160) -> str:
@@ -267,31 +270,8 @@ def _format_outline(text: str, limit: int = 160) -> str:
     shown = outline
     if limit and len(outline) > limit:
         shown = outline[:limit]
-        extra = f"\n… и ещё {len(outline) - limit} заголовков (они есть в тексте ниже)"
+        extra = f"\n… и ещё {len(outline) - limit} заголовков (они есть в оглавлении акта)"
     return "\n".join(f"- {line}" for line in shown) + extra
-
-
-def _bullet_count(text: str) -> int:
-    return sum(1 for ln in (text or "").splitlines() if _BULLET_RE.match(ln))
-
-
-def _window_label(window: str, idx: int, total: int) -> str:
-    outline = extract_article_outline(window)
-    if not outline:
-        return f"Часть {idx} из {total}"
-    if len(outline) == 1 or outline[0] == outline[-1]:
-        return f"Часть {idx} из {total}: {outline[0]}"
-    return f"Часть {idx} из {total}: {outline[0]} — {outline[-1]}"
-
-
-def _thin_notes(piece: str, headings: list[str]) -> bool:
-    _ = headings
-    text = (piece or "").strip()
-    if not text:
-        return True
-    if re.search(r"нет существенн|нет норм по теме|не относит", text, re.I):
-        return False
-    return _bullet_count(piece) < 1 and len(text) < 240
 
 
 def _inspection_line(state: CaseState) -> tuple[str, str]:
@@ -300,30 +280,16 @@ def _inspection_line(state: CaseState) -> tuple[str, str]:
     return inspection, keywords
 
 
-def _join_map_notes(parts: list[tuple[str, str]]) -> str:
-    blocks = []
-    for heading, body in parts:
-        blocks.append(f"### {heading}\n{(body or '').strip()}")
-    return "\n\n".join(blocks)
-
-
-def fragments_from_item(
+def _fragments_from_spans(
     state: CaseState,
     item: KnowledgeItem,
+    spans: list[str],
     start_n: int = 1,
-    max_fragments: int | None = None,
 ) -> list[dict]:
-    """Sequential windows of the whole document, not keyword/RAG retrieval."""
-    text = _item_text(item)
-    if not text.strip():
-        return []
-    windows = sequential_windows(text)
-    cap = max_fragments or FRAGMENTS_PER_ITEM
-    picked = windows if len(windows) <= cap else even_sample(windows, cap)
     url = origin_url(state, item)
     out = []
     n = start_n
-    for part in picked:
+    for part in spans:
         out.append(
             {
                 "n": n,
@@ -340,7 +306,61 @@ def fragments_from_item(
     return out
 
 
+def fragments_from_item(
+    state: CaseState,
+    item: KnowledgeItem,
+    start_n: int = 1,
+    max_fragments: int | None = None,
+) -> list[dict]:
+    """Even sample of the whole act — fallback when RAG has not run yet."""
+    text = _item_text(item)
+    if not text.strip():
+        return []
+    windows = sequential_windows(text)
+    cap = max_fragments or FRAGMENTS_PER_ITEM
+    picked = windows if len(windows) <= cap else even_sample(windows, cap)
+    return _fragments_from_spans(state, item, picked, start_n=start_n)
+
+
 _fragments_from_item = fragments_from_item
+
+
+def _hydrate_item_chunks(case_id: str, item: KnowledgeItem, parts: list[str]) -> list[dict]:
+    chunks = chunks_from_item(item, "", parts)
+    index = _load_index(case_id)
+    by_id = {c.get("id"): c for c in index.get("chunks") or []}
+    for ch in chunks:
+        stored = by_id.get(ch["id"])
+        if stored and stored.get("embedding"):
+            ch["embedding"] = stored["embedding"]
+    return chunks
+
+
+def _persist_item_embeddings(case_id: str, chunks: list[dict]) -> None:
+    index = _load_index(case_id)
+    stored = index.get("chunks") or []
+    if not stored:
+        return
+    lookup = {c["id"]: c for c in chunks if c.get("id") and c.get("embedding")}
+    if not lookup:
+        return
+    changed = False
+    for ch in stored:
+        fresh = lookup.get(ch.get("id"))
+        if fresh and fresh.get("embedding") and not ch.get("embedding"):
+            ch["embedding"] = fresh["embedding"]
+            changed = True
+    if changed:
+        index["embedded"] = sum(1 for c in stored if c.get("embedding"))
+        _save_index(case_id, index)
+
+
+def _format_rag_body(frags: list[dict]) -> str:
+    blocks = []
+    for fr in frags:
+        article = fr.get("article") or "фрагмент"
+        blocks.append(f"[{fr['n']}] {article}\n{(fr.get('text') or '').strip()}")
+    return "\n\n".join(blocks)
 
 
 async def _chat_summary(user: str) -> str:
@@ -354,96 +374,43 @@ async def _chat_summary(user: str) -> str:
     )
 
 
-async def _notes_for_window(
-    state: CaseState,
-    item: KnowledgeItem,
-    window: str,
-    idx: int,
-    total: int,
-) -> str:
-    inspection, keywords = _inspection_line(state)
-    outline = _format_outline(window, limit=40)
-    headings = extract_article_outline(window)
-    try:
-        piece = await _chat_summary(
-            prompt(
-                "map_essential",
-                inspection=inspection,
-                keywords=keywords,
-                idx=idx,
-                total=total,
-                title=item.title,
-                outline=outline,
-                body=window,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        return (
-            f"[Часть {idx} из {total} не собрана: {exc}. "
-            "Этот диапазон акта смотрите в первоисточнике.]"
-        )
-    if _thin_notes(piece, headings):
-        try:
-            piece = await _chat_summary(
-                prompt(
-                    "retry_essential",
-                    idx=idx,
-                    total=total,
-                    title=item.title,
-                    inspection=inspection,
-                    keywords=keywords,
-                    previous=(piece or "")[:3000],
-                    body=window,
-                )
-            )
-        except Exception:
-            pass
-    if not (piece or "").strip():
-        return f"[Часть {idx} из {total}: модель вернула пустые заметки.]"
-    return piece.strip()
-
-
-async def _reduce_card(
+async def retrieve_item_fragments(
     state: CaseState,
     item: KnowledgeItem,
     text: str,
-    parts: list[tuple[str, str]],
-) -> str:
-    inspection, keywords = _inspection_line(state)
-    notes = _join_map_notes(parts)
-    try:
-        card = await _chat_summary(
-            prompt(
-                "reduce_card",
-                inspection=inspection,
-                keywords=keywords,
-                title=item.title,
-                chars=len(text),
-                parts=len(parts),
-                notes=notes[:24000],
-            )
+    *,
+    start_n: int = 1,
+    on_status: Progress | None = None,
+) -> list[dict]:
+    """Query-focused RAG spans for this act (hybrid + RRF + MMR + neighbors)."""
+    parts = chunk_text(text)
+    if not parts:
+        return []
+    chunks = _hydrate_item_chunks(state.case_id, item, parts)
+    queries = retrieval_queries(state, extra=[item.title])
+    if on_status:
+        preview = ", ".join(queries[:4])
+        await on_status(
+            f"RAG по «{item.title}»: {len(parts)} чанков, запросы: {preview}"
         )
-    except Exception as extra:  # noqa: BLE001
-        return (
-            f"Карточка не синтезирована ({extra}). Заметки по частям:\n\n{notes[:8000]}"
-        )
-    if not (card or "").strip():
-        return notes
-    card = card.strip()
-    if "## Ключевые нормы" not in card and "## Основные положения" not in card:
-        card = "## Ключевые нормы\n" + card
-    return card
+    evidence = await select_evidence(chunks, queries, embed_fn=embed_texts)
+    _persist_item_embeddings(state.case_id, chunks)
+    spans = [(ev.get("text") or "").strip() for ev in evidence if (ev.get("text") or "").strip()]
+    if not spans:
+        ranked = sorted(parts, key=lambda p: keyword_score(p, queries), reverse=True)
+        spans = ranked[:8] or parts[:4]
+    return _fragments_from_spans(state, item, spans, start_n=start_n)
 
 
 async def _summarize_full_document(
     state: CaseState,
     item: KnowledgeItem,
     text: str,
+    fragments: list[dict],
     on_status: Progress | None = None,
 ) -> str:
     inspection, keywords = _inspection_line(state)
     windows = sequential_windows(text)
-
     if len(windows) <= 1:
         if on_status:
             await on_status(f"Пишу карточку существенного: {item.title}")
@@ -459,20 +426,26 @@ async def _summarize_full_document(
             )
         )
 
-    total = len(windows)
-    parts: list[tuple[str, str]] = []
-    for idx, window in enumerate(windows, start=1):
-        label = _window_label(window, idx, total)
-        if on_status:
-            await on_status(
-                f"Читаю «{item.title}»: часть {idx} из {total} — существенное для проверки"
-            )
-        piece = await _notes_for_window(state, item, window, idx, total)
-        parts.append((label, piece))
-
     if on_status:
-        await on_status(f"Собираю карточку существенного: {item.title}")
-    return await _reduce_card(state, item, text, parts)
+        await on_status(
+            f"Пишу карточку по RAG-выборке: {item.title} ({len(fragments)} фрагментов)"
+        )
+    card = await _chat_summary(
+        prompt(
+            "rag_card",
+            inspection=inspection,
+            keywords=keywords,
+            title=item.title,
+            source=item.source,
+            chars=len(text),
+            outline=_format_outline(text, limit=80),
+            body=_format_rag_body(fragments),
+        )
+    )
+    card = (card or "").strip()
+    if card and "## Ключевые нормы" not in card and "## Основные положения" not in card:
+        card = "## Ключевые нормы\n" + card
+    return card
 
 
 async def summarize_item(
@@ -481,8 +454,8 @@ async def summarize_item(
     fragments: list[dict] | None = None,
     on_status: Progress | None = None,
 ) -> KnowledgeItem:
-    """Карточка существенного по полному тексту акта (map-reduce), не перечень всех статей.
-    `fragments` — только цитаты в приложение Word.
+    """Карточка существенного: короткий акт целиком, длинный — query-focused RAG.
+    `fragments` — отобранные фрагменты (и цитаты в приложение Word).
     """
     text = _item_text(item)
     if not text.strip():
@@ -490,22 +463,32 @@ async def summarize_item(
         item.summary_error = "Нет текста для саммари"
         return item
 
-    frags = fragments if fragments is not None else fragments_from_item(state, item)
     item.summary_status = "running"
-    item.citations = [
-        {
-            "n": fr["n"],
-            "article": fr.get("article"),
-            "excerpt": fr.get("excerpt"),
-            "url": fr.get("url"),
-            "title": fr.get("title") or item.title,
-            "filename": fr.get("filename") or item.filename,
-            "item_id": item.id,
-        }
-        for fr in frags
-    ]
     try:
-        item.summary = await _summarize_full_document(state, item, text, on_status=on_status)
+        windows = sequential_windows(text)
+        if fragments is None:
+            if len(windows) <= 1:
+                fragments = fragments_from_item(state, item)
+            else:
+                fragments = await retrieve_item_fragments(
+                    state, item, text, on_status=on_status
+                )
+        item.citations = [
+            {
+                "n": fr["n"],
+                "article": fr.get("article"),
+                "excerpt": fr.get("excerpt"),
+                "url": fr.get("url"),
+                "title": fr.get("title") or item.title,
+                "filename": fr.get("filename") or item.filename,
+                "item_id": item.id,
+                "text": fr.get("text"),
+            }
+            for fr in fragments
+        ]
+        item.summary = await _summarize_full_document(
+            state, item, text, fragments, on_status=on_status
+        )
         if not (item.summary or "").strip():
             raise ValueError("модель вернула пустой конспект")
         item.summary_status = "ok"
@@ -534,6 +517,17 @@ async def build_knowledge_events(case_id: str) -> AsyncIterator[dict]:
         "message": f"Карточки существенного: {sum(1 for i in state.knowledge if i.extract_status == 'ok')} документов…",
         "elapsed_ms": elapsed(),
     }
+    try:
+        kws = list(state.keywords) + list(state.topics) + [state.inspection_name]
+        yield {"type": "status", "message": "Эмбеддинги для RAG-саммари…", "elapsed_ms": elapsed()}
+        await embed_index(case_id, kws)
+    except Exception as exc:  # noqa: BLE001
+        yield {
+            "type": "status",
+            "message": f"Эмбеддинги пропущены ({exc}). Саммари пойдёт на BM25.",
+            "elapsed_ms": elapsed(),
+        }
+
     for item in state.knowledge:
         if item.extract_status != "ok":
             continue
@@ -550,19 +544,6 @@ async def build_knowledge_events(case_id: str) -> AsyncIterator[dict]:
             "title": item.title,
             "status": item.summary_status,
             "summary": item.summary,
-            "elapsed_ms": elapsed(),
-        }
-
-    yield {"type": "status", "message": "Векторный индекс (релевантные фрагменты)…", "elapsed_ms": elapsed()}
-    try:
-        kws = list(state.keywords) + list(state.topics) + [state.inspection_name]
-        index = await embed_index(case_id, kws)
-        n = index.get("embedded") or 0
-        yield {"type": "status", "message": f"Проиндексировано эмбеддингов: {n}", "elapsed_ms": elapsed()}
-    except Exception as exc:  # noqa: BLE001
-        yield {
-            "type": "status",
-            "message": f"Эмбеддинги пропущены ({exc}). Поиск будет по ключевым словам.",
             "elapsed_ms": elapsed(),
         }
 

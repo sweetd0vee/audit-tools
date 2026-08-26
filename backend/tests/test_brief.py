@@ -396,14 +396,18 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Проверка аренды", prompts[0])
             self.assertIn("Зачем этот акт", prompts[0])
 
-    async def test_long_document_is_read_in_ordered_windows(self):
+    async def test_long_document_uses_rag_not_map_reduce(self):
         from app.services.knowledge_flow import summarize_item
 
         with tempfile.TemporaryDirectory() as tmp:
-            parts = [f"Статья {i}. Норма {i}\n{'текст ' * 900}\n" for i in range(1, 8)]
+            parts = []
+            for i in range(1, 12):
+                payload = ("аренда валюта расчёты " if i in (3, 7) else "общее положение ") * 200
+                parts.append(f"Статья {i}. Норма {i}\n{payload}\n")
             txt = Path(tmp) / "code.txt"
             txt.write_text("\n".join(parts), encoding="utf-8")
             item = KnowledgeItem(
+                id="itemrag1",
                 title="Кодекс",
                 filename="code.txt",
                 text_path=str(txt),
@@ -413,46 +417,92 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
             state = CaseState(
                 case_id="c1",
                 inspection_name="Проверка аренды",
-                keywords=["валюта"],
+                keywords=["аренда", "валюта"],
                 knowledge=[item],
             )
             prompts: list[str] = []
 
             async def fake_chat(system, user, **kwargs):
                 prompts.append(user)
-                if "собери из заметок" in user.lower():
-                    return (
-                        "## Зачем этот акт\nКодекс задаёт рамку проверки.\n"
-                        "## Суть и сфера\nГражданские договоры.\n"
-                        "## Ключевые нормы\n- ст. 1 — предмет\n- ст. 7 — норма из конца акта\n"
-                        "## Что проверять\n- предмет договора\n"
-                        "## Чего нет в тексте\nв заметках нет отдельного раздела по расчётам"
-                    )
-                found = []
-                for i in range(1, 8):
-                    if f"Статья {i}." in user and f"Статья {i}." not in found:
-                        found.append(f"Статья {i}.")
-                if found:
-                    return "\n".join(f"- {h} — норма из текста" for h in found)
-                return "- паспорт акта: кодекс"
+                return (
+                    "## Зачем этот акт\nКодекс задаёт рамку проверки.\n"
+                    "## Суть и сфера\nГражданские договоры.\n"
+                    "## Ключевые нормы\n- ст. 3 — аренда [1]\n- ст. 7 — валюта [2]\n"
+                    "## Что проверять\n- предмет договора\n"
+                    "## Чего нет в тексте\nв выборке нет раздела про налоги"
+                )
 
-            with patch("app.services.knowledge_flow.chat_complete", fake_chat):
+            async def fake_embed(texts):
+                # Deterministic tiny vectors: lease/currency keywords → axis 0
+                out = []
+                for t in texts:
+                    low = t.lower()
+                    out.append([1.0 if ("аренда" in low or "валюта" in low) else 0.0, 0.1])
+                return out
+
+            with (
+                patch("app.services.knowledge_flow.chat_complete", fake_chat),
+                patch("app.services.knowledge_flow.embed_texts", fake_embed),
+                patch("app.services.knowledge_flow._load_index", return_value={"chunks": []}),
+                patch("app.services.knowledge_flow._persist_item_embeddings"),
+            ):
                 result = await summarize_item(state, item)
 
             self.assertEqual(result.summary_status, "ok")
-            self.assertGreaterEqual(len(prompts), 3)
-            joined = "\n".join(prompts)
-            self.assertIn("Статья 1.", joined)
-            self.assertIn("Статья 7.", joined)
-            self.assertTrue(any("часть 1 из" in p.lower() for p in prompts))
-            self.assertTrue(any("собери из заметок" in p.lower() for p in prompts))
-            self.assertTrue(any("ключевые слова" in p.lower() for p in prompts))
-            self.assertTrue(any("валюта" in p.lower() for p in prompts))
+            self.assertEqual(len(prompts), 1)
+            self.assertTrue(any("rag" in p.lower() or "выборк" in p.lower() for p in prompts))
+            self.assertFalse(any("часть 1 из" in p.lower() for p in prompts))
+            self.assertFalse(any("собери из заметок" in p.lower() for p in prompts))
+            joined = prompts[0]
+            self.assertIn("аренда", joined.lower())
             self.assertIn("Ключевые нормы", result.summary)
-            self.assertIn("ст. 1", result.summary)
-            self.assertIn("ст. 7", result.summary)
-            self.assertNotIn("валюта", result.summary.lower())
+            self.assertTrue(result.citations)
+            # RAG should prefer topical articles over the whole code dump
+            cite_blob = " ".join(c.get("text") or "" for c in result.citations)
+            self.assertTrue(
+                "Статья 3." in cite_blob or "Статья 7." in cite_blob,
+                "RAG citations should include keyword-relevant articles",
+            )
 
+
+class TestRetrieveEvidence(unittest.IsolatedAsyncioTestCase):
+    async def test_mmr_and_bm25_prefer_query_hits(self):
+        from app.services.knowledge_retrieve import select_evidence
+
+        chunks = []
+        for i in range(1, 15):
+            payload = ("аренда валюта " if i in (4, 10) else "канцелярия ") * 40
+            chunks.append(
+                {
+                    "id": f"doc:{i}",
+                    "item_id": "doc",
+                    "title": "Кодекс",
+                    "filename": "c.txt",
+                    "text": f"Статья {i}.\n{payload}",
+                    "embedding": [],
+                }
+            )
+
+        async def fake_embed(texts):
+            out = []
+            for t in texts:
+                low = t.lower()
+                out.append([1.0 if ("аренда" in low or "валюта" in low) else 0.0, 0.2])
+            return out
+
+        picked = await select_evidence(
+            chunks,
+            ["Проверка аренды", "аренда", "валюта"],
+            top_k=4,
+            candidates=20,
+            neighbor=0,
+            always_include_first=True,
+            embed_fn=fake_embed,
+        )
+        blob = " ".join(p["text"] for p in picked)
+        self.assertIn("Статья 4.", blob)
+        self.assertIn("Статья 10.", blob)
+        self.assertLessEqual(len(picked), 6)
 
 class TestOverviewAndAskHelpers(unittest.TestCase):
     def test_overview_lists_every_act_without_llm(self):
