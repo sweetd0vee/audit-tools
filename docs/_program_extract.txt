@@ -1,0 +1,37 @@
+=== BODY ORDER ===
+P style='Normal' align=None sb=None sa=None ls=None li=None text=''
+P style='Normal' align=CENTER (1) sb=None sa=None ls=None li=None text='ПРОГРАММА'
+  RUN bold=None italic=None underline=None size=177800 name=None color=None text='ПРОГРАММА'
+TABLE rows=1 cols=1 style=Normal Table
+  tblW=10051 type=dxa
+  tblLook={'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val': '01E0', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}firstRow': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}lastRow': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}firstColumn': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}lastColumn': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}noHBand': '0', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}noVBand': '0'}
+  grid=['10051']
+  ROW 0
+    C0:
+      SHD fill=auto val=clear
+      WIDTH=10051 type=dxa
+      P style='Normal' align=JUSTIFY (3) sb=None sa=None ls=None li=None text=''
+      P style='Normal' align=JUSTIFY (3) sb=None sa=None ls=None li=None text='При необходимости вопросы, подлежащие аудиту, могут быть изменены и уточнены руководителем проверки по согласованию с директором Департамента внутреннего аудита.'
+        RUN bold=None italic=None underline=None size=177800 name=None color=None text='При необходимости вопросы, подлежащие аудиту, могут быть изменены и уточнены руководителем проверки по согласованию с директором Департамента внутреннего аудита.'
+P style='Normal' align=CENTER (1) sb=None sa=None ls=None li=None text=''
+TABLE rows=1 cols=2 style=Normal Table
+  tblW=0 type=auto
+  tblLook={'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val': '01E0', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}firstRow': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}lastRow': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}firstColumn': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}lastColumn': '1', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}noHBand': '0', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}noVBand': '0'}
+  grid=['4328', '1745']
+  ROW 0
+    C0:
+      SHD fill=auto val=clear
+      WIDTH=4328 type=dxa
+      P style='Normal' align=None sb=None sa=None ls=None li=None text='Менеджер по направлению деятельности'
+        RUN bold=None italic=None underline=None size=177800 name=None color=None text='Менеджер по направлению деятельности'
+    C1:
+      SHD fill=auto val=clear
+      WIDTH=1745 type=dxa
+      P style='Normal' align=CENTER (1) sb=None sa=None ls=None li=None text=''
+P style='Normal' align=CENTER (1) sb=None sa=None ls=None li=None text=''
+sectPr
+
+=== SECTIONS ===
+page 21.00x29.70 cm, margins L3.00 R1.00 T2.00 B2.00
+HEADER ''
+FOOTER ''

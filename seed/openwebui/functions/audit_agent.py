@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.4
+version: 0.2.5
 license: MIT
 description: Агент проверки. Документы, саммари, total, программа, гипотезы (xlsx). Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
@@ -37,7 +37,17 @@ KB_ASK_RE = re.compile(
     re.I | re.S,
 )
 # Канонический текст: docs/prompts/pipe_help.txt. После правки скопируйте сюда и заново вставьте Pipe в Open WebUI.
-HELP = """Я помогаю собрать документы для проверки и отвечать по ним.
+NEXT_STEPS = (
+    "— `программа проверки` — программа проверки в Word (можно задать число пунктов);\n"
+    "— `саммари` — основная информация по теме из базы знаний в Word;\n"
+    "— `саммари total` — основная информация по теме из знаний модели;\n"
+    "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
+    "— `вопрос` — вопрос по базе знаний;\n"
+    "— `документы` — посмотреть список документов в базе знаний;\n"
+    "— обычный диалог — пишите без префикса."
+)
+NO_CASE = "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
+HELP = f"""Я помогаю собрать документы для проверки и отвечать по ним.
 
 Напишите, что проверяете, например:
 Проверка аренды коммерческой недвижимости, аренда, валюта, НДС
@@ -51,13 +61,7 @@ HELP = """Я помогаю собрать документы для прове�
 или отдельно: добавь Инструкция о порядке проведения валютных операций
 
 Когда документы скачаются:
-— `программа проверки` — программа проверки в Word (можно задать число пунктов);
-— `саммари` — основная информация по теме из базы знаний в Word;
-— `саммари total` — основная информация по теме из знаний модели;
-— `гипотезы` — чеклист гипотез для проверки в Excel;
-— `вопрос` — вопрос по базе знаний;
-— `документы` — посмотреть список документов в базе знаний;
-— обычный диалог — пишите без префикса.
+{NEXT_STEPS}
 """
 
 
@@ -74,7 +78,7 @@ class Pipe:
         TIMEOUT_SEC: int = Field(default=600, description="Таймаут propose/download")
         BRIEF_TIMEOUT_SEC: int = Field(
             default=1800,
-            description="Таймаут сборки саммари и программы проверки в Word",
+            description="Таймаут сборки саммари, программы проверки и гипотез",
         )
         OPENWEBUI_API_KEY: str = Field(
             default="",
@@ -127,63 +131,39 @@ class Pipe:
                 )
 
             if _is_program(text):
-                if not case_id:
-                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
-                return await self._program(
-                    api,
-                    public,
-                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
-                    case_id,
-                    text,
-                    __event_emitter__,
+                return await self._dispatch_artifact(
+                    self._program, api, public, timeout, case_id, text, __event_emitter__
                 )
 
             if _is_total(text):
-                if not case_id:
-                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
-                return await self._total(
-                    api,
-                    public,
-                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
-                    case_id,
-                    text,
-                    __event_emitter__,
+                return await self._dispatch_artifact(
+                    self._total, api, public, timeout, case_id, text, __event_emitter__
                 )
 
             if _is_hypotheses(text):
-                if not case_id:
-                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
-                return await self._hypotheses(
-                    api,
-                    public,
-                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
-                    case_id,
-                    text,
-                    __event_emitter__,
+                return await self._dispatch_artifact(
+                    self._hypotheses, api, public, timeout, case_id, text, __event_emitter__
                 )
 
             if _is_brief(text):
-                if not case_id:
-                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
-                return await self._brief(
-                    api,
-                    public,
-                    max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC)),
-                    case_id,
-                    text,
-                    __event_emitter__,
+                return await self._dispatch_artifact(
+                    self._brief, api, public, timeout, case_id, text, __event_emitter__
                 )
 
             if _is_approve(text):
-                if not case_id:
-                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
+                missing = _need_case(case_id)
+                if missing:
+                    return missing
+                assert case_id is not None
                 return await self._approve(
                     api, public, timeout, case_id, text, __event_emitter__, owui_key
                 )
 
             if _is_library(text):
-                if not case_id:
-                    return "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
+                missing = _need_case(case_id)
+                if missing:
+                    return missing
+                assert case_id is not None
                 return await self._library(api, public, timeout, case_id)
 
             if _is_status(text):
@@ -368,14 +348,7 @@ class Pipe:
             + f". {kb}\n"
             f"{added}{extra}\n"
             f"{_download_links(public, case_id, name, with_summary=False)}\n\n"
-            "Дальше:\n"
-            "— `программа проверки` — программа проверки в Word (можно задать число пунктов);\n"
-            "— `саммари` — основная информация по теме из базы знаний в Word;\n"
-            "— `саммари total` — основная информация по теме из знаний модели;\n"
-            "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
-            "— `вопрос` — вопрос по базе знаний;\n"
-            "— `документы` — посмотреть список документов в базе знаний;\n"
-            "— обычный диалог — пишите без префикса.\n"
+            f"Дальше:\n{NEXT_STEPS}\n"
             f"<!--audit-case:{case_id}-->"
         )
 
@@ -521,6 +494,27 @@ class Pipe:
             f"<!--audit-case:{case_id}-->"
         )
 
+    def _brief_timeout(self, timeout: float) -> float:
+        return max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC))
+
+    async def _dispatch_artifact(
+        self,
+        handler,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: Optional[str],
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        missing = _need_case(case_id)
+        if missing:
+            return missing
+        assert case_id is not None
+        return await handler(
+            api, public, self._brief_timeout(timeout), case_id, text, emitter
+        )
+
     async def _brief(
         self,
         api: str,
@@ -630,7 +624,7 @@ class Pipe:
             text,
             emitter,
             endpoint="hypotheses",
-            start_message="Формулирую чеклист гипотез проверки в Excel. Лучше, если уже есть саммари / total / программа…",
+            start_message="Формулирую чеклист гипотез для проверки в Excel. Лучше, если уже есть саммари / total / программа…",
             fallback_status="Формулирую гипотезы…",
             error_label="гипотезы",
             retry_hint="Нужна проверка с документами. Желательно сначала `саммари`, `саммари total`, `программа проверки`.",
@@ -654,13 +648,7 @@ class Pipe:
         lines.append(_download_links(public, case_id, name, with_summary=False))
         lines.append("")
         lines.append("Дальше:")
-        lines.append("— `программа проверки` — программа проверки в Word (можно задать число пунктов);")
-        lines.append("— `саммари` — основная информация по теме из базы знаний в Word;")
-        lines.append("— `саммари total` — основная информация по теме из знаний модели;")
-        lines.append("— `гипотезы` — чеклист гипотез для проверки в Excel;")
-        lines.append("— `вопрос` — вопрос по базе знаний;")
-        lines.append("— `документы` — посмотреть список документов в базе знаний;")
-        lines.append("— обычный диалог — пишите без префикса.")
+        lines.extend(NEXT_STEPS.splitlines())
         lines.append(f"<!--audit-case:{case_id}-->")
         return "\n".join(lines)
 
@@ -679,18 +667,17 @@ class Pipe:
         return "\n".join(lines)
 
 
+def _need_case(case_id: Optional[str]) -> Optional[str]:
+    if case_id:
+        return None
+    return NO_CASE
+
+
 def _last_user_text(body: dict) -> str:
     for message in reversed(body.get("messages") or []):
         if message.get("role") != "user":
             continue
-        content = message.get("content")
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") in (None, "text"):
-                    parts.append(str(item.get("text") or ""))
-            return "\n".join(parts).strip()
-        return str(content or "").strip()
+        return _message_text(message.get("content"))
     return ""
 
 
@@ -775,23 +762,35 @@ def _is_program(text: str) -> bool:
 
 def _parse_program_items_spec(text: str) -> Optional[tuple[int, int]]:
     cleaned = re.sub(r"заново|пересобер\w*|перегенер\w*|force", " ", text, flags=re.I)
+
+    def _pair(spec: str) -> tuple[int, int]:
+        compact = re.sub(r"\s+", "", spec)
+        ranged = re.fullmatch(r"(\d{1,2})[-–—](\d{1,2})", compact)
+        if ranged:
+            lo, hi = int(ranged.group(1)), int(ranged.group(2))
+            if lo > hi:
+                lo, hi = hi, lo
+            return max(3, min(20, lo)), max(3, min(20, hi))
+        n = max(3, min(20, int(compact)))
+        return n, n
+
     match = re.search(
         r"(?:программ\w*|audit\s+program|/program)[^\n\d]{0,80}"
         r"(\d{1,2}\s*[-–—]\s*\d{1,2}|\d{1,2})",
         cleaned,
         re.I,
     )
-    if not match:
-        return None
-    spec = re.sub(r"\s+", "", match.group(1))
-    ranged = re.fullmatch(r"(\d{1,2})[-–—](\d{1,2})", spec)
-    if ranged:
-        lo, hi = int(ranged.group(1)), int(ranged.group(2))
-        if lo > hi:
-            lo, hi = hi, lo
-        return max(3, min(20, lo)), max(3, min(20, hi))
-    n = max(3, min(20, int(spec)))
-    return n, n
+    if match:
+        return _pair(match.group(1))
+    match = re.search(
+        r"(?:строго|ровно|только)\s+(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?\s*пункт",
+        cleaned,
+        re.I,
+    )
+    if match:
+        spec = match.group(1) if not match.group(2) else f"{match.group(1)}-{match.group(2)}"
+        return _pair(spec)
+    return None
 
 
 def _is_total(text: str) -> bool:

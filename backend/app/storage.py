@@ -20,19 +20,16 @@ class CaseStore:
     def case_dir(self, case_id: str) -> Path:
         return self.root / case_id
 
-    def _case_dir(self, case_id: str) -> Path:
-        return self.case_dir(case_id)
-
     def _state_path(self, case_id: str) -> Path:
-        return self._case_dir(case_id) / "case.json"
+        return self.case_dir(case_id) / "case.json"
 
     def library_dir(self, case_id: str) -> Path:
-        path = self._case_dir(case_id) / "knowledge_raw"
+        path = self.case_dir(case_id) / "knowledge_raw"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def archive_path(self, case_id: str) -> Path:
-        return self._case_dir(case_id) / "library.zip"
+        return self.case_dir(case_id) / "library.zip"
 
     @staticmethod
     def archive_filename(inspection_name: str, case_id: str = "") -> str:
@@ -53,7 +50,7 @@ class CaseStore:
         with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for path in files:
                 zf.write(path, arcname=path.name)
-            manifest = self._case_dir(case_id) / "manifest.json"
+            manifest = self.case_dir(case_id) / "manifest.json"
             if manifest.exists():
                 zf.write(manifest, arcname="manifest.json")
         return dest
@@ -66,7 +63,7 @@ class CaseStore:
         notes: str | None = None,
     ) -> CaseState:
         case_id = new_id()
-        case_dir = self._case_dir(case_id)
+        case_dir = self.case_dir(case_id)
         case_dir.mkdir(parents=True, exist_ok=True)
         (case_dir / "knowledge_raw").mkdir(exist_ok=True)
 
@@ -102,7 +99,7 @@ class CaseStore:
         return cases
 
     def write_manifest(self, case_id: str, payload: dict) -> Path:
-        path = self._case_dir(case_id) / "manifest.json"
+        path = self.case_dir(case_id) / "manifest.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 

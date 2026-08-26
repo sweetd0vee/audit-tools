@@ -9,14 +9,13 @@ from app.config import settings
 from app.models import CaseState
 from app.services.brief_docx import write_program_docx
 from app.services.brief_flow import collect_brief_sources
+from app.services.case_context import document_catalog, existing_cards, format_npa_sources
 from app.services.document_artifact import (
     ArtifactSpec,
     ElapsedTimer,
-    artifact_dir,
-    artifact_docx_path,
     artifact_download_name,
-    artifact_md_path,
-    artifact_sources_path,
+    artifact_paths,
+    artifact_stale,
     artifact_status,
     event_result,
     resolve_artifact_file,
@@ -25,8 +24,8 @@ from app.services.document_artifact import (
 from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete
 from app.prompts import prompt
-from app.storage import store
 
+PROGRAM_SCHEMA = 2
 PROGRAM_SPEC = ArtifactSpec(
     meta_key="program",
     directory="programs",
@@ -92,7 +91,10 @@ def normalize_program_item_range(
 
 def program_items_hint(items_min: int, items_max: int) -> str:
     if items_min == items_max:
-        return f"ровно {items_min}"
+        return (
+            f"строго {items_min} (ровно {items_min} пунктов, "
+            f"без пункта {items_min + 1})"
+        )
     return (
         f"от {items_min} до {items_max} "
         f"(компактная проверка ближе к {items_min}, широкая — к {items_max})"
@@ -125,6 +127,7 @@ def parse_program_questions(body: str) -> list[str]:
             break
     items: list[str] = []
     current: str | None = None
+    expected = 1
     for line in lines[start:]:
         stripped = line.strip()
         if stripped.startswith("## ") and items:
@@ -139,9 +142,16 @@ def parse_program_questions(body: str) -> list[str]:
             ):
                 numbered = _ITEM_LINE_RE.match(f"{cells[0].rstrip('.')}. {cells[1]}")
         if numbered:
-            if current:
-                items.append(current)
-            current = numbered.group(2).strip()
+            n = int(numbered.group(1))
+            text = numbered.group(2).strip()
+            if n == expected:
+                if current:
+                    items.append(current)
+                current = text
+                expected += 1
+                continue
+            if current and stripped:
+                current = f"{current} {stripped}"
             continue
         if current and stripped and not stripped.startswith("| ---") and "---" not in stripped[:8]:
             if stripped.startswith("|"):
@@ -152,20 +162,8 @@ def parse_program_questions(body: str) -> list[str]:
     return [item for item in items if item]
 
 
-def _program_dir(case_id: str) -> Path:
-    return artifact_dir(case_id, PROGRAM_SPEC)
-
-
-def _docx_path(case_id: str, inspection_name: str) -> Path:
-    return artifact_docx_path(case_id, inspection_name, PROGRAM_SPEC)
-
-
-def _md_path(case_id: str) -> Path:
-    return artifact_md_path(case_id, PROGRAM_SPEC)
-
-
-def _sources_path(case_id: str) -> Path:
-    return artifact_sources_path(case_id, PROGRAM_SPEC)
+def fit_program_questions(questions: list[str], items_max: int) -> list[str]:
+    return [item.strip() for item in questions if (item or "").strip()][:items_max]
 
 
 def program_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
@@ -187,57 +185,21 @@ def _program_stale(
     items_min: int | None = None,
     items_max: int | None = None,
 ) -> bool:
-    meta = state.meta.get("program") or {}
-    path = Path(meta["docx_path"]) if meta.get("docx_path") else None
-    if not path or not path.exists():
-        return True
-    ok_items = sum(1 for i in state.knowledge if i.extract_status == "ok")
-    if meta.get("items") != ok_items:
-        return True
-    if meta.get("keywords") != list(state.keywords):
-        return True
-    if meta.get("inspection_name") != state.inspection_name:
-        return True
-    if items_min is not None and meta.get("items_min") != items_min:
-        return True
-    if items_max is not None and meta.get("items_max") != items_max:
-        return True
-    return False
-
-
-def _document_catalog(state: CaseState) -> str:
-    lines = []
-    for i, doc in enumerate(state.documents, start=1):
-        if not doc.selected and doc.download_status in (None, "skipped"):
-            continue
-        status = "скачан" if doc.download_status == "ok" else "в списке, не скачан"
-        why = doc.why_needed or ""
-        lines.append(f"{i}. {doc.title} [{status}]. {why}".strip())
-    for item in state.knowledge:
-        if item.source == "uploaded":
-            lines.append(f"- Приложен файл: {item.title} ({item.filename})")
-    return "\n".join(lines) if lines else "Документы ещё не приложены."
-
-
-def _existing_cards(state: CaseState) -> str:
-    blocks = []
-    for item in state.knowledge:
-        if item.summary_status == "ok" and (item.summary or "").strip():
-            body = item.summary.strip()
-            if len(body) > 8000:
-                body = body[:8000] + "\n…"
-            blocks.append(f"# {item.title}\n{body}")
-    return "\n\n".join(blocks)
-
-
-def _format_sources(sources: list[dict]) -> str:
-    blocks = []
-    for fr in sources[:40]:
-        article = fr.get("article") or "фрагмент без номера статьи"
-        url = fr.get("url") or "URL в библиотеке не зафиксирован"
-        text = fr.get("text") or fr.get("excerpt") or ""
-        blocks.append(f"[{fr['n']}] {article}\nисточник: {url}\n{text}")
-    return "\n\n---\n\n".join(blocks) if blocks else "Фрагментов НПА нет."
+    extra: dict = {
+        "keywords": list(state.keywords),
+        "inspection_name": state.inspection_name,
+    }
+    if items_min is not None:
+        extra["items_min"] = items_min
+    if items_max is not None:
+        extra["items_max"] = items_max
+    return artifact_stale(
+        state,
+        PROGRAM_SPEC,
+        schema=PROGRAM_SCHEMA,
+        check_items=True,
+        extra=extra,
+    )
 
 
 def _digest(questions: list[str], limit: int = 8) -> list[str]:
@@ -274,6 +236,7 @@ def _save_program_meta(
         extra={
             "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
             "keywords": list(state.keywords),
+            "schema": PROGRAM_SCHEMA,
             "items_min": items_min,
             "items_max": items_max,
             "question_count": len(questions),
@@ -344,7 +307,7 @@ async def _compose_program(
         article = src.get("article") or "фрагмент"
         url = src.get("url") or "нет URL"
         catalog.append(f"[{src['n']}] {src.get('title')} — {article} — {url}")
-    cards = _existing_cards(state)
+    cards = existing_cards(state)
     per_item = max(400, settings.brief_chars_per_page // 3)
     target = items_max * per_item
     cards_block = ""
@@ -359,9 +322,9 @@ async def _compose_program(
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords) or "не указаны",
         period=state.period or "не указан",
-        document_catalog=_document_catalog(state),
+        document_catalog=document_catalog(state),
         catalog="\n".join(catalog) or "список пуст — не выдумывай номера статей как факт",
-        fragments=_format_sources(sources),
+        fragments=format_npa_sources(sources),
         cards_block=cards_block,
         sections=prompt("program_sections", items_hint=program_items_hint(items_min, items_max)).strip(),
         items_hint=program_items_hint(items_min, items_max),
@@ -373,7 +336,7 @@ async def _compose_program(
         user,
         timeout=settings.brief_timeout_sec,
         num_ctx=settings.ollama_num_ctx,
-        num_predict=8192,
+        num_predict=min(8192, max(2048, items_max * 480)),
     )
 
 
@@ -433,18 +396,22 @@ async def build_program_events(
         raise ValueError("Модель вернула пустую программу проверки.")
 
     questions = parse_program_questions(body)
+    if not questions:
+        questions = parse_program_questions(
+            "## Вопросы, подлежащие аудиту\n\n" + (body or "")
+        )
+    questions = fit_program_questions(questions, hi)
     period = parse_program_heading(body, "Аудируемый период") or state.period
     name = parse_program_heading(body, "Название проверки") or state.inspection_name
 
-    md = _md_path(case_id)
-    docx = _docx_path(case_id, state.inspection_name)
+    paths = artifact_paths(case_id, state.inspection_name, PROGRAM_SPEC)
     yield {
         "type": "status",
         "message": "Собираю Word с программой проверки…",
         "elapsed_ms": elapsed(),
     }
     _write_markdown(
-        md,
+        paths.md,
         inspection_name=name,
         period=period,
         keywords=state.keywords,
@@ -454,7 +421,7 @@ async def build_program_events(
         questions=questions,
     )
     write_program_docx(
-        docx,
+        paths.primary,
         inspection_name=name,
         period=period,
         keywords=state.keywords,
@@ -463,14 +430,14 @@ async def build_program_events(
         sources=sources,
         questions=questions,
     )
-    _sources_path(case_id).write_text(
+    paths.sources.write_text(
         json.dumps(sources, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     meta = _save_program_meta(
         state,
-        docx=docx,
-        md=md,
+        docx=paths.primary,
+        md=paths.md,
         sources=sources,
         body=body,
         items_min=lo,

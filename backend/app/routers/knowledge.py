@@ -47,8 +47,7 @@ from app.services.total_flow import (
     total_download_name,
     total_status,
 )
-from app.services.knowledge_ask import ask
-from app.services.knowledge_flow import build_knowledge_events
+from app.services.knowledge_flow import ask, build_knowledge_events
 from app.services.knowledge_index import rebuild_index
 from app.services.knowledge_ingest import add_uploaded_file, ingest_library
 from app.services.knowledge_owui import export_pack_files, openwebui_status, sync_openwebui
@@ -60,16 +59,32 @@ from app.prompts import prompt
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
 logger = logging.getLogger(__name__)
 
+_MEDIA_TYPES = {
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
 
-async def _build_artifact(case_id: str, body: Optional[BriefRequest], builder, label: str):
+
+async def _build_artifact(
+    case_id: str,
+    body: Optional[BriefRequest],
+    builder,
+    label: str,
+    **kwargs,
+):
     require_case(case_id)
     force = bool(body and body.force)
     try:
-        return await builder(case_id, force=force)
+        return await builder(case_id, force=force, **kwargs)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"{label} failed: {exc}") from exc
+
+
+def _stream_artifact(case_id: str, events):
+    require_case(case_id)
+    return sse_response(events)
 
 
 def _download_artifact(
@@ -84,16 +99,7 @@ def _download_artifact(
     path = resolver(case_id, kind)
     if not path:
         raise HTTPException(status_code=404, detail=not_found)
-    if kind == "docx":
-        media_type = (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-    elif kind == "xlsx":
-        media_type = (
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        media_type = "text/markdown; charset=utf-8"
+    media_type = _MEDIA_TYPES.get(kind, "text/markdown; charset=utf-8")
     return FileResponse(
         path,
         media_type=media_type,
@@ -167,8 +173,7 @@ def index_knowledge(case_id: str):
 
 @router.get("/cases/{case_id}/knowledge/build/stream")
 async def build_stream(case_id: str):
-    require_case(case_id)
-    return sse_response(build_knowledge_events(case_id))
+    return _stream_artifact(case_id, build_knowledge_events(case_id))
 
 
 @router.post("/cases/{case_id}/knowledge/ask", response_model=AskResponse)
@@ -217,8 +222,7 @@ async def post_brief(case_id: str, body: Optional[BriefRequest] = None):
 
 @router.get("/cases/{case_id}/knowledge/brief/stream")
 async def brief_stream(case_id: str, force: bool = Query(default=False)):
-    require_case(case_id)
-    return sse_response(build_brief_events(case_id, force=force))
+    return _stream_artifact(case_id, build_brief_events(case_id, force=force))
 
 
 @router.get("/cases/{case_id}/knowledge/summary.docx")
@@ -258,8 +262,7 @@ async def post_total(case_id: str, body: Optional[BriefRequest] = None):
 
 @router.get("/cases/{case_id}/knowledge/total/stream")
 async def total_stream(case_id: str, force: bool = Query(default=False)):
-    require_case(case_id)
-    return sse_response(build_total_events(case_id, force=force))
+    return _stream_artifact(case_id, build_total_events(case_id, force=force))
 
 
 @router.get("/cases/{case_id}/knowledge/total.docx")
@@ -292,20 +295,15 @@ def get_program(case_id: str):
 
 @router.post("/cases/{case_id}/knowledge/program")
 async def post_program(case_id: str, body: Optional[BriefRequest] = None):
-    require_case(case_id)
-    force = bool(body and body.force)
-    try:
-        return await build_program(
-            case_id,
-            force=force,
-            items_min=body.items_min if body else None,
-            items_max=body.items_max if body else None,
-            items=body.items if body else None,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Program failed: {exc}") from exc
+    return await _build_artifact(
+        case_id,
+        body,
+        build_program,
+        "Program",
+        items_min=body.items_min if body else None,
+        items_max=body.items_max if body else None,
+        items=body.items if body else None,
+    )
 
 
 @router.get("/cases/{case_id}/knowledge/program/stream")
@@ -316,15 +314,15 @@ async def program_stream(
     items_min: Optional[int] = Query(default=None, ge=3, le=20),
     items_max: Optional[int] = Query(default=None, ge=3, le=20),
 ):
-    require_case(case_id)
-    return sse_response(
+    return _stream_artifact(
+        case_id,
         build_program_events(
             case_id,
             force=force,
             items_min=items_min,
             items_max=items_max,
             items=items,
-        )
+        ),
     )
 
 
@@ -363,8 +361,7 @@ async def post_hypotheses(case_id: str, body: Optional[BriefRequest] = None):
 
 @router.get("/cases/{case_id}/knowledge/hypotheses/stream")
 async def hypotheses_stream(case_id: str, force: bool = Query(default=False)):
-    require_case(case_id)
-    return sse_response(build_hypotheses_events(case_id, force=force))
+    return _stream_artifact(case_id, build_hypotheses_events(case_id, force=force))
 
 
 @router.get("/cases/{case_id}/knowledge/hypotheses.xlsx")

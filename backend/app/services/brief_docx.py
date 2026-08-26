@@ -59,7 +59,7 @@ def add_hyperlink(paragraph, text: str, url: str, *, italic: bool = False) -> No
     paragraph._p.append(hyperlink)
 
 
-def add_anchor_hyperlink(paragraph, text: str, anchor: str) -> None:
+def add_anchor_hyperlink(paragraph, text: str, anchor: str, *, size: int = 12) -> None:
     hyperlink = OxmlElement("w:hyperlink")
     hyperlink.set(qn("w:anchor"), anchor)
     new_run = OxmlElement("w:r")
@@ -71,7 +71,7 @@ def add_anchor_hyperlink(paragraph, text: str, anchor: str) -> None:
     underline.set(qn("w:val"), "single")
     r_pr.append(underline)
     sz = OxmlElement("w:sz")
-    sz.set(qn("w:val"), "24")
+    sz.set(qn("w:val"), str(size * 2))
     r_pr.append(sz)
     fonts = OxmlElement("w:rFonts")
     fonts.set(qn("w:ascii"), "Times New Roman")
@@ -125,12 +125,16 @@ def _style_paragraph(paragraph, *, first_line: bool = False) -> None:
         fmt.first_line_indent = Cm(1.25)
 
 
-def _add_plain_run(paragraph, text: str, *, italic: bool = False, bold: bool = False) -> None:
+def _add_plain_run(
+    paragraph, text: str, *, italic: bool = False, bold: bool = False, size: int = 12
+) -> None:
     run = paragraph.add_run(text)
-    _set_run_font(run, italic=italic, bold=bold)
+    _set_run_font(run, size=size, italic=italic, bold=bold)
 
 
-def _set_table_borders(table) -> None:
+def _set_table_borders(
+    table, *, val: str = "single", sz: str = "4", color: str = "000000"
+) -> None:
     tbl = table._tbl
     tbl_pr = tbl.tblPr
     if tbl_pr is None:
@@ -142,16 +146,51 @@ def _set_table_borders(table) -> None:
     borders = OxmlElement("w:tblBorders")
     for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
         el = OxmlElement(f"w:{edge}")
-        el.set(qn("w:val"), "single")
-        el.set(qn("w:sz"), "4")
-        el.set(qn("w:space"), "0")
-        el.set(qn("w:color"), "000000")
+        el.set(qn("w:val"), val)
+        if val != "nil":
+            el.set(qn("w:sz"), sz)
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), color)
         borders.append(el)
     tbl_pr.append(borders)
 
 
+def _set_cell_borders(
+    cell, *, val: str = "single", sz: str = "4", color: str = "000000"
+) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    existing = tc_pr.find(qn("w:tcBorders"))
+    if existing is not None:
+        tc_pr.remove(existing)
+    borders = OxmlElement("w:tcBorders")
+    for edge in ("top", "left", "bottom", "right"):
+        el = OxmlElement(f"w:{edge}")
+        el.set(qn("w:val"), val)
+        el.set(qn("w:sz"), sz)
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), color)
+        borders.append(el)
+    tc_pr.append(borders)
+
+
+def _dxa(cm: float) -> str:
+    return str(int(round(float(Cm(cm).twips))))
+
+
+def _set_tbl_width(table, cm: float) -> None:
+    tbl_pr = table._tbl.tblPr
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        table._tbl.insert(0, tbl_pr)
+    tbl_w = tbl_pr.find(qn("w:tblW"))
+    if tbl_w is None:
+        tbl_w = OxmlElement("w:tblW")
+        tbl_pr.append(tbl_w)
+    tbl_w.set(qn("w:w"), _dxa(cm))
+    tbl_w.set(qn("w:type"), "dxa")
+
+
 def _set_cell_width(cell, cm: float) -> None:
-    dxa = str(int(Cm(cm)))
     cell.width = Cm(cm)
     tc = cell._tc
     tc_pr = tc.get_or_add_tcPr()
@@ -159,7 +198,7 @@ def _set_cell_width(cell, cm: float) -> None:
     if tc_w is None:
         tc_w = OxmlElement("w:tcW")
         tc_pr.append(tc_w)
-    tc_w.set(qn("w:w"), dxa)
+    tc_w.set(qn("w:w"), _dxa(cm))
     tc_w.set(qn("w:type"), "dxa")
 
 
@@ -172,6 +211,7 @@ def _fill_cell(
     italic: bool = False,
     size: int = 12,
     center: bool = False,
+    justify: bool = False,
 ) -> None:
     cell.text = ""
     paragraph = cell.paragraphs[0]
@@ -181,28 +221,32 @@ def _fill_cell(
     fmt.line_spacing = 1.15
     if center:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    elif justify:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     if sources_by_n and CITE_RE.search(text or ""):
-        add_text_with_cites(paragraph, text or "", sources_by_n)
+        add_text_with_cites(paragraph, text or "", sources_by_n, size=size)
         return
     run = paragraph.add_run(text or "")
     _set_run_font(run, size=size, bold=bold, italic=italic)
 
 
-def add_text_with_cites(paragraph, text: str, sources_by_n: dict[int, dict[str, Any]]) -> None:
+def add_text_with_cites(
+    paragraph, text: str, sources_by_n: dict[int, dict[str, Any]], *, size: int = 12
+) -> None:
     """Render a paragraph, turning [n] into links to the appendix bookmark."""
     pos = 0
     for match in CITE_RE.finditer(text or ""):
         if match.start() > pos:
-            _add_plain_run(paragraph, text[pos : match.start()])
+            _add_plain_run(paragraph, text[pos : match.start()], size=size)
         n = int(match.group(1))
         if n in sources_by_n:
-            add_anchor_hyperlink(paragraph, match.group(0), f"cite_{n}")
+            add_anchor_hyperlink(paragraph, match.group(0), f"cite_{n}", size=size)
         else:
-            _add_plain_run(paragraph, match.group(0))
+            _add_plain_run(paragraph, match.group(0), size=size)
         pos = match.end()
     if pos < len(text or ""):
-        _add_plain_run(paragraph, text[pos:])
+        _add_plain_run(paragraph, text[pos:], size=size)
 
 
 def _strip_md(line: str) -> str:
@@ -341,6 +385,38 @@ _PROGRAM_NOTE = (
     "руководителем проверки по согласованию с директором Департамента внутреннего аудита."
 )
 
+_PROGRAM_FONT = 14
+_PROGRAM_OUTER_W = 17.73
+_PROGRAM_LABEL_W = 5.10
+_PROGRAM_VALUE_W = 11.65
+_PROGRAM_NUM_W = 1.21
+_PROGRAM_Q_W = 15.51
+_PROGRAM_SIGN_L = 7.63
+_PROGRAM_SIGN_R = 3.08
+
+
+def _set_program_document_font(doc: Document) -> None:
+    style = doc.styles["Normal"]
+    style.font.name = "Times New Roman"
+    style.font.size = Pt(_PROGRAM_FONT)
+
+
+def _program_inner_cell(doc: Document):
+    """Outer frame → wrapper table → cell that holds the two working tables."""
+    outer = doc.add_table(rows=1, cols=1)
+    outer.alignment = WD_TABLE_ALIGNMENT.CENTER
+    outer.autofit = False
+    _set_tbl_width(outer, _PROGRAM_OUTER_W)
+    _set_table_borders(outer, val="nil")
+    _set_cell_width(outer.rows[0].cells[0], _PROGRAM_OUTER_W)
+    wrapper = outer.rows[0].cells[0].add_table(rows=1, cols=1)
+    wrapper.autofit = False
+    _set_tbl_width(wrapper, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
+    _set_table_borders(wrapper, val="nil")
+    inner = wrapper.rows[0].cells[0]
+    _set_cell_width(inner, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
+    return outer, inner
+
 
 def write_program_docx(
     path: Path,
@@ -356,93 +432,109 @@ def write_program_docx(
     global _BOOKMARK_IDS
     _BOOKMARK_IDS = 0
     _ = body
+    _ = keywords
+    _ = case_id
 
     doc = Document()
+    _set_program_document_font(doc)
     section = doc.sections[0]
     section.page_width = Cm(21.0)
     section.page_height = Cm(29.7)
-    section.left_margin = Cm(2.5)
-    section.right_margin = Cm(2.0)
+    section.left_margin = Cm(3.0)
+    section.right_margin = Cm(1.0)
     section.top_margin = Cm(2.0)
     section.bottom_margin = Cm(2.0)
 
-    footer = section.footer.paragraphs[0]
-    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    kws = ", ".join(keywords) if keywords else "—"
-    fr = footer.add_run(
-        f"Программа проверки · {inspection_name} · кейс {case_id} · черновик · {kws}"
-    )
-    _set_run_font(fr, size=9, italic=True)
-
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.paragraph_format.space_after = Pt(12)
+    title.paragraph_format.space_after = Pt(6)
     tr = title.add_run("ПРОГРАММА")
-    _set_run_font(tr, size=16, bold=True)
+    _set_run_font(tr, size=_PROGRAM_FONT, bold=True)
 
     sources_by_n = {int(s["n"]): s for s in sources}
-    label_w, value_w = 6.0, 10.5
-    num_w, q_w = 1.6, 14.9
+    outer, inner = _program_inner_cell(doc)
 
-    info = doc.add_table(rows=5, cols=2)
-    info.alignment = WD_TABLE_ALIGNMENT.CENTER
+    info = inner.add_table(rows=5, cols=2)
     info.autofit = False
-    _set_table_borders(info)
+    _set_tbl_width(info, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
+    _set_table_borders(info, val="nil")
+    title_cell = info.cell(0, 0).merge(info.cell(0, 1))
+    _set_cell_width(title_cell, _PROGRAM_LABEL_W + _PROGRAM_VALUE_W)
+    _fill_cell(
+        title_cell,
+        inspection_name or "Название проверки",
+        size=_PROGRAM_FONT,
+        center=True,
+    )
     info_rows = [
-        ("Название проверки", inspection_name or ""),
         ("Аудируемый период", period or "уточняется"),
         ("Сроки проведения", ""),
         ("Руководитель проверки", ""),
         ("Члены рабочей группы", ""),
     ]
-    for row, (label, value) in zip(info.rows, info_rows):
-        _set_cell_width(row.cells[0], label_w)
-        _set_cell_width(row.cells[1], value_w)
-        _fill_cell(row.cells[0], label, size=12, bold=True)
-        _fill_cell(row.cells[1], value, sources_by_n, size=12)
+    for row, (label, value) in zip(info.rows[1:], info_rows):
+        _set_cell_width(row.cells[0], _PROGRAM_LABEL_W)
+        _set_cell_width(row.cells[1], _PROGRAM_VALUE_W)
+        _fill_cell(row.cells[0], label, size=_PROGRAM_FONT)
+        _fill_cell(row.cells[1], value, sources_by_n, size=_PROGRAM_FONT)
+
+    q_rows = questions or []
+    qtable = inner.add_table(rows=1 + max(len(q_rows), 1), cols=2)
+    qtable.autofit = False
+    _set_tbl_width(qtable, _PROGRAM_NUM_W + _PROGRAM_Q_W)
+    _set_table_borders(qtable)
+    header = qtable.rows[0]
+    _set_cell_width(header.cells[0], _PROGRAM_NUM_W)
+    _set_cell_width(header.cells[1], _PROGRAM_Q_W)
+    _set_cell_borders(header.cells[0], val="double")
+    _set_cell_borders(header.cells[1], val="double")
+    _fill_cell(header.cells[0], "№ п/п", size=_PROGRAM_FONT, center=True)
+    _fill_cell(
+        header.cells[1],
+        "Вопросы, подлежащие аудиту",
+        size=_PROGRAM_FONT,
+        center=True,
+    )
+    body_rows = q_rows or [""]
+    for idx, question in enumerate(body_rows, start=1):
+        row = qtable.rows[idx]
+        _set_cell_width(row.cells[0], _PROGRAM_NUM_W)
+        _set_cell_width(row.cells[1], _PROGRAM_Q_W)
+        _set_cell_borders(row.cells[0])
+        _set_cell_borders(row.cells[1])
+        _fill_cell(row.cells[0], f"{idx}.", size=_PROGRAM_FONT, center=True)
+        _fill_cell(
+            row.cells[1],
+            question,
+            sources_by_n,
+            size=_PROGRAM_FONT,
+            justify=True,
+        )
+
+    outer_cell = outer.rows[0].cells[0]
+    pad = outer_cell.add_paragraph()
+    pad.paragraph_format.first_line_indent = Cm(1.0)
+    note = outer_cell.add_paragraph()
+    note.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    note.paragraph_format.first_line_indent = Cm(1.0)
+    nr = note.add_run(_PROGRAM_NOTE)
+    _set_run_font(nr, size=_PROGRAM_FONT)
 
     spacer = doc.add_paragraph()
-    spacer.paragraph_format.space_before = Pt(8)
-    spacer.paragraph_format.space_after = Pt(4)
-
-    rows = questions or []
-    table = doc.add_table(rows=1 + max(len(rows), 1), cols=2)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = False
-    _set_table_borders(table)
-    header = table.rows[0]
-    _set_cell_width(header.cells[0], num_w)
-    _set_cell_width(header.cells[1], q_w)
-    _fill_cell(header.cells[0], "№ п/п", size=12, bold=True, center=True)
-    _fill_cell(header.cells[1], "Вопросы, подлежащие аудиту", size=12, bold=True)
-    if rows:
-        for idx, question in enumerate(rows, start=1):
-            row = table.rows[idx]
-            _set_cell_width(row.cells[0], num_w)
-            _set_cell_width(row.cells[1], q_w)
-            _fill_cell(row.cells[0], f"{idx}.", size=12, center=True)
-            _fill_cell(row.cells[1], question, sources_by_n, size=12)
-    else:
-        row = table.rows[1]
-        _set_cell_width(row.cells[0], num_w)
-        _set_cell_width(row.cells[1], q_w)
-        _fill_cell(row.cells[0], "1.", size=12, center=True)
-        _fill_cell(row.cells[1], "", size=12)
-
-    note = doc.add_paragraph()
-    _style_paragraph(note)
-    note.paragraph_format.space_before = Pt(10)
-    nr = note.add_run(_PROGRAM_NOTE)
-    _set_run_font(nr, size=11, italic=True)
+    spacer.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     sign = doc.add_table(rows=1, cols=2)
     sign.alignment = WD_TABLE_ALIGNMENT.CENTER
     sign.autofit = False
-    _set_table_borders(sign)
-    _set_cell_width(sign.rows[0].cells[0], label_w)
-    _set_cell_width(sign.rows[0].cells[1], value_w)
-    _fill_cell(sign.rows[0].cells[0], "Менеджер по направлению деятельности", size=12)
-    _fill_cell(sign.rows[0].cells[1], "", size=12)
+    _set_table_borders(sign, val="nil")
+    _set_cell_width(sign.rows[0].cells[0], _PROGRAM_SIGN_L)
+    _set_cell_width(sign.rows[0].cells[1], _PROGRAM_SIGN_R)
+    _fill_cell(
+        sign.rows[0].cells[0],
+        "Менеджер по направлению деятельности",
+        size=_PROGRAM_FONT,
+    )
+    _fill_cell(sign.rows[0].cells[1], "", size=_PROGRAM_FONT)
 
     _add_sources_section(
         doc,

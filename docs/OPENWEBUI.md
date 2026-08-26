@@ -162,7 +162,7 @@ Workspace → Модели → **не** создавать вторую моде
 | `AUDIT_API` | `http://backend:8100` | WebUI в Docker. С хоста без compose: `http://localhost:8100` |
 | `PUBLIC_API` | `http://localhost:8100` | Ссылки zip/docx в браузере аудитора |
 | `TIMEOUT_SEC` | `600` | Propose/download. 27B на списке актов — минуты |
-| `BRIEF_TIMEOUT_SEC` | `1800` | Саммари, саммари total и программа в Word |
+| `BRIEF_TIMEOUT_SEC` | `1800` | Саммари, саммари total, программа в Word, гипотезы в Excel |
 | `OPENWEBUI_API_KEY` | пусто **или** ключ | Пусто = ответы только через индекс сервера. Ключ = ещё и коллекция Knowledge |
 
 Ключ: Open WebUI → **Настройки** → **Аккаунт** → **API Keys**. Тот же ключ можно положить в корневой `.env` как `OPENWEBUI_API_KEY=` — его подхватит backend для sync. В git ключ не коммитить.

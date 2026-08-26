@@ -9,14 +9,19 @@ from app.config import settings
 from app.models import CaseState
 from app.prompts import prompt
 from app.services.brief_flow import collect_brief_sources
+from app.services.case_context import (
+    document_catalog,
+    existing_cards,
+    format_npa_sources,
+    read_truncated_md,
+)
 from app.services.document_artifact import (
     ArtifactSpec,
     ElapsedTimer,
     artifact_dir,
-    artifact_docx_path,
     artifact_download_name,
-    artifact_md_path,
-    artifact_sources_path,
+    artifact_paths,
+    artifact_stale,
     artifact_status,
     event_result,
     resolve_artifact_file,
@@ -25,13 +30,8 @@ from app.services.document_artifact import (
 from app.services.hypotheses_xlsx import write_hypotheses_xlsx
 from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete, extract_json_value
-from app.services.program_flow import (
-    _document_catalog,
-    _existing_cards,
-    resolve_program_file,
-)
+from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
-from app.storage import store
 
 HYPOTHESES_SCHEMA = 1
 HYPOTHESES_SPEC = ArtifactSpec(
@@ -74,18 +74,6 @@ _PRIORITY_MAP = {
 }
 
 
-def _xlsx_path(case_id: str, inspection_name: str) -> Path:
-    return artifact_docx_path(case_id, inspection_name, HYPOTHESES_SPEC)
-
-
-def _md_path(case_id: str) -> Path:
-    return artifact_md_path(case_id, HYPOTHESES_SPEC)
-
-
-def _sources_path(case_id: str) -> Path:
-    return artifact_sources_path(case_id, HYPOTHESES_SPEC)
-
-
 def _json_path(case_id: str) -> Path:
     return artifact_dir(case_id, HYPOTHESES_SPEC) / "hypotheses.json"
 
@@ -105,52 +93,23 @@ def resolve_hypotheses_file(case_id: str, kind: str) -> Path | None:
 
 
 def hypotheses_status(case_id: str) -> dict:
-    meta = artifact_status(case_id, HYPOTHESES_SPEC)
-    meta["download"] = HYPOTHESES_SPEC.docx_endpoint.format(case_id=case_id)
-    return meta
+    return artifact_status(case_id, HYPOTHESES_SPEC)
 
 
 def _hypotheses_stale(state: CaseState) -> bool:
-    meta = state.meta.get("hypotheses") or {}
-    path = Path(meta["docx_path"]) if meta.get("docx_path") else None
-    if not path or not path.exists():
-        return True
-    if meta.get("schema") != HYPOTHESES_SCHEMA:
-        return True
-    ok_items = sum(1 for i in state.knowledge if i.extract_status == "ok")
-    if meta.get("items") != ok_items:
-        return True
-    if meta.get("keywords") != list(state.keywords):
-        return True
-    if meta.get("inspection_name") != state.inspection_name:
-        return True
-    if meta.get("brief_built_at") != (state.meta.get("brief") or {}).get("built_at"):
-        return True
-    if meta.get("total_built_at") != (state.meta.get("total") or {}).get("built_at"):
-        return True
-    if meta.get("program_built_at") != (state.meta.get("program") or {}).get("built_at"):
-        return True
-    return False
-
-
-def _read_md(resolver, case_id: str, limit: int = 14000) -> str:
-    path = resolver(case_id, "md")
-    if not path or not path.exists():
-        return ""
-    text = path.read_text(encoding="utf-8").strip()
-    if len(text) > limit:
-        return text[:limit] + "\n…"
-    return text
-
-
-def _format_sources(sources: list[dict]) -> str:
-    blocks = []
-    for fr in sources[:40]:
-        article = fr.get("article") or "фрагмент без номера статьи"
-        url = fr.get("url") or "URL в библиотеке не зафиксирован"
-        text = fr.get("text") or fr.get("excerpt") or ""
-        blocks.append(f"[{fr['n']}] {article}\nисточник: {url}\n{text}")
-    return "\n\n---\n\n".join(blocks) if blocks else "Фрагментов НПА нет."
+    return artifact_stale(
+        state,
+        HYPOTHESES_SPEC,
+        schema=HYPOTHESES_SCHEMA,
+        check_items=True,
+        extra={
+            "keywords": list(state.keywords),
+            "inspection_name": state.inspection_name,
+            "brief_built_at": (state.meta.get("brief") or {}).get("built_at"),
+            "total_built_at": (state.meta.get("total") or {}).get("built_at"),
+            "program_built_at": (state.meta.get("program") or {}).get("built_at"),
+        },
+    )
 
 
 def _normalize_priority(value: str) -> str:
@@ -292,7 +251,7 @@ async def _compose_hypotheses(state: CaseState, sources: list[dict]) -> str:
         url = src.get("url") or "нет URL"
         catalog.append(f"[{src['n']}] {src.get('title')} — {article} — {url}")
 
-    cards = _existing_cards(state)
+    cards = existing_cards(state)
     cards_block = ""
     if cards:
         cards_block = (
@@ -302,7 +261,7 @@ async def _compose_hypotheses(state: CaseState, sources: list[dict]) -> str:
     else:
         cards_block = "Карточки саммари ещё не собраны (команда `саммари`).\n"
 
-    total_md = _read_md(resolve_total_file, state.case_id)
+    total_md = read_truncated_md(resolve_total_file, state.case_id)
     if total_md:
         total_block = (
             "Саммари total (конспект из знаний модели по теме):\n"
@@ -311,7 +270,7 @@ async def _compose_hypotheses(state: CaseState, sources: list[dict]) -> str:
     else:
         total_block = "Саммари total ещё не собрано (команда `саммари total`).\n"
 
-    program_md = _read_md(resolve_program_file, state.case_id)
+    program_md = read_truncated_md(resolve_program_file, state.case_id)
     if program_md:
         program_block = (
             "Программа проверки (черновик процедур — привязывай plan_sections к её разделам):\n"
@@ -325,9 +284,9 @@ async def _compose_hypotheses(state: CaseState, sources: list[dict]) -> str:
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords) or "не указаны",
         period=state.period or "не указан",
-        document_catalog=_document_catalog(state),
+        document_catalog=document_catalog(state),
         catalog="\n".join(catalog) or "список пуст — не выдумывай номера статей как факт",
-        fragments=_format_sources(sources),
+        fragments=format_npa_sources(sources),
         cards_block=cards_block,
         total_block=total_block,
         program_block=program_block,
@@ -388,15 +347,14 @@ async def build_hypotheses_events(
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Не удалось разобрать гипотезы модели: {exc}") from exc
 
-    md = _md_path(case_id)
-    xlsx = _xlsx_path(case_id, state.inspection_name)
+    paths = artifact_paths(case_id, state.inspection_name, HYPOTHESES_SPEC)
     yield {
         "type": "status",
         "message": "Собираю Excel-чеклист гипотез…",
         "elapsed_ms": elapsed(),
     }
     _write_markdown(
-        md,
+        paths.md,
         inspection_name=state.inspection_name,
         period=state.period,
         keywords=state.keywords,
@@ -406,7 +364,7 @@ async def build_hypotheses_events(
         sources=sources,
     )
     write_hypotheses_xlsx(
-        xlsx,
+        paths.primary,
         inspection_name=state.inspection_name,
         period=state.period,
         keywords=state.keywords,
@@ -419,11 +377,11 @@ async def build_hypotheses_events(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    _sources_path(case_id).write_text(
+    paths.sources.write_text(
         json.dumps(sources, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    meta = _save_meta(state, xlsx=xlsx, md=md, sources=sources, rows=rows)
+    meta = _save_meta(state, xlsx=paths.primary, md=paths.md, sources=sources, rows=rows)
     meta["digest"] = [f"- {r['hypothesis']}" for r in rows[:8]]
     yield {"type": "result", **meta, "elapsed_ms": elapsed()}
 

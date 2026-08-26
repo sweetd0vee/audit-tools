@@ -350,10 +350,15 @@ class TestProgramDocx(unittest.TestCase):
             texts = "\n".join(p.text for p in doc.paragraphs)
             self.assertIn("ПРОГРАММА", texts)
             self.assertGreaterEqual(len(doc.tables), 2)
-            info = "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
-            self.assertIn("Название проверки", info)
-            self.assertIn("Проверка аренды коммерческой недвижимости", info)
-            questions_table = doc.tables[1]
+            outer = doc.tables[0]
+            wrapper = outer.rows[0].cells[0].tables[0]
+            inner = wrapper.rows[0].cells[0]
+            self.assertGreaterEqual(len(inner.tables), 2)
+            info, questions_table = inner.tables[0], inner.tables[1]
+            info_text = "\n".join(cell.text for row in info.rows for cell in row.cells)
+            self.assertIn("Проверка аренды коммерческой недвижимости", info_text)
+            self.assertIn("Аудируемый период", info_text)
+            self.assertIn("2025", info_text)
             header = " ".join(cell.text for cell in questions_table.rows[0].cells)
             self.assertIn("Вопросы, подлежащие аудиту", header)
             body_text = "\n".join(
@@ -362,6 +367,10 @@ class TestProgramDocx(unittest.TestCase):
             self.assertIn("Анализ договоров аренды", body_text)
             self.assertIn("[1]", body_text)
             self.assertIn("2.", body_text)
+            outer_text = "\n".join(p.text for p in outer.rows[0].cells[0].paragraphs)
+            self.assertIn("При необходимости вопросы, подлежащие аудиту", outer_text)
+            sign = "\n".join(cell.text for row in doc.tables[1].rows for cell in row.cells)
+            self.assertIn("Менеджер по направлению деятельности", sign)
 
 
 class TestProgramItems(unittest.TestCase):
@@ -393,6 +402,44 @@ class TestProgramItems(unittest.TestCase):
         self.assertEqual(len(questions), 3)
         self.assertIn("Анализ ЛПА", questions[0])
         self.assertIn("арендных платежей", questions[2])
+
+    def test_parse_questions_skips_nested_numbering_and_clips(self):
+        from app.services.program_flow import fit_program_questions, parse_program_questions
+
+        body = """
+## Вопросы, подлежащие аудиту
+
+1. Первый вопрос. Внутри не отдельный пункт.
+2. Второй вопрос.
+3. Третий.
+4. Четвёртый.
+5. Пятый.
+6. Шестой.
+7. Седьмой.
+8. Восьмой.
+9. Девятый лишний.
+10. Десятый лишний.
+"""
+        questions = parse_program_questions(body)
+        self.assertEqual(len(questions), 10)
+        clipped = fit_program_questions(questions, 8)
+        self.assertEqual(len(clipped), 8)
+        self.assertIn("Восьмой", clipped[-1])
+        self.assertTrue(all("лишний" not in q for q in clipped))
+
+    def test_parse_questions_ignores_restarted_list(self):
+        from app.services.program_flow import parse_program_questions
+
+        body = """
+## Вопросы, подлежащие аудиту
+
+1. Анализ ЛПА. Запросить: 1. карту процесса 2. регламент.
+2. Проверка полномочий.
+"""
+        questions = parse_program_questions(body)
+        self.assertEqual(len(questions), 2)
+        self.assertIn("карту процесса", questions[0])
+        self.assertIn("полномочий", questions[1])
 
 
 class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):

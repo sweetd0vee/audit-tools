@@ -11,11 +11,9 @@ from app.services.brief_docx import write_brief_docx
 from app.services.document_artifact import (
     ArtifactSpec,
     ElapsedTimer,
-    artifact_dir,
-    artifact_docx_path,
     artifact_download_name,
-    artifact_md_path,
-    artifact_sources_path,
+    artifact_paths,
+    artifact_stale,
     artifact_status,
     event_result,
     resolve_artifact_file,
@@ -76,22 +74,6 @@ def _markdown_bullets(md: str) -> list[str]:
     return out
 
 
-def _brief_dir(case_id: str) -> Path:
-    return artifact_dir(case_id, BRIEF_SPEC)
-
-
-def _docx_path(case_id: str, inspection_name: str) -> Path:
-    return artifact_docx_path(case_id, inspection_name, BRIEF_SPEC)
-
-
-def _md_path(case_id: str) -> Path:
-    return artifact_md_path(case_id, BRIEF_SPEC)
-
-
-def _sources_path(case_id: str) -> Path:
-    return artifact_sources_path(case_id, BRIEF_SPEC)
-
-
 def brief_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
     _ = case_id
     return artifact_download_name(inspection_name, BRIEF_SPEC, ext=ext)
@@ -106,16 +88,7 @@ def brief_status(case_id: str) -> dict:
 
 
 def _brief_stale(state: CaseState) -> bool:
-    meta = state.meta.get("brief") or {}
-    path = Path(meta["docx_path"]) if meta.get("docx_path") else None
-    if not path or not path.exists():
-        return True
-    ok_items = sum(1 for i in state.knowledge if i.extract_status == "ok")
-    if meta.get("items") != ok_items:
-        return True
-    if meta.get("schema") != BRIEF_SCHEMA:
-        return True
-    return False
+    return artifact_stale(state, BRIEF_SPEC, schema=BRIEF_SCHEMA, check_items=True)
 
 
 def collect_brief_sources(state) -> list[dict]:
@@ -354,11 +327,10 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
     overview = await _synthesize_overview(state, chapters)
 
     body_for_pages = overview + "\n\n" + "\n\n".join(ch["body"] for ch in chapters)
-    md = _md_path(case_id)
-    docx = _docx_path(case_id, state.inspection_name)
+    paths = artifact_paths(case_id, state.inspection_name, BRIEF_SPEC)
     yield {"type": "status", "message": "Собираю Word с карточками актов…", "elapsed_ms": elapsed()}
     _write_markdown(
-        md,
+        paths.md,
         inspection_name=state.inspection_name,
         period=state.period,
         keywords=state.keywords,
@@ -368,7 +340,7 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         sources=sources,
     )
     write_brief_docx(
-        docx,
+        paths.primary,
         inspection_name=state.inspection_name,
         period=state.period,
         keywords=state.keywords,
@@ -377,11 +349,13 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         chapters=chapters,
         sources=sources,
     )
-    _sources_path(case_id).write_text(
+    paths.sources.write_text(
         json.dumps(sources, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    meta = _save_brief_meta(state, docx=docx, md=md, sources=sources, body=body_for_pages)
+    meta = _save_brief_meta(
+        state, docx=paths.primary, md=paths.md, sources=sources, body=body_for_pages
+    )
     meta["digest"] = _digest(chapters)
     yield {"type": "result", **meta, "elapsed_ms": elapsed()}
 

@@ -20,6 +20,7 @@ data/audit_cases/{case_id}/
   summaries/          саммари по актам
   totals/             конспект из знаний модели
   programs/           программа проверки
+  hypotheses/         чеклист гипотез
   knowledge_index.json
   library.zip
 ```
@@ -94,13 +95,17 @@ POST /api/v1/cases/{case_id}/knowledge/total
 GET  /api/v1/cases/{case_id}/knowledge/total.docx
 POST /api/v1/cases/{case_id}/knowledge/program
 GET  /api/v1/cases/{case_id}/knowledge/program.docx
+POST /api/v1/cases/{case_id}/knowledge/hypotheses
+GET  /api/v1/cases/{case_id}/knowledge/hypotheses.xlsx
 ```
 
-Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`. `force=true` — пересобрать.
+Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`, `GET …/hypotheses/stream`. `force=true` — пересобрать.
 
 Как устроен `саммари` (карточка акта, map-reduce, большая библиотека): [`docs/SAMMARI.md`](../docs/SAMMARI.md).
 
 `саммари total` — краткий конспект по теме из знаний модели (без опоры на скачанные акты), со ссылками на акты и статьи.
+
+`гипотезы` — Excel-чеклист 8–10 гипотез для проверки. Лучше, если уже есть саммари / total / программа.
 
 Обычный диалог без RAG:
 

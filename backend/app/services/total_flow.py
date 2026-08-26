@@ -11,11 +11,9 @@ from app.services.brief_docx import write_total_docx
 from app.services.document_artifact import (
     ArtifactSpec,
     ElapsedTimer,
-    artifact_dir,
-    artifact_docx_path,
     artifact_download_name,
-    artifact_md_path,
-    artifact_sources_path,
+    artifact_paths,
+    artifact_stale,
     artifact_status,
     event_result,
     resolve_artifact_file,
@@ -44,22 +42,6 @@ _SOURCE_LINE_RE = re.compile(
 )
 
 
-def _total_dir(case_id: str) -> Path:
-    return artifact_dir(case_id, TOTAL_SPEC)
-
-
-def _docx_path(case_id: str, inspection_name: str) -> Path:
-    return artifact_docx_path(case_id, inspection_name, TOTAL_SPEC)
-
-
-def _md_path(case_id: str) -> Path:
-    return artifact_md_path(case_id, TOTAL_SPEC)
-
-
-def _sources_path(case_id: str) -> Path:
-    return artifact_sources_path(case_id, TOTAL_SPEC)
-
-
 def total_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
     _ = case_id
     return artifact_download_name(inspection_name, TOTAL_SPEC, ext=ext)
@@ -74,19 +56,16 @@ def total_status(case_id: str) -> dict:
 
 
 def _total_stale(state: CaseState) -> bool:
-    meta = state.meta.get("total") or {}
-    path = Path(meta["docx_path"]) if meta.get("docx_path") else None
-    if not path or not path.exists():
-        return True
-    if meta.get("schema") != TOTAL_SCHEMA:
-        return True
-    if meta.get("keywords") != list(state.keywords):
-        return True
-    if meta.get("inspection_name") != state.inspection_name:
-        return True
-    if meta.get("period") != (state.period or None):
-        return True
-    return False
+    return artifact_stale(
+        state,
+        TOTAL_SPEC,
+        schema=TOTAL_SCHEMA,
+        extra={
+            "keywords": list(state.keywords),
+            "inspection_name": state.inspection_name,
+            "period": state.period or None,
+        },
+    )
 
 
 def parse_total_sources(md: str) -> tuple[str, list[dict]]:
@@ -267,15 +246,14 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
     if not body.strip():
         body = raw.strip()
 
-    md = _md_path(case_id)
-    docx = _docx_path(case_id, state.inspection_name)
+    paths = artifact_paths(case_id, state.inspection_name, TOTAL_SPEC)
     yield {
         "type": "status",
         "message": "Собираю Word с саммари total…",
         "elapsed_ms": elapsed(),
     }
     _write_markdown(
-        md,
+        paths.md,
         inspection_name=state.inspection_name,
         period=state.period,
         keywords=state.keywords,
@@ -284,7 +262,7 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
         sources=sources,
     )
     write_total_docx(
-        docx,
+        paths.primary,
         inspection_name=state.inspection_name,
         period=state.period,
         keywords=state.keywords,
@@ -292,11 +270,13 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
         body=body,
         sources=sources,
     )
-    _sources_path(case_id).write_text(
+    paths.sources.write_text(
         json.dumps(sources, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    meta = _save_total_meta(state, docx=docx, md=md, sources=sources, body=body)
+    meta = _save_total_meta(
+        state, docx=paths.primary, md=paths.md, sources=sources, body=body
+    )
     meta["digest"] = _digest(body)
     yield {"type": "result", **meta, "elapsed_ms": elapsed()}
 

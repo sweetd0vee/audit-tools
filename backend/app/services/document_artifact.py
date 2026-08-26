@@ -28,6 +28,13 @@ class ArtifactSpec:
     primary_ext: str = "docx"
 
 
+@dataclass(frozen=True)
+class ArtifactPaths:
+    primary: Path
+    md: Path
+    sources: Path
+
+
 class ElapsedTimer:
     def __init__(self) -> None:
         self._started = time.perf_counter()
@@ -54,6 +61,40 @@ def artifact_md_path(case_id: str, spec: ArtifactSpec) -> Path:
 
 def artifact_sources_path(case_id: str, spec: ArtifactSpec) -> Path:
     return artifact_dir(case_id, spec) / spec.sources_name
+
+
+def artifact_paths(case_id: str, inspection_name: str, spec: ArtifactSpec) -> ArtifactPaths:
+    return ArtifactPaths(
+        primary=artifact_docx_path(case_id, inspection_name, spec),
+        md=artifact_md_path(case_id, spec),
+        sources=artifact_sources_path(case_id, spec),
+    )
+
+
+def knowledge_ok_count(state: CaseState) -> int:
+    return sum(1 for item in state.knowledge if item.extract_status == "ok")
+
+
+def artifact_stale(
+    state: CaseState,
+    spec: ArtifactSpec,
+    *,
+    schema: int | None = None,
+    check_items: bool = False,
+    extra: dict[str, Any] | None = None,
+) -> bool:
+    meta = state.meta.get(spec.meta_key) or {}
+    path = Path(meta["docx_path"]) if meta.get("docx_path") else None
+    if not path or not path.exists():
+        return True
+    if schema is not None and meta.get("schema") != schema:
+        return True
+    if check_items and meta.get("items") != knowledge_ok_count(state):
+        return True
+    for key, value in (extra or {}).items():
+        if meta.get(key) != value:
+            return True
+    return False
 
 
 def artifact_download_name(
