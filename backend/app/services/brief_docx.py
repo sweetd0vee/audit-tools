@@ -9,7 +9,7 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Emu, Pt, RGBColor
+from docx.shared import Cm, Pt, RGBColor
 
 from app.services.citations import CITE_RE
 
@@ -334,6 +334,12 @@ def _add_sources_section(
             _add_plain_run(q, excerpt, italic=True)
 
 
+_PROGRAM_NOTE = (
+    "При необходимости вопросы, подлежащие аудиту, могут быть изменены и уточнены "
+    "руководителем проверки по согласованию с директором Департамента внутреннего аудита."
+)
+
+
 def write_program_docx(
     path: Path,
     *,
@@ -343,27 +349,98 @@ def write_program_docx(
     case_id: str,
     body: str,
     sources: list[dict[str, Any]],
+    questions: list[str] | None = None,
 ) -> Path:
     global _BOOKMARK_IDS
     _BOOKMARK_IDS = 0
+    _ = body
 
-    doc = _new_doc_with_title(
-        footer_text=f"Программа проверки · {inspection_name} · кейс {case_id} · черновик",
-        title_text="Программа аудиторской проверки",
-        inspection_name=inspection_name,
-        period=period,
-        keywords=keywords,
-        note_text=(
-            "Черновик программы внутренней аудиторской проверки банка Республики Беларусь. "
-            "Нормативные критерии — из названия проверки, ключевых слов и приложенных документов "
-            "библиотеки кейса. Номера [n] ведут к фрагменту-источнику. "
-            "Документ не заменяет утверждённую программу службы внутреннего аудита "
-            "и не является аудиторским суждением."
-        ),
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Cm(21.0)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2.5)
+    section.right_margin = Cm(2.0)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    kws = ", ".join(keywords) if keywords else "—"
+    fr = footer.add_run(
+        f"Программа проверки · {inspection_name} · кейс {case_id} · черновик · {kws}"
     )
+    _set_run_font(fr, size=9, italic=True)
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_after = Pt(12)
+    tr = title.add_run("ПРОГРАММА")
+    _set_run_font(tr, size=16, bold=True)
 
     sources_by_n = {int(s["n"]): s for s in sources}
-    add_markdown_block(doc, body, sources_by_n)
+    label_w, value_w = 6.0, 10.5
+    num_w, q_w = 1.6, 14.9
+
+    info = doc.add_table(rows=5, cols=2)
+    info.alignment = WD_TABLE_ALIGNMENT.CENTER
+    info.autofit = False
+    _set_table_borders(info)
+    info_rows = [
+        ("Название проверки", inspection_name or ""),
+        ("Аудируемый период", period or "уточняется"),
+        ("Сроки проведения", ""),
+        ("Руководитель проверки", ""),
+        ("Члены рабочей группы", ""),
+    ]
+    for row, (label, value) in zip(info.rows, info_rows):
+        _set_cell_width(row.cells[0], label_w)
+        _set_cell_width(row.cells[1], value_w)
+        _fill_cell(row.cells[0], label, size=12, bold=True)
+        _fill_cell(row.cells[1], value, sources_by_n, size=12)
+
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_before = Pt(8)
+    spacer.paragraph_format.space_after = Pt(4)
+
+    rows = questions or []
+    table = doc.add_table(rows=1 + max(len(rows), 1), cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    _set_table_borders(table)
+    header = table.rows[0]
+    _set_cell_width(header.cells[0], num_w)
+    _set_cell_width(header.cells[1], q_w)
+    _fill_cell(header.cells[0], "№ п/п", size=12, bold=True, center=True)
+    _fill_cell(header.cells[1], "Вопросы, подлежащие аудиту", size=12, bold=True)
+    if rows:
+        for idx, question in enumerate(rows, start=1):
+            row = table.rows[idx]
+            _set_cell_width(row.cells[0], num_w)
+            _set_cell_width(row.cells[1], q_w)
+            _fill_cell(row.cells[0], f"{idx}.", size=12, center=True)
+            _fill_cell(row.cells[1], question, sources_by_n, size=12)
+    else:
+        row = table.rows[1]
+        _set_cell_width(row.cells[0], num_w)
+        _set_cell_width(row.cells[1], q_w)
+        _fill_cell(row.cells[0], "1.", size=12, center=True)
+        _fill_cell(row.cells[1], "", size=12)
+
+    note = doc.add_paragraph()
+    _style_paragraph(note)
+    note.paragraph_format.space_before = Pt(10)
+    nr = note.add_run(_PROGRAM_NOTE)
+    _set_run_font(nr, size=11, italic=True)
+
+    sign = doc.add_table(rows=1, cols=2)
+    sign.alignment = WD_TABLE_ALIGNMENT.CENTER
+    sign.autofit = False
+    _set_table_borders(sign)
+    _set_cell_width(sign.rows[0].cells[0], label_w)
+    _set_cell_width(sign.rows[0].cells[1], value_w)
+    _fill_cell(sign.rows[0].cells[0], "Менеджер по направлению деятельности", size=12)
+    _fill_cell(sign.rows[0].cells[1], "", size=12)
 
     _add_sources_section(
         doc,
