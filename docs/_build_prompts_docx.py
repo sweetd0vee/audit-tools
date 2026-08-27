@@ -147,6 +147,16 @@ STEPS: list[dict] = [
                     "context",
                 ],
             },
+            {
+                "file": "ask_refuse.txt",
+                "kind": "Fixed",
+                "label": "Отказ без вызова модели",
+                "why": (
+                    "Пустая или слабая выборка: HTTP 200, refused=true, sources=[]. "
+                    "Модель не вызывается и не цитирует преамбулу кодекса."
+                ),
+                "placeholders": [],
+            },
         ],
     },
     {

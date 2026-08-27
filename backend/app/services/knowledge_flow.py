@@ -778,6 +778,19 @@ async def sync_openwebui(case_id: str, api_key: str | None = None) -> dict:
     state.meta["openwebui_knowledge_id"] = kid
     state.meta["openwebui_knowledge_name"] = name
     store.save(state)
+    try:
+        store.append_jsonl(
+            case_id,
+            "trail/openwebui.jsonl",
+            {
+                "ts": datetime.utcnow().isoformat(),
+                "case_id": case_id,
+                "knowledge_id": kid,
+                "uploaded": uploaded,
+            },
+        )
+    except Exception:
+        logger.warning("openwebui trail write failed case=%s", case_id, exc_info=True)
     return {
         "knowledge_id": kid,
         "name": name,

@@ -3,7 +3,7 @@
 **Дата:** 27 августа 2026 (актуализация: вынесен `intent.py`, тесты фраз Pipe, засев `pipe-seed`)  
 **Объект:** репозиторий `audit-tools`, ветка `main`, демо v0.0.1  
 **Объём своего кода:** ~12–14 тыс. строк Python (backend + Pipe + тесты), без форка Open WebUI  
-**Вердикт:** сильный доменный прототип с ясной архитектурой. Для демо СВА — готов. Для контура банка — нет: API открыт, поиск уходит в интернет, нет auth/CI/trail, RAG при пустой выборке подмешивает первые чанки.
+**Вердикт:** сильный доменный прототип с ясной архитектурой. Для демо СВА — готов. Для контура банка — нет: API открыт, поиск уходит в интернет, нет auth, RAG при пустой выборке подмешивает первые чанки.
 
 Шкала: 1–10. Это оценка кода и инженерной гигиены, не качества юридической выдачи модели.
 
@@ -16,7 +16,7 @@
 | Документы Word/Excel | **7** | Много тестов на парсер и docx. Генераторы тяжёлые, но изолированы |
 | Тесты | **5** | URL/docx + фразы Pipe из GUIDE. Нет API, retrieval, concurrent save, ask-refuse |
 | Безопасность контура | **3** | Локальное демо. Порты наружу, CORS `*`, DDG/Bing, редирект с allowlist |
-| Операционка / DX | **4** | Pipe сеется при `up` (нужен API key). 84 коммита «initial commit», нет CI, lint, типов, логов |
+| Операционка / DX | **9** | CI: ruff + mypy + pytest; логи с request id; версия API 0.0.1. История main всё ещё из «initial commit» — без squash |
 | Документация | **8** | Редкость: видение, гайд, RAG, промпты — согласованы с кодом |
 | **Итого как v0.0.1** | **7** | Демо выше среднего. Не «коробка в банк» |
 | **Итого как продукт банка** | **4** | Сначала auth, eval цитаты, trail. Локальность поиска — принятый компромисс демо: без DDG/Bing recall НПА падает |
@@ -149,24 +149,17 @@ if not evidence:
 
 `test_brief.py` — 750+ строк, почти целиком docx. Retrieval — 0.
 
-#### CR-10. Нет наблюдаемости
+#### CR-10. Нет наблюдаемости — **закрыто частично 27.08**
 
-`logging` используется **один раз** — ошибка sync Open WebUI. Остальное: `except Exception: return []` в поиске и rerank. Аудитор видит «не скачалось», разработчик не видит почему (SearXNG 429, Bing timeout, rerank 404).
+Было: `logging` один раз. Стало: `app.logging_setup` (request id, `X-Request-Id`, ASGI-middleware без буфера SSE), `LOG_LEVEL`, логи propose/download/search/rerank/ask. Trail `/ask` пишется в `trail/ask.jsonl` через `store.append_jsonl`.
 
-Нет: request id, audit trail вызова `/ask` (какой chunk id), метрик времени propose/download/ask.
+Не закрыто: метрики времени как отдельный экспорт; request id не прокинут в Ollama payload.
 
-`PLAN.md` v0.1 уже требует trail. Сейчас его нет.
+#### CR-11. Версии и git — **закрыто частично 27.08**
 
-#### CR-11. Версии и git
+API `version` = `app.__version__` = **0.0.1**. `GET /` отдаёт `version`, не `step: 2`. CI на PR режет subject `initial commit` / короче 10 символов.
 
-- README / Pipe: **0.0.1**
-- FastAPI `version=`: **0.2.0**
-- `GET /` отдаёт `"step": 2`
-- 84 коммита, сообщение у всех: `initial commit`
-
-Невозможно ответить «что вошло в демо». Для банка это сразу вопрос к поставке.
-
-**Рекомендация.** Одна версия. Сообщения коммитов по смыслу. Тег `v0.0.1`.
+Не закрыто: 84 старых коммита в `main` остаются «initial commit», пока явно не сделать squash + force-push.
 
 #### CR-12. Засев Pipe руками — **закрыто 27.08** (оговорка: ключ)
 
@@ -191,7 +184,7 @@ if not evidence:
 | CR-19 | Spoof `X-Forwarded-For: 127.0.0.1` к SearXNG — обход бот-детекта; ок для compose, запах |
 | CR-20 | `embed_texts` на 404 `/api/embed` эмбеддит только `texts[0]` |
 | CR-21 | `searxng_client.find_best_url` дублирует логику `npa_search.build_search_queries` |
-| CR-22 | Нет ruff / mypy / pytest.ini / GitHub Actions |
+| CR-22 | ~~Нет ruff / mypy / pytest.ini / GitHub Actions~~ — закрыто 27.08: `pyproject.toml`, `.github/workflows/ci.yml` |
 | CR-23 | `frontend/` в README, в git файлов нет — мёртвая ссылка |
 | CR-24 | Широкий `except Exception` + `# noqa: BLE001` почти в каждом роутере — 502 глотает баги программиста |
 | CR-25 | `httpx.AsyncClient` кэш по timeout, не закрывается на shutdown |
@@ -314,8 +307,8 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 10. ~~30 тестов на фразы Pipe~~ — сделано (`test_pipe_commands.py`).
 11. `TestClient` на create → select без Ollama (mock propose).
 12. Атомарный `store.save`, lock на brief/ask/download.
-13. ruff + pytest в GitHub Actions.
-14. Одна версия в README / FastAPI / Pipe. Коммиты с смыслом.
+13. ~~ruff + pytest в GitHub Actions~~ — `.github/workflows/ci.yml`.
+14. Версия API 0.0.1. Коммиты с смыслом — CI на PR; история main не схлопнута.
 
 ### Потом, не раньше
 
@@ -357,7 +350,7 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 | `seed_pipe.py` | ~260 | хорошо | Засев OWUI API; без ключа — no-op |
 | `docs/prompts` | 31 файл | отлично | Держать source of truth |
 | тесты | ~2.4k | средне | Docx + Pipe intent; retrieval — 0 |
-| git / CI | — | плохо | Не поставка |
+| git / CI | — | хорошо | Actions: ruff + mypy + pytest; PR режет `initial commit`. История main не схлопнута |
 
 ---
 

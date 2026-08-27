@@ -42,8 +42,12 @@ PUNKT_MENTION_RE = re.compile(
 )
 
 
-def article_nums_in_query(question: str) -> set[str]:
-    return {m.group(1) for m in ARTICLE_MENTION_RE.finditer(question or "")}
+def punkt_nums_in_query(question: str) -> set[str]:
+    return {m.group(1) for m in PUNKT_MENTION_RE.finditer(question or "")}
+
+
+def punkt_nums_in_text(text: str) -> set[str]:
+    return {m.group(1) for m in PUNKT_MENTION_RE.finditer(text or "")}
 
 
 def article_query_variants(question: str) -> list[str]:
@@ -221,7 +225,13 @@ def _merge_consecutive(lookup: dict[str, dict], ids: list[str], budget: int) -> 
             and parsed[0] == prev[0]
             and parsed[1] == prev[1] + 1
         ):
-            current.append(cid)
+            head_num = _article_num((lookup.get(current[0]) or {}).get("text") or "")
+            next_num = _article_num((lookup.get(cid) or {}).get("text") or "")
+            if head_num and next_num and head_num != next_num:
+                groups.append(current)
+                current = [cid]
+            else:
+                current.append(cid)
         else:
             if current:
                 groups.append(current)
@@ -490,14 +500,20 @@ def _requested_title_keys(question: str) -> list[str]:
         keys.append("налог")
     if any(x in q for x in (" нбрб", " национального банка")):
         keys.append("нбрб")
-    if "валют" in q:
-        keys.append("валют")
     return keys
 
 
 def _title_matches(chunk: dict, keys: list[str]) -> bool:
     hay = f"{chunk.get('title') or ''} {chunk.get('filename') or ''}".lower()
-    return any(key in hay for key in keys)
+    aliases = {
+        "гражданск": ("гражданск", "гк"),
+        "налог": ("налог", "нк"),
+        "нбрб": ("нбрб", "национальн"),
+    }
+    for key in keys:
+        if any(alias in hay for alias in aliases.get(key, (key,))):
+            return True
+    return False
 
 
 def gate_ask_evidence(
@@ -535,18 +551,6 @@ def _title_boosts(queries: list[str], lookup: dict[str, dict]) -> dict[str, floa
         if qset & tset:
             boosts[cid] = 0.35
     return boosts
-
-
-def _attach_lexical_scores(question: str, lookup: dict[str, dict]) -> None:
-    docs = list(lookup.values())
-    n = len(docs) or 1
-    df: dict[str, int] = {}
-    tokenized = [set(tokenize(ch.get("text") or "")) for ch in docs]
-    for toks in tokenized:
-        for tok in toks:
-            df[tok] = df.get(tok, 0) + 1
-    for ch, toks in zip(docs, tokenized):
-        ch["lexical_score"] = _idf_lexical_score(question, " ".join(toks), df, n)
 
 
 async def retrieve_for_ask(

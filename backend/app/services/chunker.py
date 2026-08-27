@@ -7,11 +7,11 @@ from app.config import settings
 
 TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+", re.UNICODE)
 ARTICLE_RE = re.compile(
-    r"(?=^(?:Статья|Ст\.|Глава|ГЛАВА|СТАТЬЯ)\s+\d+)",
+    r"(?=^(?:#{1,6}\s+)?(?:Статья|Ст\.|Глава|ГЛАВА|СТАТЬЯ)\s+\d+)",
     re.MULTILINE,
 )
 SECTION_RE = re.compile(
-    r"(?=^(?:Статья|Ст\.|Глава|ГЛАВА|СТАТЬЯ|Раздел|РАЗДЕЛ)\s+\d+)",
+    r"(?=^(?:#{1,6}\s+)?(?:Статья|Ст\.|Глава|ГЛАВА|СТАТЬЯ|Раздел|РАЗДЕЛ)\s+\d+)",
     re.MULTILINE,
 )
 _HEADING_LINE_RE = re.compile(
@@ -43,13 +43,21 @@ def chunk_text(text: str, size: int | None = None, overlap: int | None = None) -
     if not text:
         return []
 
-    parts = [p.strip() for p in ARTICLE_RE.split(text) if p and p.strip()]
-    if len(parts) <= 1:
-        parts = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    article_parts = [p.strip() for p in ARTICLE_RE.split(text) if p and p.strip()]
+    if len(article_parts) > 1:
+        chunks: list[str] = []
+        for part in article_parts:
+            if len(part) > size:
+                chunks.extend(_window(part, size, overlap))
+            else:
+                chunks.append(part)
+        return chunks
+
+    parts = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
     if not parts:
         parts = [text]
 
-    chunks: list[str] = []
+    chunks = []
     buf = ""
     for part in parts:
         if len(part) > size * 2:

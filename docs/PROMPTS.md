@@ -43,7 +43,7 @@ docker compose up -d backend
 | `гипотезы` | [`hypotheses_system.txt`](prompts/hypotheses_system.txt) | [`hypotheses_user.txt`](prompts/hypotheses_user.txt) + [`hypotheses_schema.txt`](prompts/hypotheses_schema.txt) |
 | `аудиторское мнение` | [`opinion_system.txt`](prompts/opinion_system.txt) | [`opinion_user.txt`](prompts/opinion_user.txt) + [`opinion_sections.txt`](prompts/opinion_sections.txt) |
 | `аудиторское заключение` | [`conclusion_system.txt`](prompts/conclusion_system.txt) | [`conclusion_user.txt`](prompts/conclusion_user.txt) + [`conclusion_sections.txt`](prompts/conclusion_sections.txt) |
-| `вопрос …` | [`ask_system.txt`](prompts/ask_system.txt) | [`ask_user.txt`](prompts/ask_user.txt) |
+| `вопрос …` | [`ask_system.txt`](prompts/ask_system.txt) | [`ask_user.txt`](prompts/ask_user.txt) + отказ [`ask_refuse.txt`](prompts/ask_refuse.txt) |
 | Обычный чат без команд | [`chat_system.txt`](prompts/chat_system.txt) | история сообщений |
 | `помощь` | — | [`pipe_help.txt`](prompts/pipe_help.txt) (текст Pipe, не LLM) |
 | RAG Open WebUI (# коллекция) | — | [`rag_template.txt`](prompts/rag_template.txt) |
@@ -390,19 +390,19 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 ## 5. Вопрос по базе (`вопрос …`)
 
-Ответ по карточкам + дословным фрагментам индекса. Без префикса `вопрос` этот промпт не вызывается.
+Ответ **только** по дословным фрагментам индекса. Карточки саммари в ask-контекст не кладутся. Если retrieval пустой или ниже порога — HTTP 200, `refused=true`, фиксированный текст `ask_refuse.txt`, модель не вызывается.
 
-**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{question}`, `{summary_block}`, `{context}`.
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{question}`, `{context}`.
 
 ### `ask_system.txt`
 
 ```
 Ты — ассистент внутреннего аудитора банка РБ.
-Отвечай на вопрос по дословным фрагментам из базы знаний. Карточки актов — только ориентир, какой это документ.
+Отвечай ТОЛЬКО по дословным фрагментам ниже. Карточек саммари нет и брать из них нечего.
 Правила:
-1. Номер статьи, пункта, дату и формулировку нормы бери только из дословных фрагментов. Не подставляй соседнюю статью и не бери номер из карточки.
+1. Номер статьи, пункта, дату и формулировку нормы бери только из дословных фрагментов. Не подставляй соседнюю статью.
 2. Цитируй полное название документа и статью/пункт.
-3. Если во фрагментах нет ответа — так и скажи. Можно добавить общую оговорку из своих знаний, явно пометив «не из базы НПА».
+3. Если во фрагментах нет ответа — откажись одной фразой. Не добавляй «общую оговорку из знаний», не вспоминай ГК/НК/IFRS/РФ.
 4. Не выдумывай номера норм.
 ```
 
@@ -413,8 +413,17 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 Ключевые слова: {keywords}
 Вопрос аудитора: {question}
 
-{summary_block}Дословные фрагменты (из них бери статью/пункт):
+Дословные фрагменты (из них бери статью/пункт; если ответа нет — откажись):
 {context}
+```
+
+### `ask_refuse.txt`
+
+Фиксированный ответ при пустой/слабой выборке. Модель не вызывается.
+
+```
+В приложенных документах кейса нет фрагмента, который отвечает на этот вопрос.
+Я не подставляю статью из памяти модели. Уточните акт (`утверждаю` / `скачай`) или переформулируйте вопрос — например, укажите номер статьи.
 ```
 
 ---

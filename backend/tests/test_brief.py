@@ -7,6 +7,7 @@ from unittest.mock import patch
 from app.models import CaseState, KnowledgeItem, ProposedDocument
 from app.services.brief_docx import write_brief_docx
 from app.services.brief_flow import collect_brief_sources
+from app.services.chunker import normalize_npa_text
 from app.services.citations import excerpt_for_cite, extract_article_ref, origin_url, pages_estimate
 from app.services.knowledge_flow import fragments_from_item
 
@@ -24,6 +25,13 @@ class TestArticleRef(unittest.TestCase):
 
     def test_none_when_empty(self):
         self.assertIsNone(extract_article_ref("просто абзац без номера"))
+
+    def test_markdown_heading(self):
+        self.assertIn("625", extract_article_ref("## Статья 625. Договор аренды") or "")
+
+    def test_normalize_npa_heading(self):
+        out = normalize_npa_text("Статья 625. Договор аренды\nтекст")
+        self.assertTrue(out.startswith("## Статья 625"))
 
 
 class TestExcerpt(unittest.TestCase):
