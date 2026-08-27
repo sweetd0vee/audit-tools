@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,28 @@ class Settings(BaseSettings):
     # SearXNG (self-hosted)
     searxng_url: str = "http://localhost:8080/search"
     searxng_timeout_sec: float = 30.0
+
+    # Off: SearXNG + official site search only. On: also DuckDuckGo HTML + Bing
+    # (act title leaves the contour). Recall vs locality — not both.
+    npa_web_fallback: bool = False
+
+    # Browser origins allowed to call the API. Loopback only by default.
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text or text.startswith("["):
+                return value
+            return [item.strip() for item in text.split(",") if item.strip()]
+        return value
 
     # Only these domains may be searched / downloaded
     domain_allowlist: list[str] = [

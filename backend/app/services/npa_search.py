@@ -15,7 +15,9 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from app.config import settings
 from app.domains import host_allowed
+from app.services.allowlist_http import allowlisted_get
 from app.services.downloader import usable_url
 from app.services.http_constants import BROWSER_HEADERS, NEWS_MARKERS
 from app.services.searxng_client import search_searxng
@@ -208,19 +210,38 @@ async def find_candidate_urls(
     return [(url, source) for score, url, source in ranked if score >= 20][:MAX_CANDIDATES]
 
 
+_fallback_warned = False
+
+
 async def _search_engines(query: str) -> list[tuple[str, str, str]]:
-    tasks = [
-        _safe_hits("searxng", _from_searxng, query),
-        _safe_hits("duckduckgo", _from_html_search, query, "https://html.duckduckgo.com/html/", True, None),
-        _safe_hits(
-            "bing",
-            _from_html_search,
-            query,
-            "https://www.bing.com/search",
-            False,
-            {"setlang": "ru", "cc": "by", "mkt": "ru-BY"},
-        ),
-    ]
+    global _fallback_warned
+    tasks = [_safe_hits("searxng", _from_searxng, query)]
+    if settings.npa_web_fallback:
+        if not _fallback_warned:
+            logger.warning(
+                "NPA_WEB_FALLBACK is on: act titles are sent to DuckDuckGo and Bing"
+            )
+            _fallback_warned = True
+        tasks.extend(
+            [
+                _safe_hits(
+                    "duckduckgo",
+                    _from_html_search,
+                    query,
+                    "https://html.duckduckgo.com/html/",
+                    True,
+                    None,
+                ),
+                _safe_hits(
+                    "bing",
+                    _from_html_search,
+                    query,
+                    "https://www.bing.com/search",
+                    False,
+                    {"setlang": "ru", "cc": "by", "mkt": "ru-BY"},
+                ),
+            ]
+        )
     buckets = await asyncio.gather(*tasks)
     out: list[tuple[str, str, str]] = []
     for bucket in buckets:
@@ -309,10 +330,10 @@ async def _from_get_search(
 ) -> list[tuple[str, str, str]]:
     async with httpx.AsyncClient(
         timeout=20.0,
-        follow_redirects=True,
+        follow_redirects=False,
         headers=BROWSER_HEADERS,
     ) as client:
-        resp = await client.get(endpoint, params=params)
+        resp = await allowlisted_get(client, endpoint, params=params)
         resp.raise_for_status()
         return _links_from_page(source, resp.text, str(resp.url))
 

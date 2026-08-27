@@ -6,9 +6,12 @@ name: ai-auditor
 # или задайте OLLAMA_HOST=0.0.0.0:11434, иначе контейнеры не достучатся.
 #
 # Продукт:  docker compose up -d --build
-#           http://localhost:3000  (Open WebUI)
-# API:      http://localhost:8100/docs
-# Поиск:    http://localhost:8080  (внутренний, не для аудитора)
+#           http://localhost:3000  (Open WebUI, только loopback)
+# API:      http://localhost:8100/docs  (только loopback)
+# SearXNG не публикуется — backend ходит по сети compose.
+#
+# Полнота библиотеки vs контур: NPA_WEB_FALLBACK=true в .env
+# отправит названия актов в DuckDuckGo и Bing. По умолчанию выкл.
 #
 # Засев чата: seed/openwebui/seed_pipe.py (сервис pipe-seed при up)
 # Админский гайд (числа RAG, модели, Pipe): docs/OPENWEBUI.md
@@ -20,12 +23,10 @@ services:
     image: searxng/searxng:latest
     container_name: searxng
     restart: unless-stopped
-    ports:
-      - "8080:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_BASE_URL=http://searxng:8080/
       - SEARXNG_LIMITER=false
     networks:
       - ai-auditor
@@ -35,7 +36,7 @@ services:
     container_name: open-webui
     restart: unless-stopped
     ports:
-      - "3000:8080"
+      - "127.0.0.1:3000:8080"
     volumes:
       - open-webui-data:/app/backend/data
     extra_hosts:
@@ -97,7 +98,7 @@ services:
     container_name: audit-tools
     restart: unless-stopped
     ports:
-      - "8100:8100"
+      - "127.0.0.1:8100:8100"
     volumes:
       - ./backend/data:/app/data
       - ./backend/app:/app/app
@@ -116,6 +117,7 @@ services:
       - OPENWEBUI_API_KEY=${OPENWEBUI_API_KEY:-}
       - PROMPTS_DIR=/app/prompts
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - NPA_WEB_FALLBACK=${NPA_WEB_FALLBACK:-false}
     depends_on:
       - searxng
       - open-webui
@@ -129,7 +131,7 @@ services:
     container_name: audit-tools-ui
     restart: unless-stopped
     ports:
-      - "5174:80"
+      - "127.0.0.1:5174:80"
     depends_on:
       - backend
     networks:

@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from app.config import settings
 from app.domains import host_allowed
 from app.filenames import slugify
+from app.services.allowlist_http import allowlisted_get
 from app.services.http_constants import DOWNLOAD_BROWSER_HEADERS, NEWS_MARKERS
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def _safe_filename(title: str, url: str, index: int) -> str:
 
 
 async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, bytes, str]:
-    resp = await client.get(url)
+    resp = await allowlisted_get(client, url)
     resp.raise_for_status()
     final_url = str(resp.url)
     if "404.php" in final_url.lower():
@@ -132,7 +133,7 @@ async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict
 
     async with httpx.AsyncClient(
         timeout=settings.download_timeout_sec,
-        follow_redirects=True,
+        follow_redirects=False,
         headers=DOWNLOAD_BROWSER_HEADERS,
     ) as client:
         final_url, content, content_type = await _fetch(client, url)
