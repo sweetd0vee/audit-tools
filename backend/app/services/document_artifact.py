@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -220,7 +221,8 @@ def reuse_artifact_events(
 ) -> list[dict[str, Any]] | None:
     if force or stale:
         return None
-    meta = artifact_status(case_id, spec)
+    meta = dict(artifact_status(case_id, spec))
+    meta["reused"] = True
     return [
         sse_status(elapsed_ms, already_message),
         sse_result(elapsed_ms, meta, digest=[]),
@@ -295,6 +297,7 @@ async def run_llm_artifact_events(
     prepare_message: str | None = None,
     prepare: Callable[[CaseState], Any] | None = None,
     postprocess: Callable[[Any], Any] | None = None,
+    heartbeat_sec: float = 5.0,
 ) -> AsyncIterator[dict]:
     """Shared stale → SSE → LLM → files → meta loop for Word/Excel artifacts.
 
@@ -343,7 +346,16 @@ async def run_llm_artifact_events(
                 else:
                     result = item
         else:
-            result = await compose(state, ctx)
+            async for event in _await_compose_with_heartbeat(
+                compose(state, ctx),
+                elapsed=elapsed,
+                message=message,
+                heartbeat_sec=heartbeat_sec,
+            ):
+                if event.get("type") == "status":
+                    yield event
+                else:
+                    result = event.get("result")
     except ValueError:
         raise
     except Exception as exc:
@@ -358,6 +370,8 @@ async def run_llm_artifact_events(
     outcome = write(state, paths, result, ctx)
     sources_payload = outcome.sources if outcome.sources_file is None else outcome.sources_file
     write_sources_json(paths.sources, sources_payload)
+    extra = dict(outcome.extra or {})
+    extra["built_elapsed_ms"] = elapsed()
     meta = save_artifact_meta(
         state,
         spec,
@@ -365,6 +379,31 @@ async def run_llm_artifact_events(
         md=paths.md,
         sources=outcome.sources,
         body=outcome.body,
-        extra=outcome.extra,
+        extra=extra,
     )
     yield sse_result(elapsed(), meta, digest=outcome.digest)
+
+
+async def _await_compose_with_heartbeat(
+    coro: Awaitable[Any],
+    *,
+    elapsed: Callable[[], int],
+    message: str,
+    heartbeat_sec: float,
+) -> AsyncIterator[dict[str, Any]]:
+    task = asyncio.create_task(coro)
+    try:
+        while not task.done():
+            timeout = heartbeat_sec if heartbeat_sec > 0 else None
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError:
+                yield sse_status(elapsed(), message)
+        yield {"type": "compose", "result": task.result()}
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass

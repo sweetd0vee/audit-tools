@@ -232,7 +232,21 @@ def _digest(chapters: list[dict], limit: int = 6) -> list[str]:
     return out
 
 
-def _save_brief_meta(state, *, docx: Path, md: Path, sources: list[dict], body: str) -> dict:
+def _save_brief_meta(
+    state,
+    *,
+    docx: Path,
+    md: Path,
+    sources: list[dict],
+    body: str,
+    elapsed_ms: int | None = None,
+) -> dict:
+    extra = {
+        "items": knowledge_ok_count(state),
+        "schema": BRIEF_SCHEMA,
+    }
+    if elapsed_ms is not None:
+        extra["built_elapsed_ms"] = elapsed_ms
     return save_artifact_meta(
         state,
         BRIEF_SPEC,
@@ -240,10 +254,7 @@ def _save_brief_meta(state, *, docx: Path, md: Path, sources: list[dict], body: 
         md=md,
         sources=sources,
         body=body,
-        extra={
-            "items": knowledge_ok_count(state),
-            "schema": BRIEF_SCHEMA,
-        },
+        extra=extra,
     )
 
 
@@ -291,17 +302,20 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         async def on_status(msg: str, q: asyncio.Queue[str] = status_q) -> None:
             await q.put(msg)
 
-        yield sse_status(elapsed(), f"Саммари акта {idx} из {total}: {item.title}")
+        last = f"Саммари акта {idx} из {total}: {item.title}"
+        yield sse_status(elapsed(), last)
         task = asyncio.create_task(summarize_item(state, item, on_status=on_status))
         while True:
             if task.done() and status_q.empty():
                 break
             try:
-                msg = await asyncio.wait_for(status_q.get(), timeout=0.5)
+                msg = await asyncio.wait_for(status_q.get(), timeout=5.0)
+                last = msg
                 yield sse_status(elapsed(), msg)
             except asyncio.TimeoutError:
                 if task.done():
                     break
+                yield sse_status(elapsed(), last)
         await task
         store.save(state)
 
@@ -346,7 +360,12 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
     )
     write_sources_json(paths.sources, sources)
     meta = _save_brief_meta(
-        state, docx=paths.primary, md=paths.md, sources=sources, body=body_for_pages
+        state,
+        docx=paths.primary,
+        md=paths.md,
+        sources=sources,
+        body=body_for_pages,
+        elapsed_ms=elapsed(),
     )
     yield sse_result(elapsed(), meta, digest=_digest(chapters))
 

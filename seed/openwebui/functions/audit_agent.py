@@ -581,7 +581,13 @@ class Pipe:
                             continue
                         kind = event.get("type")
                         if kind == "status":
-                            await _status(emitter, event.get("message") or fallback_status)
+                            await _status(
+                                emitter,
+                                _with_elapsed(
+                                    event.get("message") or fallback_status,
+                                    event.get("elapsed_ms"),
+                                ),
+                            )
                         elif kind == "error":
                             raise RuntimeError(event.get("message") or f"{endpoint} error")
                         elif kind == "result":
@@ -604,10 +610,13 @@ class Pipe:
                 name = state.get("inspection_name") or "proverka"
             except Exception:
                 name = "proverka"
-        return (
-            f"{_download_links(public, case_id, name, with_archive=False, **link_flags)}\n"
-            f"<!--audit-case:{case_id}-->"
-        )
+        parts = []
+        footer = _elapsed_footer(result)
+        if footer:
+            parts.append(footer)
+        parts.append(_download_links(public, case_id, name, with_archive=False, **link_flags))
+        parts.append(f"<!--audit-case:{case_id}-->")
+        return "\n".join(parts)
 
     def _brief_timeout(self, timeout: float) -> float:
         return max(timeout, float(self.valves.BRIEF_TIMEOUT_SEC))
@@ -933,6 +942,48 @@ def _case_id_from_messages(messages: list) -> Optional[str]:
         if found:
             return found[-1]
     return None
+
+
+def _format_elapsed(ms: Any) -> str:
+    try:
+        total = int(ms)
+    except (TypeError, ValueError):
+        return ""
+    if total < 0:
+        total = 0
+    seconds = (total + 500) // 1000
+    if seconds < 1:
+        return ""
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    if secs or not parts:
+        parts.append(f"{secs} с")
+    return " ".join(parts)
+
+
+def _with_elapsed(message: str, elapsed_ms: Any) -> str:
+    label = _format_elapsed(elapsed_ms)
+    if not label:
+        return message
+    return f"{message} · {label}"
+
+
+def _elapsed_footer(result: dict[str, Any]) -> str:
+    reused = bool(result.get("reused"))
+    built = _format_elapsed(result.get("built_elapsed_ms"))
+    current = _format_elapsed(result.get("elapsed_ms"))
+    if reused:
+        if built:
+            return f"Файл уже был готов. В прошлый раз генерация заняла {built}."
+        return "Файл уже был готов."
+    if current:
+        return f"Сгенерировано за {current}."
+    return ""
 
 
 def _file_stem(inspection_name: str) -> str:

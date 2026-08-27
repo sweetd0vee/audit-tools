@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import tempfile
 import unittest
@@ -89,7 +90,7 @@ class TestReuseArtifact(unittest.TestCase):
                     md=md,
                     sources=[],
                     body="ok",
-                    extra={"schema": 1},
+                    extra={"schema": 1, "built_elapsed_ms": 123000},
                 )
                 events = reuse_artifact_events(
                     state.case_id,
@@ -106,6 +107,9 @@ class TestReuseArtifact(unittest.TestCase):
             self.assertEqual(events[1]["type"], "result")
             self.assertEqual(events[1]["digest"], [])
             self.assertTrue(events[1]["ready"])
+            self.assertTrue(events[1]["reused"])
+            self.assertEqual(events[1]["built_elapsed_ms"], 123000)
+            self.assertEqual(events[1]["elapsed_ms"], 9)
 
 
 class TestCompleteLlm(unittest.IsolatedAsyncioTestCase):
@@ -216,7 +220,10 @@ class TestRunLlmArtifactEvents(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["citations"], 1)
             self.assertTrue(result["ready"])
             saved = store.get(state.case_id)
-            self.assertEqual((saved.meta.get("probe") or {}).get("schema"), 1)
+            probe = saved.meta.get("probe") or {}
+            self.assertEqual(probe.get("schema"), 1)
+            self.assertIsInstance(probe.get("built_elapsed_ms"), int)
+            self.assertGreaterEqual(probe["built_elapsed_ms"], 0)
             sources = Path((saved.meta["probe"]["docx_path"])).with_name("probe_sources.json")
             self.assertTrue(sources.exists())
 
@@ -254,6 +261,43 @@ class TestRunLlmArtifactEvents(unittest.IsolatedAsyncioTestCase):
                         statuses.append(event["message"])
 
             self.assertIn("дописываю наблюдения", statuses)
+            self.assertEqual(statuses[-1], "файл")
+
+    async def test_heartbeat_status_while_compose_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CaseStore(root=Path(tmp))
+            state = store.create("Проверка аренды", ["аренда"])
+            statuses: list[str] = []
+
+            async def compose(_state, _ctx):
+                await asyncio.sleep(0.16)
+                return "тело"
+
+            def write(_state, paths, raw, _ctx):
+                paths.md.write_text(raw, encoding="utf-8")
+                paths.primary.write_bytes(b"PK")
+                return ArtifactOutcome(body=raw, sources=[])
+
+            with patch("app.services.document_artifact.store", store):
+                async for event in run_llm_artifact_events(
+                    state.case_id,
+                    SPEC,
+                    force=True,
+                    start_message="старт",
+                    already_message="уже",
+                    writing_message="файл",
+                    load_state=store.get,
+                    is_stale=lambda _s: True,
+                    compose=compose,
+                    write=write,
+                    compose_fail="fail",
+                    compose_message="пишу",
+                    heartbeat_sec=0.05,
+                ):
+                    if event.get("type") == "status":
+                        statuses.append(event["message"])
+
+            self.assertGreaterEqual(statuses.count("пишу"), 2)
             self.assertEqual(statuses[-1], "файл")
 
 

@@ -227,6 +227,39 @@ class TestPipePaste(unittest.TestCase):
         self.assertIn("class Cmd:", source)
         self.assertNotIn("from intent import", source)
         self.assertIn("NEW_CASE_START_RE", source)
+        self.assertIn("def _format_elapsed(", source)
+        self.assertIn("Сгенерировано за", source)
+
+
+class TestPipeElapsed(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.agent = _load(FUNCTIONS / "audit_agent.py", "audit_agent")
+
+    def test_format_elapsed(self):
+        fmt = self.agent._format_elapsed
+        self.assertEqual(fmt(None), "")
+        self.assertEqual(fmt("x"), "")
+        self.assertEqual(fmt(0), "")
+        self.assertEqual(fmt(400), "")
+        self.assertEqual(fmt(1000), "1 с")
+        self.assertEqual(fmt(61000), "1 мин 1 с")
+        self.assertEqual(fmt(3723000), "1 ч 2 мин 3 с")
+
+    def test_status_and_footer(self):
+        with_elapsed = self.agent._with_elapsed
+        footer = self.agent._elapsed_footer
+        self.assertEqual(with_elapsed("пишу", 400), "пишу")
+        self.assertEqual(with_elapsed("пишу", 61000), "пишу · 1 мин 1 с")
+        self.assertEqual(
+            footer({"elapsed_ms": 125000}),
+            "Сгенерировано за 2 мин 5 с.",
+        )
+        self.assertEqual(
+            footer({"reused": True, "built_elapsed_ms": 125000, "elapsed_ms": 9}),
+            "Файл уже был готов. В прошлый раз генерация заняла 2 мин 5 с.",
+        )
+        self.assertEqual(footer({"reused": True, "elapsed_ms": 9}), "Файл уже был готов.")
 
 
 if __name__ == "__main__":
