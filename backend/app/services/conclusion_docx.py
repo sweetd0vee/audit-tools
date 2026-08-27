@@ -7,13 +7,14 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
 from app.services.brief_docx import (
     _add_opinion_paragraph,
+    _add_program_table,
     _set_cell_borders,
     _set_cell_width,
     _set_document_base_font,
@@ -21,6 +22,7 @@ from app.services.brief_docx import (
     _set_table_borders,
     _set_tbl_grid,
     _strip_md,
+    add_bookmark,
     add_opinion_markdown,
 )
 
@@ -30,19 +32,14 @@ _COVER_TITLE = "Аудиторское заключение"
 _COVER_DEPT = "Департамент внутреннего аудита"
 _COVER_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "conclusion_cover.png"
 _COVER_DRAWING_ID = 100
-_TOC_HEADING = "Разделы аудиторского заключения"
+_TOC_HEADING = "Содержание"
 _SECTION_I = "Аудиторское мнение по итогам проверки."
 _SECTION_II = "Основные результаты аудита и итоговые аудиторские рекомендации."
-_SECTION_III = (
+_SECTION_III = "Наблюдения по итогам проверки."
+_SECTION_III_TAX = (
     "Оценка соответствия деятельности принципам налогообложения и защиты прав плательщиков."
 )
 _SECTION_LAST = "Общая информация об аудиторской проверке."
-_CANONICAL_TOC: list[tuple[str, str]] = [
-    ("I", _SECTION_I),
-    ("II", _SECTION_II),
-    ("III", _SECTION_III),
-    ("IV", _SECTION_LAST),
-]
 _ROMAN = [
     "",
     "I",
@@ -78,9 +75,11 @@ _MATERIALITY_RE = re.compile(
 _HYP_RE = re.compile(r"^гипотеза:\s*(\d+)\b", re.I)
 _REC_RE = re.compile(r"^(?:аудиторская\s+)?рекомендация:\s*(.*)$", re.I)
 _SKIP_FIELD_RE = re.compile(
-    r"^(аудитор|объект аудита|руководитель объекта|срок)\b",
+    r"^(аудитор|объект аудита|руководитель объекта|срок|программа)\b",
     re.I,
 )
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+_TAX_HINTS = ("налог", "ндс", "плательщик", "налогооблож")
 _GENERAL_LABELS = (
     "Основание проведения аудита",
     "Срок проведения",
@@ -165,7 +164,34 @@ def _is_section_ii(title: str) -> bool:
 
 def _is_section_iii(title: str) -> bool:
     low = (title or "").lower()
+    return (
+        "наблюдения по итогам" in low
+        or "принципам налогообложения" in low
+        or "защиты прав плательщиков" in low
+    )
+
+
+def _is_tax_template_title(title: str) -> bool:
+    low = (title or "").lower()
     return "принципам налогообложения" in low or "защиты прав плательщиков" in low
+
+
+def _inspection_is_tax(inspection: str | None) -> bool:
+    low = (inspection or "").lower()
+    return any(hint in low for hint in _TAX_HINTS)
+
+
+def default_section_iii_title(inspection: str | None = None) -> str:
+    if _inspection_is_tax(inspection):
+        return _SECTION_III_TAX
+    return _SECTION_III
+
+
+def _dot_title(title: str) -> str:
+    heading = (title or "").strip()
+    if heading and not heading.endswith("."):
+        heading += "."
+    return heading
 
 
 def _is_general(title: str) -> bool:
@@ -290,6 +316,7 @@ def fallback_from_hypotheses(
     *,
     leftover: str = "",
     period: str | None = None,
+    inspection_name: str | None = None,
 ) -> ConclusionDocument:
     observations: list[Observation] = []
     leftover_body = _clean_paragraphs(leftover)
@@ -341,7 +368,7 @@ def fallback_from_hypotheses(
         sections=[
             ReportSection(
                 roman="III",
-                title=_SECTION_III.rstrip("."),
+                title=default_section_iii_title(inspection_name).rstrip("."),
                 observations=observations,
                 kind="observations",
             ),
@@ -360,6 +387,7 @@ def parse_conclusion_markdown(
     *,
     hypotheses: list[dict[str, str]] | None = None,
     period: str | None = None,
+    inspection_name: str | None = None,
 ) -> ConclusionDocument:
     hypotheses = hypotheses or []
     lines = (md or "").splitlines()
@@ -470,9 +498,15 @@ def parse_conclusion_markdown(
     observation_sections = [s for s in sections if s.kind == "observations" and s.observations]
     if not observation_sections:
         leftover_text = _clean_paragraphs("\n".join(leftovers))
-        return fallback_from_hypotheses(hypotheses, leftover=leftover_text, period=period)
+        return fallback_from_hypotheses(
+            hypotheses, leftover=leftover_text, period=period, inspection_name=inspection_name
+        )
 
-    return ConclusionDocument(sections=_canonicalize_report(sections, period=period))
+    return ConclusionDocument(
+        sections=_canonicalize_report(
+            sections, period=period, inspection_name=inspection_name
+        )
+    )
 
 
 def _roman_to_int(value: str) -> int:
@@ -489,14 +523,18 @@ def _canonicalize_report(
     sections: list[ReportSection],
     *,
     period: str | None = None,
+    inspection_name: str | None = None,
 ) -> list[ReportSection]:
     observations: list[Observation] = []
     intro_parts: list[str] = []
     general: ReportSection | None = None
+    first_title = ""
     for section in sections:
         if section.kind == "general":
             general = section
             continue
+        if not first_title and section.title:
+            first_title = section.title
         if section.intro:
             intro_parts.append(section.intro)
         observations.extend(section.observations)
@@ -510,9 +548,12 @@ def _canonicalize_report(
     else:
         general.roman = "IV"
         general.title = _SECTION_LAST.rstrip(".")
+    title = first_title.strip() or default_section_iii_title(inspection_name)
+    if _is_tax_template_title(title) and not _inspection_is_tax(inspection_name):
+        title = default_section_iii_title(inspection_name)
     obs = ReportSection(
         roman="III",
-        title=_SECTION_III.rstrip("."),
+        title=title.rstrip("."),
         intro=_clean_paragraphs("\n\n".join(intro_parts)),
         observations=observations,
         kind="observations",
@@ -522,8 +563,82 @@ def _canonicalize_report(
     return [obs, general]
 
 
-def toc_entries(_doc: ConclusionDocument | None = None) -> list[tuple[str, str]]:
-    return list(_CANONICAL_TOC)
+def iter_observations(report: ConclusionDocument) -> list[Observation]:
+    out: list[Observation] = []
+    for section in report.sections:
+        out.extend(section.observations)
+    return out
+
+
+def missing_hypothesis_rows(
+    report: ConclusionDocument,
+    hypotheses: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    unused = list(hypotheses)
+    unused_ns = [str(row.get("n") or "") for row in unused]
+    for obs in iter_observations(report):
+        n = str(obs.hypothesis_n or "").strip()
+        if n and n in unused_ns:
+            idx = unused_ns.index(n)
+            unused.pop(idx)
+            unused_ns.pop(idx)
+        elif unused:
+            row = unused.pop(0)
+            unused_ns.pop(0)
+            obs.hypothesis_n = str(row.get("n") or obs.hypothesis_n)
+    return unused
+
+
+def ensure_all_hypotheses(
+    report: ConclusionDocument,
+    hypotheses: list[dict[str, str]],
+    *,
+    period: str | None = None,
+    inspection_name: str | None = None,
+) -> ConclusionDocument:
+    missing = missing_hypothesis_rows(report, hypotheses)
+    if not missing:
+        if iter_observations(report):
+            return ConclusionDocument(
+                sections=_canonicalize_report(
+                    report.sections, period=period, inspection_name=inspection_name
+                )
+            )
+        return fallback_from_hypotheses(
+            hypotheses, period=period, inspection_name=inspection_name
+        )
+    extra = fallback_from_hypotheses(
+        missing, period=period, inspection_name=inspection_name
+    )
+    extra_obs = iter_observations(extra)
+    sections = list(report.sections)
+    obs_sec = next((section for section in sections if section.kind == "observations"), None)
+    if obs_sec is None:
+        sections = extra.sections + [
+            section for section in sections if section.kind == "general"
+        ]
+    else:
+        obs_sec.observations.extend(extra_obs)
+    return ConclusionDocument(
+        sections=_canonicalize_report(
+            sections, period=period, inspection_name=inspection_name
+        )
+    )
+
+
+def toc_entries(doc: ConclusionDocument | None = None, **_: object) -> list[tuple[str, str]]:
+    title = _SECTION_III
+    if doc is not None:
+        for section in doc.sections:
+            if section.kind == "observations" and section.title:
+                title = _dot_title(section.title)
+                break
+    return [
+        ("I", _SECTION_I),
+        ("II", _SECTION_II),
+        ("III", title if title.endswith(".") else title + "."),
+        ("IV", _SECTION_LAST),
+    ]
 
 
 def _add_runs(paragraph, parts: list[tuple[str, dict]], *, font: str) -> None:
