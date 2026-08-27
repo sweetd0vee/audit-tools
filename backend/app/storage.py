@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -56,6 +57,16 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding=encoding)
+    last_error: OSError | None = None
+    for _ in range(8):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.02)
+    if last_error is not None:
+        raise last_error
     os.replace(tmp, path)
 
 
@@ -135,9 +146,10 @@ class CaseStore:
 
     def get(self, case_id: str) -> CaseState:
         path = self._state_path(case_id)
-        if not path.exists():
-            raise FileNotFoundError(f"Case not found: {case_id}")
-        return CaseState.model_validate_json(path.read_text(encoding="utf-8"))
+        with thread_lock(case_id):
+            if not path.exists():
+                raise FileNotFoundError(f"Case not found: {case_id}")
+            return CaseState.model_validate_json(path.read_text(encoding="utf-8"))
 
     def list_cases(self) -> list[CaseState]:
         cases: list[CaseState] = []

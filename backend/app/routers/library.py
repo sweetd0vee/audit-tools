@@ -8,7 +8,6 @@ from fastapi.responses import FileResponse
 from app import __version__
 from app.http import locked_events, require_case, sse_response
 from app.models import (
-    CaseStatus,
     CaseSummary,
     CreateCaseRequest,
     CreateCaseResponse,

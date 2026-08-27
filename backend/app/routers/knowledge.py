@@ -578,7 +578,8 @@ async def owui_sync(case_id: str, body: Optional[OpenWebUISyncRequest] = None):
     require_case(case_id)
     key = (body.api_key if body else None) or None
     try:
-        return await sync_openwebui(case_id, key)
+        async with async_lock(case_id):
+            return await sync_openwebui(case_id, key)
     except OpenWebUIError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as extra:  # noqa: BLE001

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from app.clock import utc_now
-
 from app.config import settings
 from app.models import CaseState
 from app.prompts import prompt

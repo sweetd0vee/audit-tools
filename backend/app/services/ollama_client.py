@@ -27,6 +27,13 @@ def _ollama_client(timeout: float | None) -> httpx.AsyncClient:
     return client
 
 
+async def close_clients() -> None:
+    clients = list(_CLIENTS.values())
+    _CLIENTS.clear()
+    for client in clients:
+        await client.aclose()
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     parsed = extract_json_value(text)
     if not isinstance(parsed, dict):
@@ -306,13 +313,16 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     client = _ollama_client(settings.embed_timeout_sec)
     resp = await client.post(f"{settings.ollama_base_url}/api/embed", json=payload)
     if resp.status_code == 404:
-        resp = await client.post(
-            f"{settings.ollama_base_url}/api/embeddings",
-            json={"model": settings.ollama_embed_model, "prompt": texts[0]},
-        )
-        resp.raise_for_status()
-        one = resp.json().get("embedding") or []
-        return [one]
+        vectors: list[list[float]] = []
+        for text in texts:
+            legacy = await client.post(
+                f"{settings.ollama_base_url}/api/embeddings",
+                json={"model": settings.ollama_embed_model, "prompt": text},
+            )
+            legacy.raise_for_status()
+            one = legacy.json().get("embedding") or []
+            vectors.append(list(map(float, one)))
+        return vectors
     resp.raise_for_status()
     data = resp.json()
     vectors = data.get("embeddings") or []

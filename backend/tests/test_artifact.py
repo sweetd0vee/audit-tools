@@ -10,6 +10,7 @@ from app.models import CaseState
 from app.services.document_artifact import (
     ArtifactOutcome,
     ArtifactSpec,
+    ComposeNotice,
     artifact_stale,
     case_stale_extra,
     complete_llm,
@@ -218,6 +219,42 @@ class TestRunLlmArtifactEvents(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((saved.meta.get("probe") or {}).get("schema"), 1)
             sources = Path((saved.meta["probe"]["docx_path"])).with_name("probe_sources.json")
             self.assertTrue(sources.exists())
+
+    async def test_compose_notice_emits_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CaseStore(root=Path(tmp))
+            state = store.create("Проверка аренды", ["аренда"])
+            statuses: list[str] = []
+
+            async def compose(_state, _ctx):
+                yield ComposeNotice("дописываю наблюдения")
+                yield "тело"
+
+            def write(_state, paths, raw, _ctx):
+                paths.md.write_text(raw, encoding="utf-8")
+                paths.primary.write_bytes(b"PK")
+                return ArtifactOutcome(body=raw, sources=[], digest=["- x"])
+
+            with patch("app.services.document_artifact.store", store):
+                async for event in run_llm_artifact_events(
+                    state.case_id,
+                    SPEC,
+                    force=True,
+                    start_message="старт",
+                    already_message="уже",
+                    writing_message="файл",
+                    load_state=store.get,
+                    is_stale=lambda _s: True,
+                    compose=compose,
+                    write=write,
+                    compose_fail="fail",
+                    compose_message="пишу",
+                ):
+                    if event.get("type") == "status":
+                        statuses.append(event["message"])
+
+            self.assertIn("дописываю наблюдения", statuses)
+            self.assertEqual(statuses[-1], "файл")
 
 
 class TestKnowledgeSplit(unittest.TestCase):
