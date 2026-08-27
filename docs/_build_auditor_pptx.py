@@ -166,7 +166,7 @@ def chevron(slide, l, t, w, h, fill, text, tsize=11, tcolor=WHITE):
     return s
 
 
-TOTAL = 19
+TOTAL = 20
 
 
 def build():
@@ -178,18 +178,17 @@ def build():
     s = new_dark(prs)
     _rect(s, 0, 0, Inches(0.18), H, GOLD)
     _textbox(s, Inches(0.7), Inches(1.35), Inches(12), Inches(0.35),
-             "ВНУТРЕННИЙ АУДИТ  ·  БАНК РБ  ·  ОН-ПРЕМ  ·  OPEN WEBUI PIPE",
+             "ВНУТРЕННИЙ АУДИТ  ·  БАНК РБ  ·  ОН-ПРЕМ  ·  КОРОБКА ИЗ ГОТОВЫХ ИНСТРУМЕНТОВ",
              12, GOLD, bold=True)
     _textbox(s, Inches(0.7), Inches(1.85), Inches(12), Inches(1.3),
              "Аудитор", 54, WHITE, bold=True)
     _textbox(s, Inches(0.7), Inches(3.15), Inches(11.5), Inches(1.1),
-             "ИИ-агент сопровождения внутренней аудиторской проверки.\nНе чат с моделью — цикл с руками, стоп-краном и системой записи.",
+             "Коробочный ИИ-агент внутренней аудиторской проверки.\nМинимум своего кода. Максимум качества из готового стека.",
              20, RGBColor(0xD5, 0xE0, 0xEA))
-    # chips
     chips = [
         ("Коробка", "compose up → :3000"),
-        ("Pipe, не ReAct", "фаза выбирается кодом"),
-        ("HITL", "без «утверждаю» — нет скачивания"),
+        ("Готовый стек", "Open WebUI · Ollama · SearXNG"),
+        ("HITL", "модель предлагает — аудитор решает"),
         ("On-prem", "данные не уходят в облако"),
     ]
     for i, (a, b) in enumerate(chips):
@@ -207,10 +206,10 @@ def build():
     _title(s, "О чём эта презентация")
     items = [
         ("01", "Зачем", "Боль аудитора, инвариант продукта, почему не «ещё один чат»."),
-        ("02", "История и функционал", "Сеанс проверки, команды, артефакты Word / Excel / zip."),
-        ("03", "Open WebUI Pipe", "Теория Functions, реализация class Pipe, почему не native tools."),
-        ("04", "Алгоритм", "Маршрутизация фаз кодом, HITL, RAG с цитатой из утверждённого акта."),
-        ("05", "Коробка и контур", "On-prem, allowlist РБ, конфиденциальные данные, поставка."),
+        ("02", "История и функционал", "Сеанс до черновика заключения: команды, Word / Excel / zip."),
+        ("03", "Open WebUI Pipe", "Готовый Functions API. class Pipe, фазы кодом, не native tools."),
+        ("04", "Алгоритм", "Маршрутизация фаз кодом, два HITL, RAG с цитатой из утверждённого акта."),
+        ("05", "Коробка и контур", "Готовый стек, тонкий доменный слой, on-prem, поставка."),
         ("06", "Эффект", "Что автоматизируется сегодня и где человек остаётся обязательным."),
     ]
     for i, (n, h, d) in enumerate(items):
@@ -231,7 +230,7 @@ def build():
         ("01", "Вспомнить НПА", "ГК, НК, инструкции НБРБ, акты Минфина и МНС — по теме этой недели."),
         ("02", "Найти редакцию", "pravo.by / nbrb.by, актуальный текст, не методичка с форума."),
         ("03", "Вычитать кодекс", "Десятки страниц, чтобы вытащить 5–7 норм в рабочую бумагу."),
-        ("04", "Спроектировать проверку", "Программа, гипотезы, критерии — вручную, каждый раз с нуля."),
+        ("04", "Собрать документы СВА", "Программа, гипотезы, мнение, заключение — вручную, каждый раз с нуля."),
     ]
     for i, (n, h, d) in enumerate(pains):
         y = Inches(1.4) + Inches(i * 1.15)
@@ -252,27 +251,47 @@ def build():
     # ========== 4 PRODUCT ==========
     s = new_light(prs)
     _kicker(s, "Продукт")
-    _title(s, "Коробка уровня Cursor — для внутренней проверки")
-    _textbox(s, Inches(0.55), Inches(1.25), Inches(12.2), Inches(0.55),
-             "Cursor победил не тем, что написал IDE с нуля. Он взял VS Code и сделал законченный продукт. Мы делаем то же со стеком Open WebUI + Ollama + SearXNG + тонкий Audit Tool Server.",
+    _title(s, "Коробка: готовые тулзы, тонкий свой слой")
+    _textbox(s, Inches(0.55), Inches(1.22), Inches(12.2), Inches(0.4),
+             "Не пишем платформу. Берём стек, который уже умеет чат, модель и поиск. Свой код — только там, где рынка нет.",
              15, SLATE)
-    rows = [
-        ("Cursor для кода", "Аудитор для проверки"),
-        ("Поставил — открыл — пишешь", "Поставил — открыл — ведёшь проверку"),
-        ("VS Code не форкали", "Open WebUI не форкаем"),
-        ("Цитата из этого репозитория", "Цитата из этого утверждённого акта"),
-        ("Один вход: окно редактора", "Один вход: чат на :3000"),
+    cols = [
+        ("Берём готовое", [
+            "Open WebUI — чат, auth, файлы, статусы",
+            "Ollama — LLM и embedding on-prem",
+            "SearXNG — поиск по allowlist РБ",
+            "python-docx / openpyxl — Word и Excel",
+            "Docker Compose — одна команда поставки",
+        ]),
+        ("Пишем тонко", [
+            "Function Pipe «Аудитор» — один файл",
+            "Audit Tool Server — кейс и HITL",
+            "Добыча НПА РБ и нарезка по статьям",
+            "Промпты методолога внутренней проверки",
+            "Сборка .docx / .xlsx по шаблону банка",
+        ]),
+        ("Не пишем вовсе", [
+            "Свой чат и продуктовый React",
+            "Форк Open WebUI",
+            "Свой LLM-рантайм",
+            "Свой поисковик",
+            "Свой редактор рабочих бумаг",
+        ]),
     ]
-    hdr = _rect(s, Inches(0.5), Inches(1.95), Inches(12.3), Inches(0.48), NAVY)
-    _textbox(s, Inches(0.75), Inches(2.04), Inches(5.5), Inches(0.32), "Cursor", 14, WHITE, bold=True)
-    _textbox(s, Inches(6.85), Inches(2.04), Inches(5.5), Inches(0.32), "Мы", 14, GOLD, bold=True)
-    for i, (a, b) in enumerate(rows[1:], start=0):
-        y = Inches(2.43) + Inches(i * 0.7)
-        bg = CREAM if i % 2 == 0 else WHITE
-        r = _rect(s, Inches(0.5), y, Inches(12.3), Inches(0.7), bg, LINE)
-        _textbox(s, Inches(0.75), y + Inches(0.16), Inches(5.6), Inches(0.4), a, 15, INK)
-        _rect(s, Inches(6.55), y + Inches(0.18), Pt(2), Inches(0.34), GOLD)
-        _textbox(s, Inches(6.85), y + Inches(0.16), Inches(5.7), Inches(0.4), b, 15, INK, bold=True)
+    for i, (h, lines) in enumerate(cols):
+        x = Inches(0.45) + Inches(i * 4.25)
+        bg = NAVY if i == 0 else WHITE
+        c = _round(s, x, Inches(1.75), Inches(4.1), Inches(4.0), bg, None if i == 0 else LINE, adj=0.05)
+        tf = _tb(c, h, 16, GOLD if i == 0 else GOLD, bold=True)
+        tf.margin_left = Inches(0.24)
+        tf.margin_top = Inches(0.2)
+        body_c = WHITE if i == 0 else INK
+        for line in lines:
+            _add_p(tf, "·  " + line, 13, body_c, space_before=10)
+    _rect(s, Inches(0.45), Inches(5.95), Inches(12.4), Inches(0.85), CREAM, LINE)
+    _textbox(s, Inches(0.7), Inches(6.12), Inches(12.0), Inches(0.55),
+             "Принцип: минимум своего кода → максимум качества. Дефолты RAG, температура, allowlist и стоп-кран уже в коробке — аудитор не собирает стек руками.",
+             14, INK, bold=True)
     _footer(s, 4, TOTAL)
 
     # ========== 5 INVARIANT ==========
@@ -285,8 +304,8 @@ def build():
     tf.margin_left = Inches(0.45)
     tf.margin_right = Inches(0.45)
     points = [
-        ("Ускоряет", "Библиотека НПА, саммари, программа, гипотезы, вопрос по статье."),
-        ("Не подписывает", "Нет вывода «нарушение / не нарушение». Нет автоподписи WP."),
+        ("Ускоряет", "Библиотека НПА, саммари, программа, гипотезы, черновики мнения и заключения."),
+        ("Не подписывает", "Нет вывода «нарушение установлено». Нет автоподписи АЗ и WP."),
         ("Сверяется", "Блок «Откуда в базе знаний» + zip первоисточника в папке кейса."),
     ]
     for i, (h, d) in enumerate(points):
@@ -314,12 +333,11 @@ def build():
         "Вспоминаю акты по памяти и старым WP.",
         "Ищу редакции на pravo.by вкладками.",
         "Читаю ГК/НК целиком «на всякий случай».",
-        "Выписываю нормы в черновик вручную.",
-        "Программу проверки собираю с нуля.",
-        "Гипотезы — в голове или в Excel с нуля.",
+        "Программу и гипотезы собираю с нуля.",
+        "Мнение и заключение пишу вручную.",
         "Риск: устаревшая редакция или чужая юрисдикция.",
     ]:
-        _add_p(tf, "▸  " + line, 14, INK, space_before=10)
+        _add_p(tf, "▸  " + line, 14, INK, space_before=12)
 
     right = _round(s, Inches(6.8), Inches(1.75), Inches(6.0), Inches(4.95), NAVY, adj=0.05)
     tf = _tb(right, "ТЕПЕРЬ", 12, GOLD, bold=True)
@@ -327,50 +345,46 @@ def build():
     tf.margin_top = Inches(0.22)
     for line in [
         "Одной фразой описываю проверку в чате.",
-        "Модель предлагает 8–15 актов — я утверждаю номера.",
-        "Официальные тексты качаются в папку кейса.",
-        "саммари — Word на 6–10 стр. со ссылками.",
-        "программа проверки — черновик СВА в Word.",
-        "гипотезы — Excel-чеклист 8–10 пунктов.",
-        "вопрос … — норма с цитатой из этой библиотеки.",
+        "Утверждаю список НПА — без этого ничего не качается.",
+        "саммари и программа — Word со ссылками, не дамп кодекса.",
+        "гипотезы — Excel-чеклист; подтверждаю номера.",
+        "аудиторское мнение — раздел I для руководства.",
+        "аудиторское заключение — полный черновик в Word.",
     ]:
-        _add_p(tf, "▸  " + line, 14, WHITE, space_before=10)
+        _add_p(tf, "▸  " + line, 14, WHITE, space_before=12)
     _footer(s, 6, TOTAL)
 
     # ========== 7 JOURNEY ==========
     s = new_light(prs)
     _kicker(s, "Сценарий сеанса")
-    _title(s, "Один чат = одна проверка")
+    _title(s, "Один чат = одна проверка до черновика АЗ")
     steps = [
         ("1", "Описать", "Проверка аренды…,\nаренда, валюта, НДС"),
         ("2", "Утвердить", "утверждаю 1, 2, 4\nплюс Инструкция 38"),
-        ("3", "Скачать", "pravo.by / nbrb.by\nиндекс по статьям"),
-        ("4", "Читать", "саммари\nпрограмма проверки"),
-        ("5", "Планировать", "гипотезы\nExcel-чеклист"),
-        ("6", "Спросить", "вопрос Какой срок\nрегистрации аренды?"),
+        ("3", "Читать", "саммари\nпрограмма проверки"),
+        ("4", "Планировать", "гипотезы\nExcel-чеклист"),
+        ("5", "Подтвердить", "утверждаю гипотезы\n1, 3, 5"),
+        ("6", "Мнение", "аудиторское мнение\nраздел I, 2–4 стр."),
+        ("7", "Заключение", "аудиторское заключение\nполный черновик"),
+        ("8", "Спросить", "вопрос Какой срок\nрегистрации аренды?"),
     ]
     for i, (n, h, d) in enumerate(steps):
-        x = Inches(0.4) + Inches(i * 2.15)
-        if i:
+        col, row = i % 4, i // 4
+        x = Inches(0.45) + Inches(col * 3.22)
+        y = Inches(1.38) + Inches(row * 2.55)
+        if col:
             arr = s.shapes.add_shape(
-                MSO_SHAPE.RIGHT_ARROW, x - Inches(0.22), Inches(2.35), Inches(0.2), Inches(0.16)
+                MSO_SHAPE.RIGHT_ARROW, x - Inches(0.22), y + Inches(1.05), Inches(0.18), Inches(0.14)
             )
             _fill(arr, GOLD)
-        circ = s.shapes.add_shape(MSO_SHAPE.OVAL, x + Inches(0.7), Inches(1.45), Inches(0.55), Inches(0.55))
+        circ = s.shapes.add_shape(MSO_SHAPE.OVAL, x + Inches(1.2), y, Inches(0.48), Inches(0.48))
         _fill(circ, NAVY)
-        _tb(circ, n, 16, GOLD, bold=True, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-        c = card(s, x, Inches(2.15), Inches(2.02), Inches(2.55))
+        _tb(circ, n, 14, GOLD, bold=True, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        c = card(s, x, y + Inches(0.58), Inches(3.05), Inches(1.8))
         tf = _tb(c, h, 14, INK, bold=True, align=PP_ALIGN.CENTER)
-        tf.margin_top = Inches(0.22)
+        tf.margin_top = Inches(0.16)
         for part in d.split("\n"):
-            _add_p(tf, part, 11, SLATE, align=PP_ALIGN.CENTER, space_before=6)
-
-    note = card(s, Inches(0.5), Inches(4.95), Inches(12.3), Inches(1.75))
-    tf = _tb(note, "Правила сеанса", 14, GOLD, bold=True)
-    tf.margin_left = Inches(0.28)
-    tf.margin_top = Inches(0.18)
-    _add_p(tf, "Модель в шапке — «Аудитор» (Pipe), не qwen3.8:27b с иконкой ol. Новая тема — новый чат. Без слова «вопрос» ответ идёт из знаний модели, не из библиотеки. Пока нет «утверждаю» — ничего не скачивается.",
-           14, INK, space_before=8)
+            _add_p(tf, part, 12, SLATE, align=PP_ALIGN.CENTER, space_before=5)
     _footer(s, 7, TOTAL)
 
     # ========== 8 FEATURES ==========
@@ -380,11 +394,11 @@ def build():
     feats = [
         ("Библиотека НПА", "Propose → HITL → download с allowlist РБ. extra_titles, ручной URL, known_sources."),
         ("Саммари Word", "Карточка по каждому акту + обзор проверки + приложение фрагментов [n]."),
-        ("Саммари total", "Конспект «из головы» модели — не цитата. Явно отделён от базы."),
         ("Программа проверки", "Черновик СВА: цель, риски, процедуры, критерии по праву РБ."),
-        ("Гипотезы Excel", "8–10 гипотез для проверки. Опирается на саммари / программу / НПА."),
+        ("Гипотезы Excel", "8–10 гипотез для проверки. В мнение идут только подтверждённые."),
+        ("Аудиторское мнение", "Раздел I заключения: 2–4 стр. для руководства. Только после HITL по гипотезам."),
+        ("Аудиторское заключение", "Полный черновик: титул, содержание, мнение, наблюдения, общая информация."),
         ("Вопрос по базе", "Префикс «вопрос …» → RAG + блок «Откуда в базе знаний»."),
-        ("Обычный диалог", "Без префикса — POST /chat. Без цитат. Не тащить в WP как норму."),
         ("Система записи", "Кейс на диске: статусы, манифест, sha256, zip первоисточников."),
     ]
     for i, (h, d) in enumerate(feats):
@@ -406,8 +420,8 @@ def build():
         (".docx", "Обзор актов", "Нормативный контур проверки, карточки существенного, ссылки на статьи."),
         (".docx", "Программа", "Черновик программы аудиторской проверки банка РБ. Не подпись руководителя СВА."),
         (".xlsx", "Гипотезы", "Чеклист 8–10 гипотез: что смотреть, на что опираться, статус для HITL."),
-        (".docx", "Total", "Конспект из знаний модели. Полезно как ориентир, не как норма."),
-        ("чат", "Цитата", "Ответ на «вопрос …» + блок источников. Сверяется с файлом в zip."),
+        (".docx", "Мнение", "Раздел I: цели, инструменты, агрегированный взгляд, рекомендации. Черновик для правки."),
+        (".docx", "Заключение", "Титул, содержание, раздел I, наблюдения по шаблону, общая информация. Не акт СВА."),
     ]
     for i, (ext, h, d) in enumerate(arts):
         col, row = i % 3, i // 3
@@ -420,6 +434,47 @@ def build():
         _textbox(s, x + Inches(0.22), y + Inches(0.8), Inches(3.6), Inches(1.3), d, 13, SLATE)
     _footer(s, 9, TOTAL)
 
+    # ========== 10 OPINION + CONCLUSION ==========
+    s = new_light(prs)
+    _kicker(s, "Документы СВА")
+    _title(s, "От подтверждённых гипотез — к черновику заключения")
+    _textbox(s, Inches(0.55), Inches(1.18), Inches(12.2), Inches(0.32),
+             "В текст идут только гипотезы, которые аудитор отметил. Неподтверждённые в промпт не кладём.",
+             13, SLATE, italic=True)
+
+    left = card(s, Inches(0.45), Inches(1.55), Inches(6.1), Inches(4.0))
+    tf = _tb(left, "Аудиторское мнение", 16, GOLD, bold=True)
+    tf.margin_left = Inches(0.24)
+    tf.margin_top = Inches(0.18)
+    _add_p(tf, "Команда: аудиторское мнение  ·  -c Calibri / -t Times", 12, SLATE, italic=True, space_before=6)
+    for line in [
+        "Раздел I: «Аудиторское мнение по итогам проверки».",
+        "2–4 страницы повествования для руководства банка.",
+        "Цели и задачи, инструменты, агрегированный взгляд, резюме рекомендаций.",
+        "Без таблиц и схем. Шрифт как в типовом АЗ банка.",
+        "Черновик для правки, не подписанный акт СВА.",
+    ]:
+        _add_p(tf, "▸  " + line, 13, INK, space_before=8)
+
+    right = _round(s, Inches(6.75), Inches(1.55), Inches(6.1), Inches(4.0), NAVY, adj=0.05)
+    tf = _tb(right, "Аудиторское заключение", 16, GOLD, bold=True)
+    tf.margin_left = Inches(0.24)
+    tf.margin_top = Inches(0.18)
+    _add_p(tf, "Команда: аудиторское заключение  ·  после раздела I", 12, RGBColor(0xC5, 0xD4, 0xE0), italic=True, space_before=6)
+    for line in [
+        "Титул, содержание, раздел I из уже собранного мнения.",
+        "Наблюдения по каждой подтверждённой гипотезе — шаблон раздела III.",
+        "Последний раздел — общая информация о проверке.",
+        "Раздел II (сводная таблица) сервер подставит позже.",
+        "Полный текст в чат не копируется — только ссылка на Word.",
+    ]:
+        _add_p(tf, "▸  " + line, 13, WHITE, space_before=8)
+
+    bar = _round(s, Inches(0.45), Inches(5.7), Inches(12.4), Inches(1.05), CREAM, LINE, adj=0.04)
+    tf = _tb(bar, "гипотезы  →  утверждаю гипотезы 1, 3, 5  →  аудиторское мнение  →  аудиторское заключение",
+             15, INK, bold=True, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    _footer(s, 10, TOTAL)
+
     # ========== 10 ARCHITECTURE ==========
     s = new_light(prs)
     _kicker(s, "Архитектура")
@@ -427,7 +482,7 @@ def build():
     layers = [
         (NAVY, WHITE, GOLD, "Поверхность", "Open WebUI — чат, auth, файлы, статусы. Свой React не пишем."),
         (TEAL_DK, WHITE, GOLD2, "Клей агента", "Function Pipe «Аудитор». Фазы кодом. Без бизнес-логики внутри."),
-        (RGBColor(0x3A, 0x2A, 0x18), WHITE, GOLD, "Ядро", "Audit Tool Server (FastAPI): кейс, HITL, добыча НПА, ingest, RAG, Word/Excel."),
+        (RGBColor(0x3A, 0x2A, 0x18), WHITE, GOLD, "Ядро", "Audit Tool Server: кейс, HITL, НПА РБ, RAG, Word мнения и заключения."),
         (SLATE, WHITE, GOLD2, "Инфра", "Ollama (LLM + embed) · SearXNG (allowlist) · диск кейса. DuckDB — план."),
     ]
     for i, (bg, tc, ac, h, d) in enumerate(layers):
@@ -437,7 +492,7 @@ def build():
         tf.margin_left = Inches(0.35)
         tf.margin_top = Inches(0.16)
         _add_p(tf, d, 16, tc, space_before=6)
-    _footer(s, 10, TOTAL)
+    _footer(s, 11, TOTAL)
 
     # ========== 11 PIPE THEORY ==========
     s = new_light(prs)
@@ -463,11 +518,11 @@ def build():
         _textbox(s, x + Inches(0.25), Inches(2.95), Inches(3.6), Inches(2.4), body, 14, INK)
         badge = _round(s, x + Inches(0.25), Inches(5.85), Inches(2.4), Inches(0.45), tagc, adj=0.3)
         _tb(badge, tag, 12, WHITE, bold=True, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    _footer(s, 11, TOTAL)
+    _footer(s, 12, TOTAL)
 
     # ========== 12 PIPE IMPLEMENTATION ==========
     s = new_light(prs)
-    _kicker(s, "Реализация  ·  audit_agent.py v0.2.7")
+    _kicker(s, "Реализация  ·  audit_agent.py v0.2.9")
     _title(s, "Как устроен Function Pipe «Аудитор»")
 
     left = card(s, Inches(0.45), Inches(1.38), Inches(6.3), Inches(5.3))
@@ -481,8 +536,9 @@ def build():
         "__event_emitter__ рисует статусы в чате («Скачиваю…»), это не ответ модели.",
         "Бизнес-логики в Pipe нет: только маршрут + HTTP на FastAPI + формат ответа.",
         "Память проверки: скрытая метка <!--audit-case:id--> в истории чата.",
+        "Команды мнения и заключения — те же фразы, что у саммари: ловит код, не модель.",
     ]:
-        _add_p(tf, "●  " + line, 13, INK, space_before=11)
+        _add_p(tf, "●  " + line, 12, INK, space_before=9)
 
     right = _round(s, Inches(6.95), Inches(1.38), Inches(5.9), Inches(5.3), NAVY, adj=0.04)
     tf = _tb(right, "Valves (из коробки)", 15, GOLD, bold=True)
@@ -497,7 +553,7 @@ def build():
     ]:
         _add_p(tf, k, 13, GOLD2, bold=True, space_before=14)
         _add_p(tf, v, 13, WHITE, space_before=2)
-    _footer(s, 12, TOTAL)
+    _footer(s, 13, TOTAL)
 
     # ========== 13 ALGORITHM ==========
     s = new_light(prs)
@@ -509,7 +565,7 @@ def build():
     steps = [
         ("1", "помощь / ?", "шпаргалка, без LLM"),
         ("2", "вопрос … / /ask", "RAG по индексу кейса"),
-        ("3", "утверждаю гипотезы", "HITL (задел под мнение)"),
+        ("3", "утверждаю гипотезы", "HITL: в мнение только отмеченные"),
         ("4", "мнение / заключение", "Word раздела I и полный черновик АЗ"),
         ("5", "программа проверки", "черновик СВА → .docx"),
         ("6", "саммари total", "конспект из знаний модели"),
@@ -529,12 +585,12 @@ def build():
         _tb(num, n, 11, GOLD, bold=True, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         _textbox(s, x + Inches(0.68), y + Inches(0.18), Inches(2.2), Inches(0.4), h, 13, INK, bold=True)
         _textbox(s, x + Inches(0.16), y + Inches(0.7), Inches(2.75), Inches(0.65), d, 12, SLATE)
-    _footer(s, 13, TOTAL)
+    _footer(s, 14, TOTAL)
 
     # ========== 14 HITL ==========
     s = new_light(prs)
     _kicker(s, "Human-in-the-loop")
-    _title(s, "Стоп-кран: модель предлагает, аудитор решает")
+    _title(s, "Два стоп-крана: НПА и гипотезы")
     flow = [
         ("LLM", "JSON со списком\n8–15 актов"),
         ("Pipe", "Нумерует, просит\n«утверждаю»"),
@@ -556,9 +612,9 @@ def build():
             _add_p(tf, part, 13, tc, align=PP_ALIGN.CENTER, space_before=6)
 
     notes = [
-        ("Где модель молчит", "утверждаю, плюс, скачай, документы, статус, помощь — чистый код. Галлюцинация статьи на этих шагах невозможна."),
-        ("Где модель говорит", "propose (JSON), саммари, total, программа, гипотезы, вопрос по фрагментам, обычный чат."),
-        ("Политика download", "URL: ручная ссылка → known_sources → SearXNG. Домены только РБ. Клиентский текст в поиск не идёт."),
+        ("Где модель молчит", "утверждаю, плюс, скачай, утверждаю гипотезы, документы, статус, помощь — чистый код. Галлюцинация статьи здесь невозможна."),
+        ("Где модель говорит", "propose (JSON), саммари, total, программа, гипотезы, мнение, заключение, вопрос по фрагментам, обычный чат."),
+        ("Второй стоп-кран", "Без «утверждаю гипотезы …» нет мнения и заключения. Неподтверждённые гипотезы в промпт не кладём."),
     ]
     for i, (h, d) in enumerate(notes):
         x = Inches(0.4) + Inches(i * 4.25)
@@ -567,7 +623,7 @@ def build():
         tf.margin_left = Inches(0.22)
         tf.margin_top = Inches(0.2)
         _add_p(tf, d, 13, INK, space_before=10)
-    _footer(s, 14, TOTAL)
+    _footer(s, 15, TOTAL)
 
     # ========== 15 RAG ==========
     s = new_light(prs)
@@ -600,7 +656,7 @@ def build():
     tf.margin_top = Inches(0.18)
     _add_p(tf, "Чанкер по «Статья N», не дешёвый сплиттер по символам. Окно модели 32k. Embedding — не MiniLM. Температура 0.1–0.2.", 13, INK, space_before=8)
     _add_p(tf, "Источник истины для аудитора — блок цитат и файл в zip, не красноречие абзаца.", 13, INK, space_before=8)
-    _footer(s, 15, TOTAL)
+    _footer(s, 16, TOTAL)
 
     # ========== 16 CONFIDENTIAL ==========
     s = new_light(prs)
@@ -622,7 +678,7 @@ def build():
         ico = _round(s, x + Inches(0.22), y + Inches(0.22), Inches(0.16), Inches(0.16), TEAL, adj=0.5)
         _textbox(s, x + Inches(0.5), y + Inches(0.16), Inches(3.35), Inches(0.45), h, 16, INK, bold=True)
         _textbox(s, x + Inches(0.22), y + Inches(0.75), Inches(3.65), Inches(1.4), d, 13, SLATE)
-    _footer(s, 16, TOTAL)
+    _footer(s, 17, TOTAL)
 
     # ========== 17 BOX ==========
     s = new_light(prs)
@@ -644,12 +700,12 @@ def build():
             "Веб-поиск выключен, имя продукта — «Аудитор»",
             "Pipe — один Python-файл, без форка Open WebUI",
         ]),
-        ("Мнение из коробки", [
+        ("Качество из коробки", [
             "Промпты методолога ВА банка РБ",
             "Запрет РФ / ЕС / IFRS, если их нет во фрагментах",
             "Температура 0.1–0.2 на сервере, не слайдер чата",
             "Шаблон RAG: нет во фрагментах — отказ",
-            "HITL на список НПА железный",
+            "Два HITL: НПА и гипотезы — железные",
         ]),
         ("Что это даёт банку", [
             "Один URL для аудитора, без Vite и Swagger",
@@ -667,7 +723,7 @@ def build():
         tf.margin_top = Inches(0.18)
         for line in lines:
             _add_p(tf, "·  " + line, 12, INK, space_before=7)
-    _footer(s, 17, TOTAL)
+    _footer(s, 18, TOTAL)
 
     # ========== 18 WHY GREAT ==========
     s = new_light(prs)
@@ -678,8 +734,8 @@ def build():
         ("Кодекс → карточка", "Саммари даёт существенное для этой темы, а не дамп статей по порядку."),
         ("Память → цитата", "Ответ на норму опирается на файл кейса. Pipe сам дописывает источник."),
         ("Хаос → кейс", "Система записи: что утвердили, что скачали, какой URL, какой индекс."),
-        ("Чат → артефакт", "Выход — Word и Excel, которые живут в рабочем процессе СВА, не в истории GPT."),
-        ("Скрипт → агент", "Память, руки, мозг, стоп-кран, статусы. Не one-shot промпт."),
+        ("Чат → артефакт", "Выход — Word и Excel СВА: саммари, программа, мнение, заключение. Не история чата."),
+        ("Чеклист → АЗ", "Подтверждённые гипотезы складываются в черновик раздела I и полного заключения — аудитор правит, а не пишет с нуля."),
     ]
     for i, (h, d) in enumerate(mets):
         col, row = i % 3, i // 3
@@ -690,7 +746,7 @@ def build():
         body_c = WHITE if row == 0 else SLATE
         _textbox(s, x + Inches(0.25), y + Inches(0.25), Inches(3.6), Inches(0.5), h, 16, title_c, bold=True)
         _textbox(s, x + Inches(0.25), y + Inches(0.85), Inches(3.6), Inches(1.25), d, 13, body_c)
-    _footer(s, 18, TOTAL)
+    _footer(s, 19, TOTAL)
 
     # ========== 19 CLOSE ==========
     s = new_dark(prs)
@@ -702,11 +758,11 @@ def build():
     tf.margin_top = Inches(0.22)
     for line in [
         "Один URL, модель «Аудитор» в списке.",
-        "Список НПА нельзя скачать без «утверждаю».",
-        "саммари / программа / гипотезы — файлы, не простыня в чате.",
+        "НПА и гипотезы нельзя взять в работу без «утверждаю».",
+        "саммари / программа / гипотезы / мнение / заключение — файлы.",
         "вопрос … — с цитатой; нет в библиотеке — отказ.",
         "Клиентский текст не уходит в интернет.",
-        "Свой фронт аудитору не нужен.",
+        "Свой фронт аудитору не нужен: готовый чат Open WebUI.",
     ]:
         _add_p(tf, "▸  " + line, 14, WHITE, space_before=12)
 
@@ -714,11 +770,12 @@ def build():
     tf = _tb(right, "Честная граница", 15, GOLD, bold=True)
     tf.margin_left = Inches(0.28)
     tf.margin_top = Inches(0.22)
-    _add_p(tf, "Закрыт контур «собрать норму → сформулировать гипотезы».", 14, WHITE, space_before=10)
-    _add_p(tf, "Дальше по тому же Pipe: подтверждение гипотез → черновики мнения и заключения. Затем — факты клиента, тесты, WP.", 14, WHITE, space_before=10)
-    _add_p(tf, "Автоматизация сильна тем, что знает, где остановиться.", 15, GOLD2, bold=True, italic=True, space_before=18)
-    _add_p(tf, "Откройте :3000 и начните с одной фразы.", 14, RGBColor(0xC5, 0xD4, 0xE0), space_before=14)
-    _footer(s, 19, TOTAL, dark=True)
+    _add_p(tf, "Закрыт контур «норма → гипотезы → черновик мнения → черновик заключения».", 14, WHITE, space_before=10)
+    _add_p(tf, "Это черновики для правки. Не подписанный акт СВА и не юридически значимое суждение «за аудитора».", 14, WHITE, space_before=10)
+    _add_p(tf, "Дальше по тому же Pipe: факты клиента, тесты, WP.", 14, WHITE, space_before=10)
+    _add_p(tf, "Автоматизация сильна тем, что знает, где остановиться.", 15, GOLD2, bold=True, italic=True, space_before=16)
+    _add_p(tf, "Откройте :3000 и начните с одной фразы.", 14, RGBColor(0xC5, 0xD4, 0xE0), space_before=12)
+    _footer(s, 20, TOTAL, dark=True)
 
     out = Path(__file__).resolve().parent / "Аудитор_ИИ-агент_презентация.pptx"
     prs.save(out)
