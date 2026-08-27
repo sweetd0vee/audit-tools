@@ -749,7 +749,7 @@ class TestAskRetrieval(unittest.IsolatedAsyncioTestCase):
             return [[1.0, 0.1] for _ in texts]
 
         async def fake_rerank(query, docs):
-            return [0.05 if "Статья 12." in d else 0.95 for d in docs]
+            return [0.95 if "Статья 625." in d else 0.05 for d in docs]
 
         picked = await retrieve_for_ask(
             chunks,
@@ -802,31 +802,6 @@ class TestAskRetrieval(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Статья 625.", picked[0]["text"])
 
 
-class TestRerankScoring(unittest.TestCase):
-    def test_yes_no_and_logprobs(self):
-        from app.services.ollama_client import format_rerank_prompt, score_rerank_response
-
-        prompt = format_rerank_prompt("ст. 625", "Статья 625. Договор аренды")
-        self.assertIn("<Query>: ст. 625", prompt)
-        self.assertIn("<Document>: Статья 625.", prompt)
-        self.assertEqual(score_rerank_response("yes"), 1.0)
-        self.assertEqual(score_rerank_response("no"), 0.0)
-        data = {
-            "logprobs": {
-                "content": [
-                    {
-                        "token": "yes",
-                        "logprob": 0.0,
-                        "top_logprobs": [
-                            {"token": "yes", "logprob": 0.0},
-                            {"token": "no", "logprob": -20.0},
-                        ],
-                    }
-                ]
-            }
-        }
-        self.assertGreater(score_rerank_response("maybe", data), 0.99)
-
     async def test_neighbor_does_not_glue_next_article(self):
         from app.services.knowledge_retrieve import select_evidence
 
@@ -864,6 +839,32 @@ class TestRerankScoring(unittest.TestCase):
         blob = " ".join(p["text"] for p in picked)
         self.assertIn("Статья 3.", blob)
         self.assertNotIn("Статья 4.", blob)
+
+
+class TestRerankScoring(unittest.TestCase):
+    def test_yes_no_and_logprobs(self):
+        from app.services.ollama_client import format_rerank_prompt, score_rerank_response
+
+        prompt = format_rerank_prompt("ст. 625", "Статья 625. Договор аренды")
+        self.assertIn("<Query>: ст. 625", prompt)
+        self.assertIn("<Document>: Статья 625.", prompt)
+        self.assertEqual(score_rerank_response("yes"), 1.0)
+        self.assertEqual(score_rerank_response("no"), 0.0)
+        data = {
+            "logprobs": {
+                "content": [
+                    {
+                        "token": "yes",
+                        "logprob": 0.0,
+                        "top_logprobs": [
+                            {"token": "yes", "logprob": 0.0},
+                            {"token": "no", "logprob": -20.0},
+                        ],
+                    }
+                ]
+            }
+        }
+        self.assertGreater(score_rerank_response("maybe", data), 0.99)
 
 
 if __name__ == "__main__":

@@ -227,6 +227,9 @@ def _merge_consecutive(lookup: dict[str, dict], ids: list[str], budget: int) -> 
         head["text"] = text
         head["id"] = group[0]
         head["merged_from"] = group
+        scores = [p.get("rerank_score") for p in parts if p.get("rerank_score") is not None]
+        if scores:
+            head["rerank_score"] = max(float(s) for s in scores)
         merged.append(head)
         used += len(text)
         if used >= budget:
@@ -401,6 +404,8 @@ async def _rerank_candidates(
     except Exception:
         return {}
     if not scores or len(scores) != len(pool_ids):
+        return {}
+    if max(scores) - min(scores) < 1e-9:
         return {}
     out: dict[str, float] = {}
     for cid, score in zip(pool_ids, scores):
