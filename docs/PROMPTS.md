@@ -1,7 +1,7 @@
-# Промпты агента «Аудитор»
+# Промпты агента «Аудитор» (v0.0.1)
 
 Все вшитые тексты, которые видит языковая модель (и шпаргалка Pipe).  
-**Чтобы изменить поведение агента, правьте файлы в [`prompts/`](prompts/), не этот обзор.** Сервер читает `.txt` при каждом вызове.
+**Чтобы изменить поведение агента, правьте файлы в [`prompts/`](prompts/), не этот обзор.** Сервер читает `.txt` при каждом вызове. Рабочий Word для правок: [Промпты агента.docx](Промпты агента.docx).
 
 Как аудитору пользоваться чатом: [GUIDE.md](GUIDE.md). Что видит модель по шагам: раздел 12 в GUIDE.
 
@@ -382,11 +382,11 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 ## 4г. Аудиторское заключение (`аудиторское заключение`)
 
-Черновик **полного** аудиторского заключения: титул, содержание, раздел I из уже собранного мнения, наблюдения по подтверждённым гипотезам (шаблон рамки раздела III), последний раздел — общая информация о проверке. Раздел II не пишется. Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman, по умолчанию).
+Черновик **полного** аудиторского заключения — основной продукт: титул, содержание как в Word, раздел I из уже собранного мнения, **по одному наблюдению на каждую подтверждённую гипотезу**, покрытие пунктов программы, опора на саммари и ссылки `[n]`, таблицы и схемы в наблюдениях, последний раздел — общая информация. Раздел II не пишется. Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman, по умолчанию).
 
-**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{document_catalog}`, `{hypotheses_block}`, `{opinion_block}`, `{program_block}`, `{brief_block}`, `{total_block}`, `{cards_block}`, `{fragments}`, `{sections}`.
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{hypothesis_count}`, `{hypothesis_numbers}`, `{observation_outline}`, `{document_catalog}`, `{hypotheses_block}`, `{opinion_block}`, `{program_block}`, `{brief_block}`, `{total_block}`, `{cards_block}`, `{fragments}`, `{sections}`.
 
-Файлы: [`conclusion_system.txt`](prompts/conclusion_system.txt), [`conclusion_user.txt`](prompts/conclusion_user.txt), [`conclusion_sections.txt`](prompts/conclusion_sections.txt).
+Файлы: [`conclusion_system.txt`](prompts/conclusion_system.txt), [`conclusion_user.txt`](prompts/conclusion_user.txt), [`conclusion_sections.txt`](prompts/conclusion_sections.txt), дописка оборванных наблюдений — [`conclusion_continue_user.txt`](prompts/conclusion_continue_user.txt).
 
 ---
 

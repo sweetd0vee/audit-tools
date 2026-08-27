@@ -89,7 +89,7 @@ GET /api/v1/cases/{case_id}/library
 GET /api/v1/cases/{case_id}/library/archive
 ```
 
-### 6. Саммари и программа проверки
+### 6. Документы проверки (v0.0.1)
 ```http
 POST /api/v1/cases/{case_id}/knowledge/brief
 GET  /api/v1/cases/{case_id}/knowledge/summary.docx

@@ -17,7 +17,7 @@ Cursor победил не тем, что написал IDE с нуля. Он �
 
 Клиентские данные и формулировки проверки **не уходят в интернет**.
 
-Как аудитор работает в чате сегодня: [GUIDE.md](GUIDE.md).
+Как аудитор работает в чате сегодня (агент **v0.0.1**): [GUIDE.md](GUIDE.md). Что уже в демо и что добавляем: [PLAN.md](PLAN.md).
 
 ---
 
@@ -93,4 +93,4 @@ Cursor победил не тем, что написал IDE с нуля. Он �
 | Allowlist доменов РБ | Поиск по всему интернету |
 | Human-in-the-loop на список НПА, тесты, выводы | Автоподпись working paper |
 
-Подробности: [ARCHITECTURE.md](ARCHITECTURE.md), [PLAN.md](PLAN.md), [IDEAS.md](IDEAS.md).
+Подробности: [ARCHITECTURE.md](ARCHITECTURE.md), [PLAN.md](PLAN.md) (v0.0.1 — демо, дальше v0.1–v0.7), [IDEAS.md](IDEAS.md).

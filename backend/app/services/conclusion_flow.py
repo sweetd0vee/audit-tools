@@ -14,7 +14,13 @@ from app.services.case_context import (
     format_npa_sources,
     read_truncated_md,
 )
-from app.services.conclusion_docx import parse_conclusion_markdown, write_conclusion_docx
+from app.services.conclusion_docx import (
+    default_section_iii_title,
+    ensure_all_hypotheses,
+    missing_hypothesis_rows,
+    parse_conclusion_markdown,
+    write_conclusion_docx,
+)
 from app.services.document_artifact import (
     ArtifactSpec,
     ElapsedTimer,
@@ -38,7 +44,7 @@ from app.services.opinion_flow import (
 from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
 
-CONCLUSION_SCHEMA = 2
+CONCLUSION_SCHEMA = 3
 CONCLUSION_SPEC = ArtifactSpec(
     meta_key="conclusion",
     directory="reports",
@@ -94,7 +100,7 @@ def _digest(report) -> list[str]:
             title = (obs.title or "").strip()
             if title:
                 out.append(f"- Наблюдение {obs.number}: {title} ({obs.materiality})")
-            if len(out) >= 8:
+            if len(out) >= 20:
                 return out
     return out
 
@@ -181,6 +187,60 @@ def _save_conclusion_meta(
     )
 
 
+def _clip(text: str, limit: int) -> str:
+    body = (text or "").strip()
+    if len(body) > limit:
+        return body[:limit] + "\n…"
+    return body
+
+
+def _hypothesis_numbers(hypotheses: list[dict[str, str]]) -> str:
+    return ", ".join(str(row.get("n") or i) for i, row in enumerate(hypotheses, start=1))
+
+
+def _observation_outline(hypotheses: list[dict[str, str]]) -> str:
+    lines: list[str] = []
+    for i, row in enumerate(hypotheses, start=1):
+        n = row.get("n") or i
+        hyp = (row.get("hypothesis") or "").strip()
+        if len(hyp) > 180:
+            hyp = hyp[:177].rstrip() + "…"
+        plan = (row.get("plan_sections") or "").strip()
+        extra = f" (программа: {plan})" if plan else ""
+        lines.append(f"3.{i} ← гипотеза {n}{extra}: {hyp}")
+    return "\n".join(lines) or "—"
+
+
+def _cards_budget(state: CaseState, *, total_limit: int = 7000, per: int = 1800) -> str:
+    blocks: list[str] = []
+    used = 0
+    for item in state.knowledge:
+        if item.summary_status != "ok" or not (item.summary or "").strip():
+            continue
+        body = item.summary.strip()
+        if len(body) > per:
+            body = body[:per] + "\n…"
+        chunk = f"# {item.title}\n{body}"
+        remain = total_limit - used
+        if remain < 400:
+            break
+        if len(chunk) > remain:
+            chunk = chunk[:remain] + "\n…"
+        blocks.append(chunk)
+        used += len(chunk)
+        if used >= total_limit:
+            break
+    return "\n\n".join(blocks)
+
+
+def _conclusion_num_predict(n: int) -> int:
+    return min(24576, 4000 + max(n, 1) * 2800)
+
+
+def _has_general_section(body: str) -> bool:
+    return "общая информация об аудиторской проверке" in (body or "").lower()
+
+
 async def _compose_conclusion(
     state: CaseState,
     *,
@@ -188,18 +248,29 @@ async def _compose_conclusion(
     sources: list[dict],
     opinion_body: str,
 ) -> str:
-    program_md = read_truncated_md(resolve_program_file, state.case_id, limit=6000)
-    brief_md = read_truncated_md(resolve_brief_file, state.case_id, limit=4000)
-    total_md = read_truncated_md(resolve_total_file, state.case_id, limit=4000)
-    cards = existing_cards(state, limit=3000)
-    opinion_trim = (opinion_body or "").strip()
-    if len(opinion_trim) > 5000:
-        opinion_trim = opinion_trim[:5000] + "\n…"
+    count = len(hypotheses)
+    section_iii_title = default_section_iii_title(state.inspection_name).rstrip(".")
+    first_n = str(hypotheses[0].get("n") or "1") if hypotheses else "1"
+    program_md = _clip(read_truncated_md(resolve_program_file, state.case_id, limit=16000), 12000)
+    brief_md = _clip(read_truncated_md(resolve_brief_file, state.case_id, limit=16000), 9000)
+    total_md = _clip(read_truncated_md(resolve_total_file, state.case_id, limit=8000), 2500 if brief_md else 4000)
+    cards = _cards_budget(state) or existing_cards(state, limit=1800)
+    opinion_trim = _clip(opinion_body, 3500)
+    sections = prompt(
+        "conclusion_sections",
+        section_iii_title=section_iii_title,
+        hypothesis_count=count,
+        hypothesis_numbers=_hypothesis_numbers(hypotheses),
+        first_hypothesis_n=first_n,
+    ).strip()
     user = prompt(
         "conclusion_user",
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords) or "не указаны",
         period=state.period or "не указан",
+        hypothesis_count=count,
+        hypothesis_numbers=_hypothesis_numbers(hypotheses),
+        observation_outline=_observation_outline(hypotheses),
         document_catalog=document_catalog(state),
         hypotheses_block=format_hypotheses_block(hypotheses),
         opinion_block=_optional_block(
@@ -208,7 +279,7 @@ async def _compose_conclusion(
             "Раздел I ещё не собран.",
         ),
         program_block=_optional_block(
-            "Программа проверки (черновик)",
+            "Программа проверки (черновик) — покрой все пункты",
             program_md,
             "Программа проверки ещё не собрана.",
         ),
@@ -227,15 +298,72 @@ async def _compose_conclusion(
             cards,
             "Карточки саммари ещё не собраны.",
         ),
-        fragments=format_npa_sources(sources, limit=20),
-        sections=prompt("conclusion_sections").strip(),
+        fragments=format_npa_sources(sources, limit=24),
+        sections=sections,
     )
     return await chat_complete(
         prompt("conclusion_system"),
         user,
         timeout=settings.brief_timeout_sec,
         num_ctx=settings.ollama_num_ctx,
-        num_predict=8192,
+        num_predict=_conclusion_num_predict(count),
+        temperature=0.2,
+    )
+
+
+async def _compose_remaining_observations(
+    state: CaseState,
+    *,
+    hypotheses: list[dict[str, str]],
+    missing: list[dict[str, str]],
+    sources: list[dict],
+    body: str,
+) -> str:
+    start = len(hypotheses) - len(missing) + 1
+    next_number = f"3.{max(start, 1)}"
+    general_tail = (
+        "."
+        if _has_general_section(body)
+        else (
+            " напиши раздел IV «Общая информация об аудиторской проверке» "
+            "с полями из канона (основание, срок, период, группа, вид, дата)."
+        )
+    )
+    program_md = _clip(read_truncated_md(resolve_program_file, state.case_id, limit=16000), 9000)
+    brief_md = _clip(read_truncated_md(resolve_brief_file, state.case_id, limit=12000), 6000)
+    cards = _cards_budget(state, total_limit=5000, per=1400)
+    done = sorted(
+        {
+            str(row.get("n"))
+            for row in hypotheses
+            if str(row.get("n")) not in {str(item.get("n")) for item in missing}
+        }
+    )
+    user = prompt(
+        "conclusion_continue_user",
+        inspection=state.inspection_name,
+        keywords=", ".join(state.keywords) or "не указаны",
+        done_list=", ".join(done) or "нет",
+        hypothesis_count=len(missing),
+        hypothesis_numbers=_hypothesis_numbers(missing),
+        next_number=next_number,
+        hypotheses_block=format_hypotheses_block(missing),
+        program_block=_optional_block(
+            "Программа проверки",
+            program_md,
+            "Программа проверки ещё не собрана.",
+        ),
+        brief_block=_optional_block("Саммари по актам", brief_md, "Саммари ещё не собрано."),
+        cards_block=_optional_block("Карточки актов", cards, "Карточки ещё не собраны."),
+        fragments=format_npa_sources(sources, limit=18),
+        general_tail=general_tail,
+    )
+    return await chat_complete(
+        prompt("conclusion_system"),
+        user,
+        timeout=settings.brief_timeout_sec,
+        num_ctx=settings.ollama_num_ctx,
+        num_predict=_conclusion_num_predict(len(missing)),
         temperature=0.2,
     )
 
@@ -291,7 +419,8 @@ async def build_conclusion_events(
     yield {
         "type": "status",
         "message": (
-            f"Пишу черновик аудиторского заключения ({resolved_font}). "
+            f"Пишу черновик аудиторского заключения ({resolved_font}): "
+            f"{len(hypotheses)} наблюдений по подтверждённым гипотезам. "
             "Это может занять несколько минут…"
         ),
         "elapsed_ms": elapsed(),
@@ -308,13 +437,51 @@ async def build_conclusion_events(
     if not (body or "").strip():
         raise ValueError("Модель вернула пустое аудиторское заключение.")
 
+    name = (state.inspection_name or "").strip()
+    period = state.period
     report = parse_conclusion_markdown(
         body,
         hypotheses=hypotheses,
-        period=state.period,
+        period=period,
+        inspection_name=name,
     )
-    name = (state.inspection_name or "").strip()
-    period = state.period
+    missing = missing_hypothesis_rows(report, hypotheses)
+    attempts = 0
+    while missing and attempts < 2:
+        ns = ", ".join(str(row.get("n")) for row in missing)
+        yield {
+            "type": "status",
+            "message": f"Дописываю недостающие наблюдения по гипотезам {ns}…",
+            "elapsed_ms": elapsed(),
+        }
+        try:
+            extra = await _compose_remaining_observations(
+                state,
+                hypotheses=hypotheses,
+                missing=missing,
+                sources=sources,
+                body=body,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"Модель не дописала наблюдения заключения: {exc}") from exc
+        if (extra or "").strip():
+            body = (body or "").rstrip() + "\n\n" + extra.strip()
+            report = parse_conclusion_markdown(
+                body,
+                hypotheses=hypotheses,
+                period=period,
+                inspection_name=name,
+            )
+            missing = missing_hypothesis_rows(report, hypotheses)
+        else:
+            break
+        attempts += 1
+    report = ensure_all_hypotheses(
+        report,
+        hypotheses,
+        period=period,
+        inspection_name=name,
+    )
     paths = artifact_paths(case_id, name, CONCLUSION_SPEC)
     yield {
         "type": "status",

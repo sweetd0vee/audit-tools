@@ -7,6 +7,7 @@ from app.prompts import prompt
 from app.services.conclusion_docx import (
     _COVER_IMAGE,
     _cover_year,
+    ensure_all_hypotheses,
     parse_conclusion_markdown,
     toc_entries,
     write_conclusion_docx,
@@ -93,14 +94,14 @@ class TestConclusionParse(unittest.TestCase):
         self.assertEqual(len(general), 1)
         self.assertEqual(general[0].roman, "IV")
         self.assertEqual(obs_sections[0].roman, "III")
-        self.assertIn("принципам налогообложения", obs_sections[0].title.lower())
+        self.assertIn("учёт аренды", obs_sections[0].title.lower())
         titles = [title for _, title in toc_entries(report)]
         self.assertEqual(
             titles,
             [
                 "Аудиторское мнение по итогам проверки.",
                 "Основные результаты аудита и итоговые аудиторские рекомендации.",
-                "Оценка соответствия деятельности принципам налогообложения и защиты прав плательщиков.",
+                "Учёт аренды и сверка договоров.",
                 "Общая информация об аудиторской проверке.",
             ],
         )
@@ -145,7 +146,7 @@ V. Общая информация об аудиторской проверке
         self.assertEqual(obs_sections[0].observations[1].number, "3.2")
         self.assertEqual(
             [title for _, title in toc_entries(report)][2],
-            "Оценка соответствия деятельности принципам налогообложения и защиты прав плательщиков.",
+            "Тема А.",
         )
 
     def test_fallback_uses_all_hypotheses(self):
@@ -158,6 +159,44 @@ V. Общая информация об аудиторской проверке
         self.assertEqual(len(obs), 2)
         self.assertEqual(obs[0].materiality, "высокий")
         self.assertEqual(obs[1].materiality, "низкий")
+
+    def test_ensure_all_hypotheses_appends_missing(self):
+        rows = [_row(n) for n in (1, 3, 4, 5, 6, 8)]
+        report = parse_conclusion_markdown(SAMPLE_MD, hypotheses=rows[:2], period="2025")
+        self.assertEqual(len(report.sections[0].observations), 2)
+        filled = ensure_all_hypotheses(
+            report,
+            rows,
+            period="2025",
+            inspection_name="Проверка аренды коммерческой недвижимости",
+        )
+        self.assertEqual(len(filled.sections[0].observations), 6)
+        self.assertEqual(
+            [item.hypothesis_n for item in filled.sections[0].observations],
+            ["1", "3", "4", "5", "6", "8"],
+        )
+
+    def test_tax_template_title_replaced_when_inspection_is_not_tax(self):
+        md = """
+## Раздел III. Оценка соответствия деятельности принципам налогообложения и защиты прав плательщиков.
+### Наблюдение 3.1. Сверка договоров
+существенность: высокий
+гипотеза: 1
+Текст.
+рекомендация:
+Сделать.
+## Раздел IV. Общая информация об аудиторской проверке
+### Аудируемый период
+2025
+"""
+        report = parse_conclusion_markdown(
+            md,
+            hypotheses=[_row(1, "высокий")],
+            period="2025",
+            inspection_name="Проверка аренды коммерческой недвижимости",
+        )
+        self.assertIn("наблюдения по итогам", report.sections[0].title.lower())
+        self.assertNotIn("налогообложения", report.sections[0].title.lower())
 
 
 class TestConclusionDocx(unittest.TestCase):
@@ -196,16 +235,14 @@ class TestConclusionDocx(unittest.TestCase):
             self.assertIn("Проверка аренды коммерческой недвижимости", xml)
             self.assertIn("Минск 2025", xml)
             self.assertIn("Департамент внутреннего аудита", xml)
-            self.assertIn("Разделы аудиторского заключения", texts)
-            self.assertIn("I.\tАудиторское мнение по итогам проверки.", texts)
-            self.assertIn("II.\tОсновные результаты аудита и итоговые аудиторские рекомендации.", texts)
-            self.assertIn(
-                "III.\tОценка соответствия деятельности принципам налогообложения и защиты прав плательщиков.",
-                texts,
-            )
-            self.assertIn("IV.\tОбщая информация об аудиторской проверке.", texts)
+            self.assertIn("Содержание", texts)
+            self.assertIn("I.  Аудиторское мнение по итогам проверки.", texts)
+            self.assertIn("II.  Основные результаты аудита и итоговые аудиторские рекомендации.", texts)
+            self.assertIn("III.  Учёт аренды и сверка договоров.", texts)
+            self.assertIn("3.1.  Неполная сверка договоров аренды.", texts)
+            self.assertIn("IV.  Общая информация об аудиторской проверке.", texts)
             self.assertNotIn("Раздел III.", texts)
-            self.assertNotIn("Учёт аренды и сверка договоров", texts)
+            self.assertNotIn("Разделы аудиторского заключения", texts)
             self.assertIn("Уровень существенности:", texts)
             self.assertIn("высокий", texts)
             self.assertIn("Аудитор:", texts)
@@ -250,17 +287,74 @@ class TestConclusionDocx(unittest.TestCase):
                 xml.find("По подтверждённой гипотезе"),
                 xml.find("Аудиторская рекомендация"),
             )
+            self.assertIn("PAGEREF", xml)
+            self.assertIn("w:updateFields", zipfile.ZipFile(path).read("word/settings.xml").decode("utf-8"))
+
+    def test_markdown_table_and_scheme_in_observation(self):
+        md = """
+## Раздел III. Наблюдения по итогам проверки
+### Наблюдение 3.1. Контроль договоров
+существенность: высокий
+гипотеза: 1
+Проверяется учёт аренды.
+
+| Требование | Риск |
+|---|---|
+| Сверка договоров [1] | Пропуск объекта |
+
+Схема: договор → регистр → платёж
+
+рекомендация:
+Ввести ежемесячную сверку.
+## Раздел IV. Общая информация об аудиторской проверке
+### Аудируемый период
+2025
+"""
+        report = parse_conclusion_markdown(
+            md,
+            hypotheses=[_row(1, "высокий")],
+            period="2025",
+            inspection_name="Проверка аренды",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "zakluchenie.docx"
+            write_conclusion_docx(
+                path,
+                inspection_name="Проверка аренды",
+                period="2025",
+                case_id="abc123",
+                opinion_body="Мнение.",
+                report=report,
+                font=FONT_CALIBRI,
+            )
+            from docx import Document
+
+            doc = Document(str(path))
+            texts = "\n".join(p.text for p in doc.paragraphs)
+            self.assertIn("Схема: договор", texts)
+            tables = [t for t in doc.tables if "Требование" in t.cell(0, 0).text]
+            self.assertTrue(tables)
+            self.assertIn("Сверка договоров [1]", tables[0].cell(1, 0).text)
 
 
 class TestConclusionPrompts(unittest.TestCase):
     def test_prompts_skip_section_ii_and_require_template(self):
         system = prompt("conclusion_system")
-        sections = prompt("conclusion_sections")
+        sections = prompt(
+            "conclusion_sections",
+            section_iii_title="Наблюдения по итогам проверки",
+            hypothesis_count=6,
+            hypothesis_numbers="1, 3, 4, 5, 6, 8",
+            first_hypothesis_n="1",
+        )
         user = prompt(
             "conclusion_user",
             inspection="Проверка аренды",
             keywords="аренда",
             period="2025",
+            hypothesis_count=6,
+            hypothesis_numbers="1, 3, 4, 5, 6, 8",
+            observation_outline="3.1 ← гипотеза 1: тест",
             document_catalog="",
             hypotheses_block="1. тест",
             opinion_block="",
@@ -274,13 +368,36 @@ class TestConclusionPrompts(unittest.TestCase):
         self.assertIn("подтверждённ", system)
         self.assertIn("Раздел II", system)
         self.assertIn("существенн", system)
+        self.assertIn("таблиц", system.lower())
+        self.assertNotIn("Не вставляй таблицы", system)
         self.assertIn("Наблюдение 3.1", sections)
-        self.assertIn("принципам налогообложения", sections)
+        self.assertIn("Наблюдения по итогам проверки", sections)
+        self.assertIn("ровно 6", sections.lower())
         self.assertIn("Общая информация", sections)
         self.assertNotIn("сгруппируй", sections.lower())
         self.assertIn("{hypotheses_block}", prompt("conclusion_user"))
+        self.assertIn("{observation_outline}", prompt("conclusion_user"))
         self.assertIn("подтверждённ", user)
+        self.assertIn("Проверка аренды", user)
+        self.assertIn("6 наблюдений", user)
         self.assertNotIn("{missing}", user)
+        continue_user = prompt(
+            "conclusion_continue_user",
+            inspection="Проверка аренды",
+            keywords="аренда",
+            done_list="1, 3",
+            hypothesis_count=4,
+            hypothesis_numbers="4, 5, 6, 8",
+            next_number="3.3",
+            hypotheses_block="4. тест",
+            program_block="",
+            brief_block="",
+            cards_block="",
+            fragments="",
+            general_tail=".",
+        )
+        self.assertIn("недостающ", continue_user.lower())
+        self.assertIn("3.3", continue_user)
 
 
 if __name__ == "__main__":

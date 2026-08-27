@@ -472,7 +472,7 @@ def parse_conclusion_markdown(
                 continue
             current = ReportSection(
                 roman=code or roman_numeral(len(sections) + 3),
-                title=_SECTION_III.rstrip(".") if (not title or _is_section_iii(title)) else title,
+                title=(title or default_section_iii_title(inspection_name)).rstrip("."),
                 intro=_clean_paragraphs("\n".join(body_lines)),
                 kind="observations",
             )
@@ -691,9 +691,64 @@ def _blank(doc: Document, *, font: str, after: int = 0) -> None:
 
 
 def _add_body_markdown(doc: Document, md: str, *, font: str) -> None:
-    for raw in (md or "").splitlines():
-        stripped = raw.strip()
+    lines = (md or "").splitlines()
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
         if not stripped:
+            i += 1
+            continue
+        if stripped.startswith("|"):
+            block: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                block.append(lines[i].strip())
+                i += 1
+            _add_markdown_table(doc, block, font=font)
+            continue
+        if stripped.startswith("```"):
+            i += 1
+            scheme: list[str] = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                if lines[i].strip():
+                    scheme.append(lines[i].rstrip())
+                i += 1
+            if i < len(lines) and lines[i].strip().startswith("```"):
+                i += 1
+            if scheme:
+                _add_scheme_block(doc, scheme, font=font)
+            continue
+        low = stripped.lower()
+        if low.startswith("схема:") or low.startswith("**схема"):
+            caption = _strip_md(stripped)
+            _add_opinion_paragraph(
+                doc, caption, font=font, size=_FONT_SIZE, italic=True, first_line=False, space_after=4
+            )
+            i += 1
+            continue
+        if stripped.startswith("### "):
+            _add_opinion_paragraph(
+                doc,
+                _strip_md(stripped[4:]),
+                font=font,
+                size=_FONT_SIZE,
+                bold=True,
+                first_line=False,
+                space_before=8,
+                space_after=6,
+            )
+            i += 1
+            continue
+        if re.match(r"^\d+\.\s+", stripped):
+            _add_opinion_paragraph(
+                doc,
+                re.sub(r"^\d+\.\s+", "", stripped),
+                font=font,
+                size=_FONT_SIZE,
+                first_line=False,
+                bullet=True,
+                space_after=4,
+            )
+            i += 1
             continue
         if stripped.startswith("- ") or stripped.startswith("* "):
             _add_opinion_paragraph(
@@ -705,8 +760,56 @@ def _add_body_markdown(doc: Document, md: str, *, font: str) -> None:
                 bullet=True,
                 space_after=4,
             )
+            i += 1
             continue
         _add_opinion_paragraph(doc, stripped, font=font, size=_FONT_SIZE)
+        i += 1
+
+
+def _split_table_row(line: str) -> list[str]:
+    raw = line.strip().strip("|")
+    return [_strip_md(cell).strip() for cell in raw.split("|")]
+
+
+def _add_markdown_table(doc: Document, lines: list[str], *, font: str) -> None:
+    rows = [line for line in lines if line.strip() and not _TABLE_SEP_RE.match(line)]
+    parsed = [_split_table_row(line) for line in rows]
+    parsed = [row for row in parsed if any(cell for cell in row)]
+    if not parsed:
+        return
+    cols = max(len(row) for row in parsed)
+    if cols < 1:
+        return
+    for row in parsed:
+        while len(row) < cols:
+            row.append("")
+        del row[cols:]
+    usable = 16.5
+    widths = [round(usable / cols, 2)] * cols
+    widths[-1] = round(usable - sum(widths[:-1]), 2)
+    table = _add_program_table(doc, len(parsed), widths, bordered=True)
+    for r, row in enumerate(parsed):
+        for c, value in enumerate(row):
+            cell = table.cell(r, c)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            paragraph = cell.paragraphs[0]
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            paragraph.paragraph_format.space_after = Pt(2)
+            paragraph.paragraph_format.space_before = Pt(2)
+            run = paragraph.add_run(value)
+            _set_run_font(run, size=12, bold=(r == 0), font=font)
+    _blank(doc, font=font, after=6)
+
+
+def _add_scheme_block(doc: Document, lines: list[str], *, font: str) -> None:
+    _add_opinion_paragraph(
+        doc, "Схема", font=font, size=_FONT_SIZE, italic=True, first_line=False, space_after=4
+    )
+    for line in lines:
+        _add_opinion_paragraph(
+            doc, line, font=font, size=_FONT_SIZE, first_line=False, space_after=2
+        )
+    _blank(doc, font=font, after=6)
 
 
 def _set_row_height(row, twips: int) -> None:
@@ -789,6 +892,7 @@ def _add_observation_header(doc: Document, observation: Observation, *, font: st
     lp.paragraph_format.space_before = Pt(0)
     run = lp.add_run(f"Наблюдение {observation.number}. ")
     _set_run_font(run, size=_FONT_SIZE, font=font)
+    add_bookmark(lp, f"obs_{observation.number.replace('.', '_')}")
 
     rp = right.paragraphs[0]
     rp.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -841,13 +945,13 @@ def _add_observation_summary(doc: Document, observation: Observation, *, font: s
     _blank(doc, font=font)
 
 
-def _add_roman_heading(doc: Document, roman: str, title: str, *, font: str) -> None:
+def _add_roman_heading(
+    doc: Document, roman: str, title: str, *, font: str, bookmark: str = ""
+) -> object:
     p = _add_styled_paragraph(
         doc, font=font, align="left", space_before=12, space_after=10, first_line=False
     )
-    heading = (title or "").strip()
-    if heading and not heading.endswith("."):
-        heading += "."
+    heading = _dot_title(title)
     _add_runs(
         p,
         [
@@ -857,10 +961,15 @@ def _add_roman_heading(doc: Document, roman: str, title: str, *, font: str) -> N
         ],
         font=font,
     )
+    if bookmark:
+        add_bookmark(p, bookmark)
+    return p
 
 
-def _add_section_heading(doc: Document, roman: str, *, font: str, title: str = "") -> None:
-    _add_roman_heading(doc, roman, title or _SECTION_III, font=font)
+def _add_section_heading(doc: Document, roman: str, *, font: str, title: str = "", bookmark: str = "") -> None:
+    _add_roman_heading(
+        doc, roman, title or _SECTION_III, font=font, bookmark=bookmark
+    )
 
 
 def _emu(cm: float) -> int:
@@ -1073,26 +1182,102 @@ def _write_title_page(
     break_run._r.append(br)
 
 
-def _write_toc(doc: Document, entries: list[tuple[str, str]], *, font: str) -> None:
-    h = _add_styled_paragraph(doc, font=font, align="left", space_after=12, first_line=False)
-    _add_runs(h, [(_TOC_HEADING, {"bold": True, "size": 16})], font=font)
-    for roman, title in entries:
-        p = _add_styled_paragraph(doc, font=font, align="justify", space_after=8, first_line=False)
+def _enable_update_fields(doc: Document) -> None:
+    settings_el = doc.settings.element
+    if settings_el.find(qn("w:updateFields")) is not None:
+        return
+    el = OxmlElement("w:updateFields")
+    el.set(qn("w:val"), "true")
+    settings_el.append(el)
+
+
+def _add_pageref(paragraph, bookmark: str, *, font: str) -> None:
+    def fld(kind: str) -> None:
+        run = paragraph.add_run()
+        el = OxmlElement("w:fldChar")
+        el.set(qn("w:fldCharType"), kind)
+        run._r.append(el)
+        _set_run_font(run, size=_FONT_SIZE, font=font)
+
+    fld("begin")
+    instr_run = paragraph.add_run()
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = f" PAGEREF {bookmark} \\h "
+    instr_run._r.append(instr)
+    _set_run_font(instr_run, size=_FONT_SIZE, font=font)
+    fld("separate")
+    placeholder = paragraph.add_run("·")
+    _set_run_font(placeholder, size=_FONT_SIZE, font=font)
+    fld("end")
+
+
+def _write_toc_line(
+    doc: Document,
+    label: str,
+    title: str,
+    *,
+    font: str,
+    bookmark: str = "",
+    indent_cm: float = 0.0,
+    bold_label: bool = True,
+) -> None:
+    paragraph = _add_styled_paragraph(
+        doc, font=font, align="left", space_after=2, first_line=False
+    )
+    paragraph.paragraph_format.space_before = Pt(2)
+    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    paragraph.paragraph_format.left_indent = Cm(indent_cm)
+    paragraph.paragraph_format.tab_stops.add_tab_stop(
+        Cm(16.0), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS
+    )
+    heading = _dot_title(title)
+    if bold_label:
         _add_runs(
-            p,
-            [
-                (f"{roman}.", {"bold": True}),
-                ("\t", {}),
-                (title if title.endswith(".") else title + ".", {}),
-            ],
+            paragraph,
+            [(f"{label}.", {"bold": True}), ("  ", {}), (heading, {})],
             font=font,
         )
-        _blank(doc, font=font, after=0)
+    else:
+        _add_runs(paragraph, [(f"{label}.  {heading}", {})], font=font)
+    paragraph.add_run("\t")
+    if bookmark:
+        _add_pageref(paragraph, bookmark, font=font)
+
+
+def _write_toc(doc: Document, report: ConclusionDocument, *, font: str) -> None:
+    heading = _add_styled_paragraph(
+        doc, font=font, align="left", space_after=14, first_line=False
+    )
+    _add_runs(heading, [(_TOC_HEADING, {"bold": True, "size": 16})], font=font)
+    iii_title = _SECTION_III
+    observations: list[Observation] = []
+    for section in report.sections:
+        if section.kind == "observations":
+            if section.title:
+                iii_title = section.title
+            observations = list(section.observations)
+            break
+    _write_toc_line(doc, "I", _SECTION_I, font=font, bookmark="sec_I")
+    _write_toc_line(doc, "II", _SECTION_II, font=font, bookmark="")
+    _write_toc_line(doc, "III", iii_title, font=font, bookmark="sec_III")
+    for observation in observations:
+        _write_toc_line(
+            doc,
+            observation.number,
+            observation.title or "Наблюдение",
+            font=font,
+            bookmark=f"obs_{observation.number.replace('.', '_')}",
+            indent_cm=1.0,
+            bold_label=False,
+        )
+    _write_toc_line(doc, "IV", _SECTION_LAST, font=font, bookmark="sec_IV")
+    _blank(doc, font=font, after=0)
     doc.add_page_break()
 
 
 def _write_general_section(doc: Document, section: ReportSection, *, font: str) -> None:
-    _add_roman_heading(doc, section.roman, _SECTION_LAST, font=font)
+    _add_roman_heading(doc, section.roman, _SECTION_LAST, font=font, bookmark="sec_IV")
     for label, value in section.general_items:
         lab = _add_styled_paragraph(
             doc, font=font, align="justify", space_before=8, space_after=2, first_line=False
@@ -1134,10 +1319,11 @@ def write_conclusion_docx(
     fr = footer.add_run(f"Черновик · {_TITLE} · {inspection_name} · кейс {case_id}")
     _set_run_font(fr, size=9, italic=True, font=font)
 
+    _enable_update_fields(doc)
     _write_title_page(doc, inspection_name=inspection_name, period=period, font=font)
-    _write_toc(doc, toc_entries(report), font=font)
+    _write_toc(doc, report, font=font)
 
-    _add_roman_heading(doc, "I", _SECTION_I, font=font)
+    _add_roman_heading(doc, "I", _SECTION_I, font=font, bookmark="sec_I")
     add_opinion_markdown(doc, opinion_body or "", font=font)
     doc.add_page_break()
 
@@ -1145,7 +1331,9 @@ def write_conclusion_docx(
         if block.kind == "general":
             _write_general_section(doc, block, font=font)
             continue
-        _add_section_heading(doc, block.roman, font=font, title=_SECTION_III)
+        _add_section_heading(
+            doc, block.roman, font=font, title=block.title or _SECTION_III, bookmark="sec_III"
+        )
         if block.intro:
             _add_body_markdown(doc, block.intro, font=font)
         for observation in block.observations:
