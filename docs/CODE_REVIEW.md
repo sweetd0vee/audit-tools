@@ -3,7 +3,7 @@
 **Дата:** 27 августа 2026 (актуализация: вынесен `intent.py`, тесты фраз Pipe, засев `pipe-seed`)  
 **Объект:** репозиторий `audit-tools`, ветка `main`, демо v0.0.1  
 **Объём своего кода:** ~12–14 тыс. строк Python (backend + Pipe + тесты), без форка Open WebUI  
-**Вердикт:** сильный доменный прототип с ясной архитектурой. Для демо СВА — готов. Для контура банка — нет: API открыт, поиск уходит в интернет, нет auth, RAG при пустой выборке подмешивает первые чанки.
+**Вердикт:** сильный доменный прототип с ясной архитектурой. Для демо СВА — готов. Для контура банка — нет: API без auth, нет eval цитаты как гейта релиза. Поиск по умолчанию локальный (SearXNG); DDG/Bing только по флагу.
 
 Шкала: 1–10. Это оценка кода и инженерной гигиены, не качества юридической выдачи модели.
 
@@ -15,11 +15,11 @@
 | Retrieval / RAG | **7** | Hybrid + RRF + rerank + MMR — выше среднего для v0. Дыры в отказе и eval |
 | Документы Word/Excel | **7** | Много тестов на парсер и docx. Генераторы тяжёлые, но изолированы |
 | Тесты | **6** | URL/docx + Pipe + retrieve/ask-refuse + 20 gold `eval_rag`. Нет TestClient API и concurrent save |
-| Безопасность контура | **3** | Локальное демо. Порты наружу, CORS `*`, DDG/Bing, редирект с allowlist |
+| Безопасность контура | **6** | Loopback bind, CORS не `*`, DDG/Bing за флагом, hop редиректа в allowlist. Нет auth на API |
 | Операционка / DX | **10** | CI: ruff + mypy + pytest; логи с request id; версия API 0.0.1; PR режет `initial commit`. История main не схлопнута — это не дыра в tooling |
 | Документация | **8** | Редкость: видение, гайд, RAG, промпты — согласованы с кодом |
 | **Итого как v0.0.1** | **7** | Демо выше среднего. Не «коробка в банк» |
-| **Итого как продукт банка** | **4** | Сначала auth, eval цитаты, trail. Локальность поиска — принятый компромисс демо: без DDG/Bing recall НПА падает |
+| **Итого как продукт банка** | **5** | Auth на API ещё нет. Локальность поиска — флаг `NPA_WEB_FALLBACK` (выкл. по умолчанию) |
 
 ---
 
@@ -45,33 +45,25 @@
 
 ### P0 — чинить до показа банку как «коробку»
 
-#### CR-01. Поиск НПА ходит в DuckDuckGo и Bing напрямую
+#### CR-01. Поиск НПА ходит в DuckDuckGo и Bing напрямую — **закрыто 27.08** (флаг)
 
 Файл: `backend/app/services/npa_search.py`, `_search_engines`.
 
-Документация и README говорят: поиск только через SearXNG по allowlist, клиентские данные в интернет не уходят. Код параллельно бьёт `html.duckduckgo.com` и `www.bing.com` с **названием акта** (а значит — с темой проверки).
+Было: параллельно `html.duckduckgo.com` и `www.bing.com` с названием акта.
 
-Даже если скачивается только `pravo.by`, **запрос** уже ушёл к Microsoft и DDG. Для внутренней проверки банка это нарушение инварианта локальности. SearXNG при этом всё равно поднят — получается мёртвый контур.
+Сейчас: `NPA_WEB_FALLBACK` по умолчанию **выкл.** Остаются SearXNG + формы `pravo.by` / `etalonline.by` / `nbrb.by` + `known_sources`. Вкл. fallback — WARNING в лог, название акта уходит к Microsoft/DDG. Compose: `NPA_WEB_FALLBACK=${NPA_WEB_FALLBACK:-false}`.
 
-**Решение (демо v0.0.1).** Оставить DDG/Bing. Без внешнего поиска далеко не все акты находятся: SearXNG + known_sources + формы `pravo.by` / `etalonline.by` / `nbrb.by` не закрывают recall. Для показа СВА это осознанный обмен: полнота библиотеки важнее закрытого контура. Для коробки в банк — всё ещё блокер; тогда вынести за флаг `NPA_WEB_FALLBACK` (по умолчанию выкл.) и честно описать fallback в README.
+Recall без внешних поисковиков может быть ниже — это принятый обмен на закрытый контур по умолчанию.
 
-#### CR-02. API без аутентификации, CORS `*`, порты наружу
+#### CR-02. API без аутентификации, CORS `*`, порты наружу — **закрыто частично 27.08**
 
-- `backend/app/main.py`: `allow_origins=["*"]`, `allow_credentials=True`.
-- `docker-compose.yml`: `8100:8100` (backend), `8080:8080` (SearXNG) на все интерфейсы.
-- Любой, кто видит LAN, может `GET /api/v1/cases`, скачать zip НПА, вызвать `/chat`, собрать заключение.
+- CORS: `settings.cors_origins` (loopback Open WebUI / lab), `allow_credentials=False`. Не `*`.
+- Compose: `127.0.0.1:8100:8100`, `127.0.0.1:3000:8080`; SearXNG **без** `ports`.
+- **Не закрыто:** API без shared secret. Open WebUI свой auth не защищает backend; с loopback это один аудитор на машине.
 
-Для localhost-демо приемлемо. Для «коробочного продукта банку» — нет. Open WebUI свой auth не защищает backend.
+#### CR-03. Редирект обходит allowlist — **закрыто 27.08**
 
-**Рекомендация.** Пока один аудитор на машине: биндить `127.0.0.1:8100` и не публиковать SearXNG. Следующий шаг: shared secret / сеть `internal:` в compose. Не «JWT на вырост».
-
-#### CR-03. Редирект обходит allowlist
-
-`downloader.download_url`: проверка `host_allowed(url)` **до** запроса, `follow_redirects=True`, финальный URL **не** проверяется.
-
-Если `pravo.by` (или скомпрометированная карточка) отвечает `302` на чужой хост — файл сохранится в кейс и попадёт в RAG.
-
-**Рекомендация.** После каждого hop: `host_allowed(str(resp.url))`, иначе abort. То же в `npa_search` httpx-клиентах.
+`allowlisted_get`: каждый hop — `host_allowed`, иначе `DisallowedHost`. Download и официальный поиск сайтов не следуют на чужой хост. Тесты: `backend/tests/test_contour.py`.
 
 #### CR-04. RAG не умеет отказать
 
@@ -144,7 +136,7 @@ if not evidence:
 - `chunker.chunk_text` на реальном ГК;
 - HTTP API (`TestClient`);
 - `ask` refuse path;
-- редирект allowlist;
+- редирект allowlist — `test_contour.py`;
 - concurrent `store.save`.
 
 `test_brief.py` — 750+ строк, почти целиком docx. Retrieval — 0.
@@ -180,7 +172,7 @@ API `version` = `app.__version__` = **0.0.1**. `GET /` отдаёт `version`, �
 | CR-15 | `GET /` светит `data_root`, `searxng_url`, имена моделей |
 | CR-16 | `GET /health` возвращает `status: created` — бессмысленно |
 | CR-17 | Upload в KB: нет лимита размера, `.bin` проходит в raw |
-| CR-18 | `searxng/settings.yml`: `secret_key: "audit-tools-local-change-me-32chars"`, `limiter: false`, порт 8080 наружу |
+| CR-18 | `searxng/settings.yml`: `secret_key: "audit-tools-local-change-me-32chars"`, `limiter: false`; порт 8080 больше не публикуется |
 | CR-19 | Spoof `X-Forwarded-For: 127.0.0.1` к SearXNG — обход бот-детекта; ок для compose, запах |
 | CR-20 | `embed_texts` на 404 `/api/embed` эмбеддит только `texts[0]` |
 | CR-21 | `searxng_client.find_best_url` дублирует логику `npa_search.build_search_queries` |
@@ -209,14 +201,12 @@ API `version` = `app.__version__` = **0.0.1**. `GET /` отдаёт `version`, �
 
 | Документ обещает | Код делает |
 |---|---|
-| Поиск только SearXNG | + DDG + Bing |
-| Trail file/chunk/url | Только `manifest.json` при download; ask не пишет trail |
+| Поиск только SearXNG | По умолчанию да; DDG/Bing за `NPA_WEB_FALLBACK` |
+| Trail file/chunk/url | Только `manifest.json` при download; ask пишет `trail/ask.jsonl` |
 | DuckDB / evidence | Нет (и не должно в 0.0.1) — ок |
 | Нормализация `## Статья N` перед sync | Нет (план v0.1) |
 | Коробка: Pipe при `up` | `pipe-seed` при наличии `OPENWEBUI_API_KEY`; без ключа — руками |
-| Defense in depth на download | Allowlist только на исходный URL |
-
-`ARCHITECTURE.md` лучше кода. Держать документ честным: либо выпилить DDG/Bing, либо описать fallback.
+| Defense in depth на download | Allowlist на исходный URL и каждый hop редиректа |
 
 ---
 
@@ -248,13 +238,13 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 
 Лучший «грязный» модуль репозитория: known_sources → expand official URLs → score (штраф новостям, штраф чужому кодексу по коду документа) → download → reject коротких заглушек.
 
-Тесты покрывают именно это. Сохранить. Убрать внешние поисковики (CR-01), закрыть редирект (CR-03).
+Тесты покрывают именно это. Сохранить. Внешние поисковики за флагом (CR-01), редирект закрыт (CR-03).
 
 ### 4.4 Compose / коробка
 
 Плюс: RAG-шаблон и числа в compose, Ollama на хосте, profile `lab` для мёртвого фронта, `pipe-seed` ставит функцию «Аудитор» через API.
 
-Минус: засев молчит без `OPENWEBUI_API_KEY` (первый админ ещё не создал ключ). `latest` образы (`searxng:latest`, `open-webui:main`) — невоспроизводимая коробка. Для банка пинить digest. Нет корневого `.env.example` (он только в `backend/`). Нет healthcheck у сервисов. `--reload` в prod-команде backend (volume `./backend/app`) — удобно для разработки, опасно как «поставка».
+Минус: засев молчит без `OPENWEBUI_API_KEY` (первый админ ещё не создал ключ). `latest` образы (`searxng:latest`, `open-webui:main`) — невоспроизводимая коробка. Для банка пинить digest. Нет корневого `.env.example` (он только в `backend/`). Нет healthcheck у сервисов. `--reload` в prod-команде backend (volume `./backend/app`) — удобно для разработки, опасно как «поставка». Порты 3000/8100 на `127.0.0.1`, SearXNG без publish.
 
 ### 4.5 Документация vs код
 
@@ -289,10 +279,10 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 
 ### Неделя 1 — не нарушать обещания (P0)
 
-1. Выключить DDG/Bing по умолчанию. Проверить download на 10 типовых актах только SearXNG + known_sources + pravo.by search.
-2. После redirect — `host_allowed(final_url)`.
+1. ~~Выключить DDG/Bing по умолчанию.~~ `NPA_WEB_FALLBACK=false`.
+2. ~~После redirect — `host_allowed(final_url)`.~~ `allowlisted_get`.
 3. `ask`: пустая evidence → отказ, без `chunks[:top_k]`. Убрать саммари из ask-контекста или пометить «не цитировать».
-4. Compose: `127.0.0.1:8100`, SearXNG без publish. CORS только `http://localhost:3000`.
+4. ~~Compose: `127.0.0.1:8100`, SearXNG без publish. CORS только localhost.~~
 5. Валидация `case_id` regex.
 
 ### Неделя 2 — доверие к цитате (это и есть v0.1)
@@ -337,7 +327,7 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 |---|---|---|---|
 | `domains` / `downloader.usable_url` | мало | отлично | Тесты есть, инвариант ясен |
 | `known_sources` / `extra_titles` | ~280 | отлично | Доменный кэш, так и надо |
-| `npa_search` | ~350 | плохо на контуре | Умный скоринг + запрещённый интернет |
+| `npa_search` | ~350 | средне | Скоринг на месте; DDG/Bing за флагом |
 | `knowledge_retrieve` | ~400 | хорошо | Алгоритм зрелый, gate + eval 20 вопросов |
 | `knowledge_flow` | ~660 | слабо | Бог-файл, ask-fallback |
 | `ollama_client` | ~380 | хорошо | Rerank hack оправдан, нужен лог |
@@ -358,7 +348,7 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 
 Проект **не выглядит как свалка Jupyter-скриптов**. Есть продукт, инварианты, HITL, локальная модель, осмысленный RAG и документация, с которой можно садиться к аудитору.
 
-Главный риск не «кривой Python», а **разрыв обещания**: локальность, отказ без цитаты, audit trail. Это чинится точечно (CR-01…04 + eval), без переписывания агента.
+Главный риск не «кривой Python», а **разрыв обещания**: отказ без цитаты, audit trail, auth на API. Локальность поиска и hop редиректа закрыты (CR-01…03).
 
 Второй риск — **скорость энтропии** в ядре: `knowledge_flow` большой, flow-модули плодятся копипастой. Intent Pipe нарезан; retrieval/ask покрыты тестами.
 

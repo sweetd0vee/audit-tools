@@ -12,9 +12,20 @@ from app.services.allowlist_http import DisallowedHost, allowlisted_get
 from app.services.downloader import download_url
 from app.services.npa_search import _search_engines
 
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
 
 def _npa_html() -> bytes:
     return ("<html><body><p>" + ("Статья 1 текст нормы. " * 80) + "</p></body></html>").encode()
+
+
+def _client_with_transport(transport: httpx.MockTransport):
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["follow_redirects"] = False
+        return _REAL_ASYNC_CLIENT(*args, **kwargs)
+
+    return factory
 
 
 class TestAllowlistedGet(unittest.IsolatedAsyncioTestCase):
@@ -85,12 +96,10 @@ class TestDownloadRedirect(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, content=_npa_html(), headers={"content-type": "text/html"})
 
         transport = httpx.MockTransport(handler)
-
-        def client_factory(*args, **kwargs):
-            kwargs.pop("follow_redirects", None)
-            return httpx.AsyncClient(transport=transport, follow_redirects=False, **kwargs)
-
-        with patch("app.services.downloader.httpx.AsyncClient", side_effect=client_factory):
+        with patch(
+            "app.services.downloader.httpx.AsyncClient",
+            _client_with_transport(transport),
+        ):
             with tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaises(DisallowedHost):
                     await download_url(
@@ -115,12 +124,10 @@ class TestDownloadRedirect(unittest.IsolatedAsyncioTestCase):
             )
 
         transport = httpx.MockTransport(handler)
-
-        def client_factory(*args, **kwargs):
-            kwargs.pop("follow_redirects", None)
-            return httpx.AsyncClient(transport=transport, follow_redirects=False, **kwargs)
-
-        with patch("app.services.downloader.httpx.AsyncClient", side_effect=client_factory):
+        with patch(
+            "app.services.downloader.httpx.AsyncClient",
+            _client_with_transport(transport),
+        ):
             with tempfile.TemporaryDirectory() as tmp:
                 result = await download_url(
                     "https://pravo.by/go?x=1",

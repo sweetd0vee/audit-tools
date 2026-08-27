@@ -9,7 +9,7 @@
 1. Аудитор создаёт кейс: **название проверки** + **ключевые слова**
 2. Локальная LLM (Ollama) предлагает список НПА / документов
 3. Аудитор валидирует и выбирает документы (`document_ids`) и при необходимости дописывает свои названия (`extra_titles`)
-4. Backend ищет URL через **SearXNG + DuckDuckGo + Bing** и **скачивает** только страницы с allowlist доменов РБ
+4. Backend ищет URL через **SearXNG** (+ официальные формы; DDG/Bing только при `NPA_WEB_FALLBACK=true`) и **скачивает** только страницы с allowlist доменов РБ
 
 ```
 data/audit_cases/{case_id}/
@@ -54,7 +54,7 @@ pytest
 
 Нужны запущенные:
 - Ollama (`qwen3.8:27b`)
-- SearXNG на `http://localhost:8080` с `format=json`
+- SearXNG: в compose недоступен с хоста; без Docker — `http://localhost:8080` с `format=json`
 
 ## API flow
 
@@ -159,13 +159,14 @@ POST /api/v1/cases/{case_id}/knowledge/openwebui/sync
 
 ## Как ищем URL
 
-Поисковики часто банят SearXNG (403 / suspended), и одного allowlist-индекса мало: без DDG/Bing часть актов на `pravo.by` не находится. Download идёт так:
+Поисковики часто банят SearXNG (403 / suspended). По умолчанию download **не** ходит в DuckDuckGo/Bing. Цепочка:
 
 1. `manual_urls` из `/select` (если аудитор указал ссылку)
 2. curated `known_sources.py` (официальные URL по названию акта)
-3. параллельный поиск: SearXNG + DuckDuckGo HTML + Bing; в кандидаты попадают только URL с allowlist выше
+3. поиск: SearXNG + формы `pravo.by` / `etalonline.by` / `nbrb.by`; в кандидаты — только allowlist
+4. если `NPA_WEB_FALLBACK=true` — параллельно DuckDuckGo HTML + Bing (название акта уходит с машины)
 
-На диск качается страница с `pravo.by` / `etalonline.by` / `nbrb.by` (и остальной allowlist). Сам запрос при этом уходит во внешние поисковики — это не air-gap.
+На диск качается страница с `pravo.by` / `etalonline.by` / `nbrb.by` (и остальной allowlist). Редирект на чужой хост обрывается.
 
 Пример select с ручной ссылкой:
 

@@ -1,6 +1,6 @@
 """Find official NPA URLs when SearXNG is empty or returns the wrong page.
 
-Order: collect hits from several search backends, rewrite pravo.by cards
+Order: collect hits from SearXNG (and optional DDG/Bing), rewrite pravo.by cards
 into full-text variants, rank, return unique allowlisted URLs.
 """
 

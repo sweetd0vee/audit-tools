@@ -31,7 +31,7 @@
                │             │              │
         ┌──────▼──────┐ ┌────▼─────┐ ┌──────▼──────┐
         │ Ollama      │ │ SearXNG  │ │ DuckDB /    │
-        │ LLM+embed   │ │ + DDG/Bing│ │ файлы кейса │
+        │ LLM+embed   │ │ (DDG opt)│ │ файлы кейса │
         └─────────────┘ └──────────┘ └─────────────┘
                              │
                     Open WebUI Chroma (индекс чата)
@@ -114,7 +114,7 @@ Continue.dev / Aider — отдельный контур «править rule /
 ### Есть (и оставляем)
 
 - кейс: `inspection_name`, keywords, статус;
-- propose → select (HITL) → download (manual URL / known_sources / SearXNG + DDG/Bing, качаем только allowlist);
+- propose → select (HITL) → download (manual URL / known_sources / SearXNG, качаем только allowlist; DDG/Bing — `NPA_WEB_FALLBACK`);
 - extract HTML/PDF → текст, чанкер по статьям, индекс, ask;
 - Word: обзор актов (`саммари`, см. [SAMMARI.md](SAMMARI.md)), total из знаний модели, программа проверки, Excel-чеклист гипотез, раздел I (`аудиторское мнение`), полное заключение;
 - обычный чат без RAG (`POST /chat`);
@@ -131,7 +131,7 @@ Continue.dev / Aider — отдельный контур «править rule /
 | Модуль | Почему свой | Чего не пишем вокруг |
 |---|---|---|
 | **Case store** | Контур проверки, статусы, кто утвердил список | Не пишем админку кейсов. Список кейсов — tool + папки / позже SQLite |
-| **NPA library** | Allowlist **скачивания** РБ, known_sources; поиск URL — SearXNG + DDG/Bing | Не пишем краулер pravo.by |
+| **NPA library** | Allowlist **скачивания** РБ (и hop редиректа), known_sources; поиск URL — SearXNG | Не пишем краулер pravo.by |
 | **Ingest НПА** | Статья/пункт важнее дефолтного сплиттера Open WebUI | Не пишем свою vector DB, если хватает markdown `## Статья` + Open WebUI |
 | **Evidence store** | Выгрузки клиента ≠ НПА. Отдельные пути, отдельные tools | Не RAG по Excel |
 | **Tests** | Процедура, выборка, критерий ok/finding — доменная модель | Не UI конструктора тестов |
@@ -175,7 +175,7 @@ SQLite появится, когда понадобятся поиск по ке�
 название + keywords
   → LLM propose (Ollama)
   → аудитор утверждает document_ids          ← HITL, без этого download нет
-  → URL: manual → known_sources → SearXNG + DuckDuckGo + Bing
+  → URL: manual → known_sources → SearXNG (+ DDG/Bing если NPA_WEB_FALLBACK)
   → из выдачи оставляем только allowlist (pravo.by / etalonline.by / nbrb.by / …)
   → knowledge_raw + extract → knowledge_text
   → саммари на диск + Word на 6–10 стр. (команда «саммари»)
@@ -183,7 +183,7 @@ SQLite появится, когда понадобятся поиск по ке�
   → Open WebUI Knowledge коллекция npa-{case_id}
 ```
 
-Клиентские файлы в поиск **не** передаются. В запрос уходит название акта: без DDG/Bing SearXNG один не находит часть официальных редакций. Это внешний fallback v0.0.1, не air-gap.
+Клиентские файлы в поиск **не** передаются. Внешний fallback (`NPA_WEB_FALLBACK`) шлёт название акта в DuckDuckGo/Bing — по умолчанию выкл. Без него recall части редакций на `pravo.by` может упасть.
 
 ### 5.2 Спросить норму
 
@@ -195,7 +195,7 @@ SQLite появится, когда понадобятся поиск по ке�
   → ответ + блок «Откуда в базе знаний» (его дописывает Pipe)
 ```
 
-Без префикса `вопрос` это **не** RAG, а обычный чат (`POST /api/v1/chat`). Веб-поиск в обоих потоках чата **выключен**. SearXNG / DDG / Bing — только добыча URL в библиотеку; файл качается, если хост в allowlist.
+Без префикса `вопрос` это **не** RAG, а обычный чат (`POST /api/v1/chat`). Веб-поиск в обоих потоках чата **выключен**. SearXNG — добыча URL в библиотеку; файл качается, если хост (включая hop редиректа) в allowlist.
 
 ### 5.3 Спросить факт (план v0.4)
 
@@ -278,8 +278,8 @@ Air-gap: образы и веса моделей едут файлами, не �
 ## 9. Доверие и контур
 
 - Ollama, Open WebUI, SearXNG, данные кейса — на машине/контуре банка.
-- **Поиск URL** в v0.0.1: SearXNG (allowlist в `settings.yml`) **и** напрямую DuckDuckGo HTML + Bing. Запрос — название акта, не файл клиента.
-- **Скачивание** железно по allowlist в сервере (`domains.host_allowed`). Чужой хост из выдачи DDG/Bing не качается.
+- **Поиск URL** в v0.0.1: SearXNG (allowlist в `settings.yml`) + формы официальных сайтов. DuckDuckGo HTML + Bing — только при `NPA_WEB_FALLBACK=true`. Запрос — название акта, не файл клиента.
+- **Скачивание** железно по allowlist в сервере (`domains.host_allowed`) на исходный URL **и каждый hop редиректа**. Чужой хост не качается.
 - Tools, которые трогают `evidence/`, не имеют права ходить в интернет.
 - Модель не ставит суждение и не подписывает WP.
 - Trail: что скачали, из какого URL, какой чанк ушёл в ответ, какой tool с какими аргументами.
