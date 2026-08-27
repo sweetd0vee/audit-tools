@@ -59,6 +59,17 @@ class TestParseHypotheses(unittest.TestCase):
             parse_hypotheses_payload({"hypotheses": [{"hypothesis": "одна"}]})
 
 
+class TestSelectHypotheses(unittest.TestCase):
+    def test_resolve_keeps_order_and_dedupes(self):
+        from app.services.hypotheses_flow import resolve_hypothesis_selection
+
+        rows = [{**_row(i, "средний"), "n": str(i)} for i in range(1, 9)]
+        self.assertEqual(
+            resolve_hypothesis_selection(rows, numbers=[5, 1, 5, 3]),
+            [5, 1, 3],
+        )
+
+
 class TestHypothesesXlsx(unittest.TestCase):
     def test_writes_workbook_with_priority_column_and_sort(self):
         rows = [

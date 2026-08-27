@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.7
+version: 0.2.8
 license: MIT
 description: Агент проверки. Документы, саммари, total, программа, гипотезы, мнение, заключение. Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
@@ -42,7 +42,7 @@ NEXT_STEPS = (
     "— `саммари` — основная информация по теме из базы знаний в Word;\n"
     "— `саммари total` — основная информация по теме из знаний модели;\n"
     "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
-    "— `аудиторское мнение` — черновик мнения в Word (после `утверждаю гипотезы …`);\n"
+    "— `аудиторское мнение` — черновик раздела I в Word после `утверждаю гипотезы …` (`-c` Calibri, `-t` Times New Roman);\n"
     "— `аудиторское заключение` — черновик заключения в Word (после `утверждаю гипотезы …`);\n"
     "— `вопрос` — вопрос по базе знаний;\n"
     "— `документы` — посмотреть список документов в базе знаний;\n"
@@ -137,14 +137,14 @@ class Pipe:
                 if missing:
                     return missing
                 assert case_id is not None
-                return _select_hypotheses_stub(case_id)
+                return await self._select_hypotheses(
+                    api, timeout, case_id, text
+                )
 
             if _is_opinion(text):
-                missing = _need_case(case_id)
-                if missing:
-                    return missing
-                assert case_id is not None
-                return _closing_doc_stub("аудиторское мнение", case_id)
+                return await self._dispatch_artifact(
+                    self._opinion, api, public, timeout, case_id, text, __event_emitter__
+                )
 
             if _is_conclusion(text):
                 missing = _need_case(case_id)
@@ -657,6 +657,107 @@ class Pipe:
             link_flags={"with_hypotheses": True},
         )
 
+    async def _select_hypotheses(
+        self,
+        api: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+    ) -> str:
+        try:
+            status = await _req(
+                "GET",
+                f"{api}/api/v1/cases/{case_id}/knowledge/hypotheses",
+                timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                f"Не получилось прочитать чеклист гипотез: {exc}\n"
+                "Сначала напишите `гипотезы`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        if not status.get("ready"):
+            return (
+                "Чеклиста гипотез ещё нет. Сначала напишите `гипотезы`, "
+                "затем: `утверждаю гипотезы 1, 3, 5`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        picks = _parse_hypothesis_picks(text)
+        if (
+            not picks.get("numbers")
+            and not picks.get("all_high")
+            and not picks.get("all_rows")
+        ):
+            return (
+                "Укажите номера гипотез, которые подтвердились на проверке, например:\n"
+                "`утверждаю гипотезы 1, 3, 5`\n"
+                "или: `утверждаю гипотезы все с приоритетом высокий`\n"
+                "или: `утверждаю все гипотезы`.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        try:
+            data = await _req(
+                "POST",
+                f"{api}/api/v1/cases/{case_id}/knowledge/hypotheses/select",
+                timeout,
+                json=picks,
+            )
+        except Exception as extra:  # noqa: BLE001
+            return (
+                f"Не получилось сохранить выбор гипотез: {extra}\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        rows = data.get("hypotheses") or []
+        lines = [
+            f"Подтвердил гипотезы: {data.get('count') or len(rows)}.",
+            "В аудиторское мнение пойдут только они.",
+            "",
+        ]
+        for row in rows:
+            lines.append(
+                f"- {row.get('n')}. [{row.get('priority')}] {row.get('hypothesis')}"
+            )
+        lines.append("")
+        lines.append(
+            "Дальше: `аудиторское мнение` (шрифт: `-c` Calibri или `-t` Times New Roman)."
+        )
+        lines.append(f"<!--audit-case:{case_id}-->")
+        return "\n".join(lines)
+
+    async def _opinion(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        font = _parse_opinion_font(text)
+        font_name = "Calibri" if font == "c" else "Times New Roman"
+        return await self._stream_build(
+            api,
+            public,
+            timeout,
+            case_id,
+            text,
+            emitter,
+            endpoint="opinion",
+            start_message=(
+                f"Готовлю раздел I аудиторского заключения в Word ({font_name}). "
+                "Это может занять несколько минут…"
+            ),
+            fallback_status="Готовлю аудиторское мнение…",
+            error_label="аудиторское мнение",
+            retry_hint=(
+                "Сначала `гипотезы`, затем `утверждаю гипотезы 1, 3, 5`. "
+                "Шрифт: `аудиторское мнение -c` (Calibri) или `-t` (Times New Roman)."
+            ),
+            empty_message="Аудиторское мнение не получилось. Напишите ещё раз: `аудиторское мнение`.",
+            link_flags={"with_opinion": True},
+            extra_query={"font": font},
+        )
+
     async def _library(self, api: str, public: str, timeout: float, case_id: str) -> str:
         data = await _req("GET", f"{api}/api/v1/cases/{case_id}/library", timeout)
         name = data.get("inspection_name") or "proverka"
@@ -898,11 +999,31 @@ def _is_opinion(text: str) -> bool:
             r"аудиторск\w*\s+мнен|"
             r"мнен\w*\s+аудитор|"
             r"(сделай|составь|подготовь|напиши)\s+(аудиторск\w*\s+)?мнен|"
-            r"/opinion"
+            r"/opinion|/мнение"
             r")",
             t,
         )
     )
+
+
+def _parse_hypothesis_picks(text: str) -> dict[str, Any]:
+    t = text.strip().lower()
+    if re.search(r"все\s+(с\s+приоритетом\s+)?высок", t):
+        return {"all_high": True, "numbers": [], "all_rows": False}
+    if re.search(r"все\s+гипотез|утверждаю\s+все(?!\s+обязательн)|подтверждаю\s+все", t):
+        return {"all_rows": True, "numbers": [], "all_high": False}
+    numbers = [int(n) for n in re.findall(r"\b(\d{1,2})\b", t)]
+    numbers = [n for n in numbers if 1 <= n <= 20]
+    return {"numbers": numbers, "all_high": False, "all_rows": False}
+
+
+def _parse_opinion_font(text: str) -> str:
+    cleaned = re.sub(r"заново|пересобер\w*|перегенер\w*|force", " ", text or "", flags=re.I)
+    if re.search(r"(?:^|\s)-c(?:\s|$)|(?<!\w)calibri(?!\w)|калибри", cleaned, re.I):
+        return "c"
+    if re.search(r"(?:^|\s)-t(?:\s|$)|times(?:\s+new\s+roman)?|таймс", cleaned, re.I):
+        return "t"
+    return "t"
 
 
 def _is_conclusion(text: str) -> bool:
@@ -931,20 +1052,9 @@ def _is_conclusion(text: str) -> bool:
 def _closing_doc_stub(title: str, case_id: str) -> str:
     return (
         f"Команда `{title}` принята. Черновик Word ещё не собираю: "
-        "нет шаблона и списка гипотез, которые вы подтвердили.\n\n"
-        "Когда шаблон будет готов, эта же кнопка отдаст docx "
-        "из подтверждённых гипотез и документов проверки "
-        "(саммари, total, программа, НПА).\n\n"
-        "Сейчас: `гипотезы`, затем `утверждаю гипотезы 1, 3, 5`.\n"
-        f"<!--audit-case:{case_id}-->"
-    )
-
-
-def _select_hypotheses_stub(case_id: str) -> str:
-    return (
-        "Выбор гипотез принял. В мнение и заключение потом пойдут только отмеченные номера.\n"
-        "Сами Word ещё не собираю — нет шаблона.\n\n"
-        "Дальше: `аудиторское мнение` или `аудиторское заключение`.\n"
+        "нет шаблона полного заключения.\n\n"
+        "Раздел I уже можно получить командой `аудиторское мнение` "
+        "после `утверждаю гипотезы 1, 3, 5`.\n"
         f"<!--audit-case:{case_id}-->"
     )
 
@@ -1037,6 +1147,7 @@ def _download_links(
     with_total: bool = False,
     with_program: bool = False,
     with_hypotheses: bool = False,
+    with_opinion: bool = False,
 ) -> str:
     stem = _file_stem(inspection_name)
     base = f"{public}/api/v1/cases/{case_id}"
@@ -1060,6 +1171,10 @@ def _download_links(
     if with_hypotheses:
         lines.append(
             f"- чеклист гипотез (`{stem}_gipotezy.xlsx`): {base}/knowledge/hypotheses.xlsx"
+        )
+    if with_opinion:
+        lines.append(
+            f"- аудиторское мнение (`{stem}_mnenie.docx`): {base}/knowledge/opinion.docx"
         )
     return "\n".join(lines)
 
@@ -1125,6 +1240,9 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
         or _is_total(raw)
         or _is_program(raw)
         or _is_hypotheses(raw)
+        or _is_opinion(raw)
+        or _is_conclusion(raw)
+        or _is_select_hypotheses(raw)
     ):
         return None
     parts = [p.strip(" .;") for p in re.split(r"[,;\n]", raw) if p.strip()]

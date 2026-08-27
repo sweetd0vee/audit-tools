@@ -96,8 +96,15 @@ def add_bookmark(paragraph, name: str) -> None:
     paragraph._p.append(end)
 
 
-def _set_run_font(run, *, size: int = 12, bold: bool = False, italic: bool = False) -> None:
-    run.font.name = "Times New Roman"
+def _set_run_font(
+    run,
+    *,
+    size: int = 12,
+    bold: bool = False,
+    italic: bool = False,
+    font: str = "Times New Roman",
+) -> None:
+    run.font.name = font
     run.font.size = Pt(size)
     run.bold = bold
     run.italic = italic
@@ -106,10 +113,10 @@ def _set_run_font(run, *, size: int = 12, bold: bool = False, italic: bool = Fal
     if r_fonts is None:
         r_fonts = OxmlElement("w:rFonts")
         r_pr.insert(0, r_fonts)
-    r_fonts.set(qn("w:ascii"), "Times New Roman")
-    r_fonts.set(qn("w:hAnsi"), "Times New Roman")
-    r_fonts.set(qn("w:eastAsia"), "Times New Roman")
-    r_fonts.set(qn("w:cs"), "Times New Roman")
+    r_fonts.set(qn("w:ascii"), font)
+    r_fonts.set(qn("w:hAnsi"), font)
+    r_fonts.set(qn("w:eastAsia"), font)
+    r_fonts.set(qn("w:cs"), font)
     try:
         run.font.color.rgb = RGBColor(0x22, 0x22, 0x22)
     except Exception:
@@ -126,10 +133,16 @@ def _style_paragraph(paragraph, *, first_line: bool = False) -> None:
 
 
 def _add_plain_run(
-    paragraph, text: str, *, italic: bool = False, bold: bool = False, size: int = 12
+    paragraph,
+    text: str,
+    *,
+    italic: bool = False,
+    bold: bool = False,
+    size: int = 12,
+    font: str = "Times New Roman",
 ) -> None:
     run = paragraph.add_run(text)
-    _set_run_font(run, size=size, italic=italic, bold=bold)
+    _set_run_font(run, size=size, italic=italic, bold=bold, font=font)
 
 
 def _set_table_borders(
@@ -647,6 +660,191 @@ def write_brief_docx(
             "Официальный URL — страница, с которой акт скачан в библиотеку кейса."
         ),
     )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+    return path
+
+
+_OPINION_FONT_SIZE = 14
+_OPINION_TITLE = "I. Аудиторское мнение по итогам проверки"
+_NUMBERED_LINE_RE = re.compile(r"^(\d{1,2})[.)]\s+(.*)$")
+
+
+def _set_document_base_font(doc: Document, font: str, size: int) -> None:
+    style = doc.styles["Normal"]
+    style.font.name = font
+    style.font.size = Pt(size)
+    r_pr = style.element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    r_fonts.set(qn("w:ascii"), font)
+    r_fonts.set(qn("w:hAnsi"), font)
+    r_fonts.set(qn("w:eastAsia"), font)
+    r_fonts.set(qn("w:cs"), font)
+
+
+def _add_opinion_paragraph(
+    doc: Document,
+    text: str,
+    *,
+    font: str,
+    size: int = _OPINION_FONT_SIZE,
+    bold: bool = False,
+    italic: bool = False,
+    align: str = "justify",
+    first_line: bool = True,
+    space_before: int = 0,
+    space_after: int = 8,
+    bullet: bool = False,
+) -> None:
+    paragraph = doc.add_paragraph(style="List Bullet" if bullet else "Normal")
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(space_before)
+    fmt.space_after = Pt(space_after)
+    fmt.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+    if align == "center":
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        fmt.first_line_indent = Cm(0)
+    elif align == "left":
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        fmt.first_line_indent = Cm(0)
+    else:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        fmt.first_line_indent = Cm(1.25) if first_line and not bullet else Cm(0)
+    if bullet:
+        fmt.left_indent = Cm(1.0)
+        fmt.first_line_indent = Cm(0)
+    cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", text or "")
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned).strip()
+    if not cleaned:
+        return
+    run = paragraph.add_run(cleaned)
+    _set_run_font(run, size=size, bold=bold, italic=italic, font=font)
+
+
+def _add_opinion_heading(doc: Document, text: str, *, font: str, level: int) -> None:
+    title = _strip_md(text)
+    if not title:
+        return
+    paragraph = doc.add_heading(title, level=level)
+    size = 16 if level <= 1 else 14
+    for run in paragraph.runs:
+        _set_run_font(run, size=size, bold=True, font=font)
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(12 if level <= 1 else 10)
+    fmt.space_after = Pt(6)
+
+
+def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
+    """Narrative-only renderer: headings, paragraphs, bullets. No tables."""
+    size = _OPINION_FONT_SIZE
+    for raw in (md or "").splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("|"):
+            continue
+        if stripped.startswith("```"):
+            continue
+        if stripped.startswith("### "):
+            _add_opinion_heading(doc, stripped[4:], font=font, level=2)
+            continue
+        if stripped.startswith("## "):
+            heading = _strip_md(stripped[3:])
+            if heading.lower() in {"название проверки", "название"}:
+                continue
+            _add_opinion_heading(doc, heading, font=font, level=1)
+            continue
+        if stripped.startswith("# "):
+            continue
+        if stripped.startswith("- ") or stripped.startswith("* "):
+            _add_opinion_paragraph(
+                doc,
+                stripped[2:].strip(),
+                font=font,
+                size=size,
+                first_line=False,
+                bullet=True,
+                space_after=4,
+            )
+            continue
+        numbered = _NUMBERED_LINE_RE.match(stripped)
+        if numbered:
+            _add_opinion_paragraph(
+                doc,
+                numbered.group(2).strip(),
+                font=font,
+                size=size,
+                first_line=False,
+                bullet=True,
+                space_after=4,
+            )
+            continue
+        _add_opinion_paragraph(doc, stripped, font=font, size=size)
+
+
+def write_opinion_docx(
+    path: Path,
+    *,
+    inspection_name: str,
+    period: str | None,
+    keywords: list[str],
+    case_id: str,
+    body: str,
+    font: str = "Times New Roman",
+) -> Path:
+    _ = keywords
+    doc = Document()
+    _set_document_base_font(doc, font, _OPINION_FONT_SIZE)
+    section = doc.sections[0]
+    section.page_width = Cm(21.0)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(3.0)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fr = footer.add_run(
+        f"Черновик · {_OPINION_TITLE} · {inspection_name} · кейс {case_id}"
+    )
+    _set_run_font(fr, size=9, italic=True, font=font)
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_after = Pt(6)
+    tr = title.add_run(_OPINION_TITLE)
+    _set_run_font(tr, size=16, bold=True, font=font)
+
+    if (inspection_name or "").strip():
+        sub = doc.add_paragraph()
+        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sub.paragraph_format.space_after = Pt(8)
+        sr = sub.add_run(inspection_name.strip())
+        _set_run_font(sr, size=_OPINION_FONT_SIZE, bold=True, font=font)
+
+    period_s = period or "уточняется"
+    meta = doc.add_paragraph()
+    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    meta.paragraph_format.space_after = Pt(10)
+    mr = meta.add_run(f"Аудируемый период: {period_s}")
+    _set_run_font(mr, size=12, italic=True, font=font)
+
+    note = doc.add_paragraph()
+    note.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    note.paragraph_format.space_after = Pt(12)
+    nr = note.add_run(
+        "Черновик раздела I аудиторского заключения для руководства банка. "
+        "Не утверждённый акт службы внутреннего аудита и не подпись руководителя СВА."
+    )
+    _set_run_font(nr, size=11, italic=True, font=font)
+
+    add_opinion_markdown(doc, body, font=font)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))

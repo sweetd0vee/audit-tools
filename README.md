@@ -160,7 +160,7 @@ Allowlist:
 
 ### Агентные фазы (частично)
 
-Сейчас Pipe «Аудитор» закрывает библиотеку, саммари, саммари total, программу проверки, `гипотезы`, `вопрос …` и обычный чат. Дальше — те же фазы в коде Pipe + API сервера для данных, тестов и WP, не универсальный ReAct.
+Сейчас Pipe «Аудитор» закрывает библиотеку, саммари, саммари total, программу проверки, `гипотезы`, HITL по гипотезам, `аудиторское мнение`, `вопрос …` и обычный чат. Дальше — те же фазы в коде Pipe + API сервера для данных, тестов и WP, не универсальный ReAct.
 
 ---
 
@@ -168,7 +168,7 @@ Allowlist:
 
 | Часть | Путь | Статус |
 |---|---|---|
-| Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, chat, brief / total / program Word, hypotheses Excel, sync Open WebUI |
+| Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, chat, brief / total / program Word, hypotheses Excel, opinion Word, sync Open WebUI |
 | Агент в чате | `seed/openwebui/functions/audit_agent.py` | Pipe «Аудитор»: HITL, фазы в коде, `вопрос` vs обычный чат |
 | Лабораторный UI шагов 1–2 | `frontend/` | заморожен; compose profile `lab`, не витрина продукта |
 | Засев Open WebUI | `seed/openwebui/` | system prompt, RAG-шаблон, чеклист Admin (Pipe пока руками) |
@@ -187,6 +187,7 @@ backend/data/audit_cases/{case_id}/
   totals/             саммари total (из знаний модели)
   programs/           Word-программа проверки
   hypotheses/         Excel-чеклист гипотез
+  opinions/           Word — раздел I (аудиторское мнение)
   knowledge_index.json
   library.zip
 ```
@@ -195,7 +196,7 @@ backend/data/audit_cases/{case_id}/
 
 ## Принципы (не ломаем)
 
-1. **Human-in-the-loop.** Список НПА и (позже) тесты утверждает аудитор.
+1. **Human-in-the-loop.** Список НПА и гипотезы для мнения утверждает аудитор.
 2. **Локальность.** Ollama, Open WebUI, SearXNG, векторная БД — на своей машине/контуре.
 3. **Allowlist поиска.** Никакого «погугли за меня» по всему интернету.
 4. **Норма ≠ факт.** База НПА и данные клиента — разные коллекции и разные tools.

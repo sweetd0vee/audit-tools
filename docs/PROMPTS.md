@@ -41,6 +41,7 @@ docker compose up -d backend
 | `саммари total` | [`total_system.txt`](prompts/total_system.txt) | [`total_user.txt`](prompts/total_user.txt) + [`total_sections.txt`](prompts/total_sections.txt) |
 | `программа проверки` | [`program_system.txt`](prompts/program_system.txt) | [`program_user.txt`](prompts/program_user.txt) + [`program_sections.txt`](prompts/program_sections.txt) |
 | `гипотезы` | [`hypotheses_system.txt`](prompts/hypotheses_system.txt) | [`hypotheses_user.txt`](prompts/hypotheses_user.txt) + [`hypotheses_schema.txt`](prompts/hypotheses_schema.txt) |
+| `аудиторское мнение` | [`opinion_system.txt`](prompts/opinion_system.txt) | [`opinion_user.txt`](prompts/opinion_user.txt) + [`opinion_sections.txt`](prompts/opinion_sections.txt) |
 | `вопрос …` | [`ask_system.txt`](prompts/ask_system.txt) | [`ask_user.txt`](prompts/ask_user.txt) |
 | Обычный чат без команд | [`chat_system.txt`](prompts/chat_system.txt) | история сообщений |
 | `помощь` | — | [`pipe_help.txt`](prompts/pipe_help.txt) (текст Pipe, не LLM) |
@@ -368,6 +369,16 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 ---
 
+## 4в. Аудиторское мнение (`аудиторское мнение`)
+
+Черновик **раздела I** аудиторского заключения: «I. Аудиторское мнение по итогам проверки». 2–4 страницы повествования для руководства банка РБ: название проверки, цели и задачи, инструменты, агрегированное мнение по **подтверждённым** гипотезам, резюме рекомендаций. Без таблиц и схем. Шрифт задаёт аудитор: `аудиторское мнение -c` (Calibri) или `-t` (Times New Roman, по умолчанию).
+
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{document_catalog}`, `{hypotheses_block}`, `{program_block}`, `{brief_block}`, `{total_block}`, `{cards_block}`, `{fragments}`, `{sections}`, `{target}`, `{target_hi}`.
+
+Файлы: [`opinion_system.txt`](prompts/opinion_system.txt), [`opinion_user.txt`](prompts/opinion_user.txt), [`opinion_sections.txt`](prompts/opinion_sections.txt).
+
+---
+
 ## 5. Вопрос по базе (`вопрос …`)
 
 Ответ по карточкам + дословным фрагментам индекса. Без префикса `вопрос` этот промпт не вызывается.
@@ -435,7 +446,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 — `саммари` — основная информация по теме из базы знаний в Word;
 — `саммари total` — основная информация по теме из знаний модели;
 — `гипотезы` — чеклист гипотез для проверки в Excel;
-— `аудиторское мнение` — черновик мнения в Word (после `утверждаю гипотезы …`);
+— `аудиторское мнение` — черновик раздела I в Word после `утверждаю гипотезы …` (`-c` Calibri, `-t` Times New Roman);
 — `аудиторское заключение` — черновик заключения в Word (после `утверждаю гипотезы …`);
 — `вопрос` — вопрос по базе знаний;
 — `документы` — посмотреть список документов в базе знаний;

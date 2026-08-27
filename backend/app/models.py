@@ -167,6 +167,13 @@ class BriefRequest(BaseModel):
     items: Optional[str] = None
     items_min: Optional[int] = Field(default=None, ge=3, le=20)
     items_max: Optional[int] = Field(default=None, ge=3, le=20)
+    font: Optional[str] = None
+
+
+class SelectHypothesesRequest(BaseModel):
+    numbers: list[int] = Field(default_factory=list)
+    all_high: bool = False
+    all_rows: bool = False
 
 
 class CaseSummary(BaseModel):

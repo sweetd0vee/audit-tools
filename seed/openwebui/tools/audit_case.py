@@ -243,6 +243,63 @@ class Tools:
             f"Скачать: {self._public()}{data.get('download') or path + '.docx'}"
         )
 
+    async def build_hypotheses(self, case_id: str, force: bool = False) -> str:
+        """
+        Собрать чеклист гипотез проверки в Excel. Вызывай, когда аудитор пишет «гипотезы».
+        """
+        path = f"/api/v1/cases/{case_id}/knowledge/hypotheses"
+        data = await self._req("POST", path, {"force": bool(force)})
+        return (
+            f"hypotheses ready count={data.get('count')}. "
+            f"Скачать: {self._public()}{data.get('download') or path + '.xlsx'}"
+        )
+
+    async def select_hypotheses(
+        self,
+        case_id: str,
+        numbers: str = "",
+        all_high: bool = False,
+        all_rows: bool = False,
+    ) -> str:
+        """
+        Подтвердить гипотезы, которые войдут в аудиторское мнение.
+        numbers — через запятую, например «1, 3, 5». Вызывай только после явного
+        «утверждаю гипотезы …» аудитора.
+        """
+        payload: dict[str, object] = {
+            "numbers": [int(x.strip()) for x in numbers.split(",") if x.strip().isdigit()],
+            "all_high": bool(all_high),
+            "all_rows": bool(all_rows),
+        }
+        data = await self._req(
+            "POST",
+            f"/api/v1/cases/{case_id}/knowledge/hypotheses/select",
+            payload,
+        )
+        return f"selected={data.get('selected_ns')} count={data.get('count')}"
+
+    async def build_opinion(
+        self,
+        case_id: str,
+        force: bool = False,
+        font: str = "t",
+    ) -> str:
+        """
+        Собрать раздел I аудиторского заключения (аудиторское мнение) в Word.
+        font: c / calibri или t / times. Только после select_hypotheses.
+        """
+        path = f"/api/v1/cases/{case_id}/knowledge/opinion"
+        data = await self._req(
+            "POST",
+            path,
+            {"force": bool(force), "font": font or "t"},
+        )
+        pages = data.get("pages_estimate")
+        return (
+            f"opinion ready pages={pages} font={data.get('font')}. "
+            f"Скачать: {self._public()}{data.get('download') or path + '.docx'}"
+        )
+
     async def _req(self, method: str, path: str, json: Optional[dict] = None) -> dict:
         url = f"{self._base()}{path}"
         timeout = float(self.valves.TIMEOUT_SEC)

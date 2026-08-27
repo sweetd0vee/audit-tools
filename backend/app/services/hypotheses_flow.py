@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from app.config import settings
 from app.models import CaseState
 from app.prompts import prompt
 from app.services.brief_flow import collect_brief_sources
+from app.storage import store
 from app.services.case_context import (
     document_catalog,
     existing_cards,
@@ -174,6 +176,129 @@ def parse_hypotheses_payload(raw: str | dict | list) -> tuple[list[dict[str, str
     return rows, notes
 
 
+def load_hypotheses_rows(case_id: str) -> tuple[list[dict[str, str]], str]:
+    path = _json_path(case_id)
+    if not path.exists():
+        raise ValueError("Чеклист гипотез ещё не собран. Напишите `гипотезы`.")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("hypotheses") or []
+    notes = str(payload.get("notes") or "")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("В чеклисте гипотез нет строк. Соберите `гипотезы` заново.")
+    clean = [row for row in rows if isinstance(row, dict)]
+    if not clean:
+        raise ValueError("В чеклисте гипотез нет строк. Соберите `гипотезы` заново.")
+    return clean, notes
+
+
+def resolve_hypothesis_selection(
+    rows: list[dict[str, str]],
+    *,
+    numbers: list[int] | None = None,
+    all_high: bool = False,
+    all_rows: bool = False,
+) -> list[int]:
+    available = []
+    for row in rows:
+        raw = str(row.get("n") or "").strip()
+        if raw.isdigit():
+            available.append(int(raw))
+    if not available:
+        raise ValueError("В чеклисте гипотез нет номеров.")
+    if all_rows:
+        return available
+    if all_high:
+        picked = [
+            int(row["n"])
+            for row in rows
+            if (row.get("priority") or "") == "высокий"
+            and str(row.get("n") or "").strip().isdigit()
+        ]
+        if not picked:
+            raise ValueError(
+                "Нет гипотез с приоритетом «высокий». "
+                "Укажите номера: `утверждаю гипотезы 1, 3, 5`."
+            )
+        return picked
+    wanted: list[int] = []
+    seen: set[int] = set()
+    for raw in numbers or []:
+        n = int(raw)
+        if n in seen:
+            continue
+        seen.add(n)
+        if n not in available:
+            listed = ", ".join(str(x) for x in available)
+            raise ValueError(f"Нет гипотезы №{n}. В чеклисте номера: {listed}.")
+        wanted.append(n)
+    if not wanted:
+        raise ValueError(
+            "Укажите номера гипотез, например: `утверждаю гипотезы 1, 3, 5` "
+            "или `утверждаю гипотезы все с приоритетом высокий`."
+        )
+    return wanted
+
+
+def select_hypotheses(
+    case_id: str,
+    *,
+    numbers: list[int] | None = None,
+    all_high: bool = False,
+    all_rows: bool = False,
+) -> dict[str, Any]:
+    state = store.get(case_id)
+    rows, _ = load_hypotheses_rows(case_id)
+    selected_ns = resolve_hypothesis_selection(
+        rows,
+        numbers=numbers,
+        all_high=all_high,
+        all_rows=all_rows,
+    )
+    by_n = {int(row["n"]): row for row in rows if str(row.get("n") or "").strip().isdigit()}
+    selected = [by_n[n] for n in selected_ns]
+    payload = {
+        "selected_ns": selected_ns,
+        "selected_at": datetime.utcnow().isoformat(),
+        "hypotheses_built_at": (state.meta.get("hypotheses") or {}).get("built_at"),
+        "count": len(selected_ns),
+    }
+    state.meta["hypotheses_selection"] = payload
+    store.save(state)
+    return {
+        "case_id": case_id,
+        "selected_ns": selected_ns,
+        "count": len(selected_ns),
+        "hypotheses": [
+            {
+                "n": row.get("n"),
+                "hypothesis": row.get("hypothesis"),
+                "priority": row.get("priority"),
+            }
+            for row in selected
+        ],
+    }
+
+
+def selected_hypothesis_rows(state: CaseState) -> list[dict[str, str]]:
+    try:
+        rows, _ = load_hypotheses_rows(state.case_id)
+    except ValueError:
+        return []
+    selection = state.meta.get("hypotheses_selection") or {}
+    ns = selection.get("selected_ns") or []
+    built = (state.meta.get("hypotheses") or {}).get("built_at")
+    selected_built = selection.get("hypotheses_built_at")
+    if selected_built and built and selected_built != built:
+        return []
+    by_n = {int(row["n"]): row for row in rows if str(row.get("n") or "").strip().isdigit()}
+    out: list[dict[str, str]] = []
+    for n in ns:
+        row = by_n.get(int(n))
+        if row:
+            out.append(row)
+    return out
+
+
 def _write_markdown(
     path: Path,
     *,
@@ -231,6 +356,7 @@ def _save_meta(
     sources: list[dict],
     rows: list[dict[str, str]],
 ) -> dict:
+    state.meta.pop("hypotheses_selection", None)
     body = "\n".join(r["hypothesis"] for r in rows)
     return save_artifact_meta(
         state,

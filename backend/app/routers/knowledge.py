@@ -18,6 +18,7 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     OpenWebUISyncRequest,
+    SelectHypothesesRequest,
 )
 from app.services.brief_flow import (
     brief_download_name,
@@ -32,6 +33,14 @@ from app.services.hypotheses_flow import (
     hypotheses_download_name,
     hypotheses_status,
     resolve_hypotheses_file,
+    select_hypotheses,
+)
+from app.services.opinion_flow import (
+    build_opinion,
+    build_opinion_events,
+    opinion_download_name,
+    opinion_status,
+    resolve_opinion_file,
 )
 from app.services.program_flow import (
     build_program,
@@ -383,6 +392,73 @@ def download_hypotheses_md(case_id: str):
         resolver=resolve_hypotheses_file,
         filename_builder=hypotheses_download_name,
         not_found="Markdown гипотез ещё нет.",
+    )
+
+
+@router.post("/cases/{case_id}/knowledge/hypotheses/select")
+def post_select_hypotheses(case_id: str, body: SelectHypothesesRequest):
+    require_case(case_id)
+    try:
+        return select_hypotheses(
+            case_id,
+            numbers=body.numbers,
+            all_high=body.all_high,
+            all_rows=body.all_rows,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/cases/{case_id}/knowledge/opinion")
+def get_opinion(case_id: str):
+    require_case(case_id)
+    return opinion_status(case_id)
+
+
+@router.post("/cases/{case_id}/knowledge/opinion")
+async def post_opinion(case_id: str, body: Optional[BriefRequest] = None):
+    return await _build_artifact(
+        case_id,
+        body,
+        build_opinion,
+        "Opinion",
+        font=body.font if body else None,
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/opinion/stream")
+async def opinion_stream(
+    case_id: str,
+    force: bool = Query(default=False),
+    font: Optional[str] = Query(default=None),
+):
+    return _stream_artifact(
+        case_id,
+        build_opinion_events(case_id, force=force, font=font),
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/opinion.docx")
+def download_opinion_docx(case_id: str):
+    return _download_artifact(
+        case_id,
+        kind="docx",
+        resolver=resolve_opinion_file,
+        filename_builder=opinion_download_name,
+        not_found="Аудиторского мнения ещё нет. Напишите в чате «аудиторское мнение» после `утверждаю гипотезы …`.",
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/opinion.md")
+def download_opinion_md(case_id: str):
+    return _download_artifact(
+        case_id,
+        kind="md",
+        resolver=resolve_opinion_file,
+        filename_builder=opinion_download_name,
+        not_found="Markdown аудиторского мнения ещё нет.",
     )
 
 
