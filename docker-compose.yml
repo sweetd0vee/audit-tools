@@ -82,7 +82,9 @@ services:
       - "8100:8100"
     volumes:
       - ./backend/data:/app/data
+      - ./backend/app:/app/app
       - ./docs/prompts:/app/prompts:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:

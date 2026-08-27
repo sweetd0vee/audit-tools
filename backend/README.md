@@ -22,6 +22,7 @@ data/audit_cases/{case_id}/
   programs/           программа проверки
   hypotheses/         чеклист гипотез
   opinions/           раздел I — аудиторское мнение
+  reports/            полное аудиторское заключение
   knowledge_index.json
   library.zip
 ```
@@ -101,9 +102,11 @@ GET  /api/v1/cases/{case_id}/knowledge/hypotheses.xlsx
 POST /api/v1/cases/{case_id}/knowledge/hypotheses/select
 POST /api/v1/cases/{case_id}/knowledge/opinion
 GET  /api/v1/cases/{case_id}/knowledge/opinion.docx
+POST /api/v1/cases/{case_id}/knowledge/conclusion
+GET  /api/v1/cases/{case_id}/knowledge/conclusion.docx
 ```
 
-Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`, `GET …/hypotheses/stream`, `GET …/opinion/stream`. `force=true` — пересобрать. Мнение: `font=c` (Calibri) или `font=t` (Times New Roman).
+Стрим прогресса: `GET …/brief/stream`, `GET …/total/stream`, `GET …/program/stream`, `GET …/hypotheses/stream`, `GET …/opinion/stream`, `GET …/conclusion/stream`. `force=true` — пересобрать. Мнение и заключение: `font=c` (Calibri) или `font=t` (Times New Roman).
 
 Как устроен `саммари` (карточка акта, map-reduce, большая библиотека): [`docs/SAMMARI.md`](../docs/SAMMARI.md).
 
@@ -112,6 +115,8 @@ GET  /api/v1/cases/{case_id}/knowledge/opinion.docx
 `гипотезы` — Excel-чеклист 8–10 гипотез для проверки. Лучше, если уже есть саммари / total / программа.
 
 `аудиторское мнение` — черновик раздела I заключения (2–4 стр., без таблиц) из **подтверждённых** гипотез. Сначала `утверждаю гипотезы 1, 3, 5`. Шрифт: `-c` / `font=c` Calibri, `-t` / `font=t` Times New Roman.
+
+`аудиторское заключение` — полный черновик заключения в Word: титул, содержание, раздел I из уже собранного мнения, наблюдения по шаблону, общая информация. Раздел II не пишется. Нужны подтверждённые гипотезы и готовое `аудиторское мнение`. Шрифт тот же: `-c` / `-t`.
 
 Обычный диалог без RAG:
 

@@ -741,6 +741,7 @@ def _add_opinion_heading(doc: Document, text: str, *, font: str, level: int) -> 
 def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
     """Narrative-only renderer: headings, paragraphs, bullets. No tables."""
     size = _OPINION_FONT_SIZE
+    skip_title_section = False
     for raw in (md or "").splitlines():
         line = raw.rstrip()
         stripped = line.strip()
@@ -755,9 +756,12 @@ def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
             continue
         if stripped.startswith("## "):
             heading = _strip_md(stripped[3:])
-            if heading.lower() in {"название проверки", "название"}:
+            skip_title_section = heading.lower() in {"название проверки", "название"}
+            if skip_title_section:
                 continue
             _add_opinion_heading(doc, heading, font=font, level=1)
+            continue
+        if skip_title_section:
             continue
         if stripped.startswith("# "):
             continue

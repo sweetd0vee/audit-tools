@@ -160,7 +160,7 @@ Allowlist:
 
 ### Агентные фазы (частично)
 
-Сейчас Pipe «Аудитор» закрывает библиотеку, саммари, саммари total, программу проверки, `гипотезы`, HITL по гипотезам, `аудиторское мнение`, `вопрос …` и обычный чат. Дальше — те же фазы в коде Pipe + API сервера для данных, тестов и WP, не универсальный ReAct.
+Сейчас Pipe «Аудитор» закрывает библиотеку, саммари, саммари total, программу проверки, `гипотезы`, HITL по гипотезам, `аудиторское мнение`, `аудиторское заключение`, `вопрос …` и обычный чат. Дальше — те же фазы в коде Pipe + API сервера для данных, тестов и WP, не универсальный ReAct.
 
 ---
 
@@ -168,7 +168,7 @@ Allowlist:
 
 | Часть | Путь | Статус |
 |---|---|---|
-| Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, chat, brief / total / program Word, hypotheses Excel, opinion Word, sync Open WebUI |
+| Audit Tool Server | `backend/` | FastAPI: кейсы, propose / select / download, knowledge, ask, chat, brief / total / program Word, hypotheses Excel, opinion Word, conclusion Word, sync Open WebUI |
 | Агент в чате | `seed/openwebui/functions/audit_agent.py` | Pipe «Аудитор»: HITL, фазы в коде, `вопрос` vs обычный чат |
 | Лабораторный UI шагов 1–2 | `frontend/` | заморожен; compose profile `lab`, не витрина продукта |
 | Засев Open WebUI | `seed/openwebui/` | system prompt, RAG-шаблон, чеклист Admin (Pipe пока руками) |
@@ -188,6 +188,7 @@ backend/data/audit_cases/{case_id}/
   programs/           Word-программа проверки
   hypotheses/         Excel-чеклист гипотез
   opinions/           Word — раздел I (аудиторское мнение)
+  reports/            Word — полное аудиторское заключение
   knowledge_index.json
   library.zip
 ```

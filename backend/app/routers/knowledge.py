@@ -35,6 +35,13 @@ from app.services.hypotheses_flow import (
     resolve_hypotheses_file,
     select_hypotheses,
 )
+from app.services.conclusion_flow import (
+    build_conclusion,
+    build_conclusion_events,
+    conclusion_download_name,
+    conclusion_status,
+    resolve_conclusion_file,
+)
 from app.services.opinion_flow import (
     build_opinion,
     build_opinion_events,
@@ -459,6 +466,60 @@ def download_opinion_md(case_id: str):
         resolver=resolve_opinion_file,
         filename_builder=opinion_download_name,
         not_found="Markdown аудиторского мнения ещё нет.",
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/conclusion")
+def get_conclusion(case_id: str):
+    require_case(case_id)
+    return conclusion_status(case_id)
+
+
+@router.post("/cases/{case_id}/knowledge/conclusion")
+async def post_conclusion(case_id: str, body: Optional[BriefRequest] = None):
+    return await _build_artifact(
+        case_id,
+        body,
+        build_conclusion,
+        "Conclusion",
+        font=body.font if body else None,
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/conclusion/stream")
+async def conclusion_stream(
+    case_id: str,
+    force: bool = Query(default=False),
+    font: Optional[str] = Query(default=None),
+):
+    return _stream_artifact(
+        case_id,
+        build_conclusion_events(case_id, force=force, font=font),
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/conclusion.docx")
+def download_conclusion_docx(case_id: str):
+    return _download_artifact(
+        case_id,
+        kind="docx",
+        resolver=resolve_conclusion_file,
+        filename_builder=conclusion_download_name,
+        not_found=(
+            "Аудиторского заключения ещё нет. Напишите в чате «аудиторское заключение» "
+            "после `аудиторское мнение`."
+        ),
+    )
+
+
+@router.get("/cases/{case_id}/knowledge/conclusion.md")
+def download_conclusion_md(case_id: str):
+    return _download_artifact(
+        case_id,
+        kind="md",
+        resolver=resolve_conclusion_file,
+        filename_builder=conclusion_download_name,
+        not_found="Markdown аудиторского заключения ещё нет.",
     )
 
 

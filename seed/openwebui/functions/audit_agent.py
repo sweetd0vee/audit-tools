@@ -1,7 +1,7 @@
 """
 title: Аудитор
 author: audit-tools
-version: 0.2.8
+version: 0.2.9
 license: MIT
 description: Агент проверки. Документы, саммари, total, программа, гипотезы, мнение, заключение. Вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
@@ -43,7 +43,7 @@ NEXT_STEPS = (
     "— `саммари total` — основная информация по теме из знаний модели;\n"
     "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
     "— `аудиторское мнение` — черновик раздела I в Word после `утверждаю гипотезы …` (`-c` Calibri, `-t` Times New Roman);\n"
-    "— `аудиторское заключение` — черновик заключения в Word (после `утверждаю гипотезы …`);\n"
+    "— `аудиторское заключение` — черновик заключения в Word после `аудиторское мнение` (`-c` Calibri, `-t` Times New Roman);\n"
     "— `вопрос` — вопрос по базе знаний;\n"
     "— `документы` — посмотреть список документов в базе знаний;\n"
     "— обычный диалог — пишите без префикса."
@@ -137,9 +137,21 @@ class Pipe:
                 if missing:
                     return missing
                 assert case_id is not None
-                return await self._select_hypotheses(
+                selected = await self._select_hypotheses(
                     api, timeout, case_id, text
                 )
+                if _is_opinion(text) and selected.startswith("Подтвердил гипотезы"):
+                    opinion = await self._opinion(
+                        api,
+                        public,
+                        self._brief_timeout(timeout),
+                        case_id,
+                        text,
+                        __event_emitter__,
+                    )
+                    head = selected.rsplit("Дальше:", 1)[0].rstrip()
+                    return f"{head}\n\n{opinion}"
+                return selected
 
             if _is_opinion(text):
                 return await self._dispatch_artifact(
@@ -147,11 +159,9 @@ class Pipe:
                 )
 
             if _is_conclusion(text):
-                missing = _need_case(case_id)
-                if missing:
-                    return missing
-                assert case_id is not None
-                return _closing_doc_stub("аудиторское заключение", case_id)
+                return await self._dispatch_artifact(
+                    self._conclusion, api, public, timeout, case_id, text, __event_emitter__
+                )
 
             if _is_program(text):
                 return await self._dispatch_artifact(
@@ -719,7 +729,8 @@ class Pipe:
             )
         lines.append("")
         lines.append(
-            "Дальше: `аудиторское мнение` (шрифт: `-c` Calibri или `-t` Times New Roman)."
+            "Дальше: `аудиторское мнение`, затем `аудиторское заключение` "
+            "(шрифт: `-c` Calibri или `-t` Times New Roman)."
         )
         lines.append(f"<!--audit-case:{case_id}-->")
         return "\n".join(lines)
@@ -755,6 +766,40 @@ class Pipe:
             ),
             empty_message="Аудиторское мнение не получилось. Напишите ещё раз: `аудиторское мнение`.",
             link_flags={"with_opinion": True},
+            extra_query={"font": font},
+        )
+
+    async def _conclusion(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        font = _parse_opinion_font(text)
+        font_name = "Calibri" if font == "c" else "Times New Roman"
+        return await self._stream_build(
+            api,
+            public,
+            timeout,
+            case_id,
+            text,
+            emitter,
+            endpoint="conclusion",
+            start_message=(
+                f"Готовлю аудиторское заключение (черновик) в Word ({font_name}). "
+                "Это может занять несколько минут…"
+            ),
+            fallback_status="Готовлю аудиторское заключение…",
+            error_label="аудиторское заключение",
+            retry_hint=(
+                "Сначала `гипотезы`, `утверждаю гипотезы 1, 3, 5`, затем `аудиторское мнение`. "
+                "Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman)."
+            ),
+            empty_message="Аудиторское заключение не получилось. Напишите ещё раз: `аудиторское заключение`.",
+            link_flags={"with_conclusion": True},
             extra_query={"font": font},
         )
 
@@ -1049,16 +1094,6 @@ def _is_conclusion(text: str) -> bool:
     )
 
 
-def _closing_doc_stub(title: str, case_id: str) -> str:
-    return (
-        f"Команда `{title}` принята. Черновик Word ещё не собираю: "
-        "нет шаблона полного заключения.\n\n"
-        "Раздел I уже можно получить командой `аудиторское мнение` "
-        "после `утверждаю гипотезы 1, 3, 5`.\n"
-        f"<!--audit-case:{case_id}-->"
-    )
-
-
 def _is_brief(text: str) -> bool:
     t = text.strip().lower()
     if _is_total(t) or _is_hypotheses(t) or _is_opinion(t) or _is_conclusion(t):
@@ -1148,6 +1183,7 @@ def _download_links(
     with_program: bool = False,
     with_hypotheses: bool = False,
     with_opinion: bool = False,
+    with_conclusion: bool = False,
 ) -> str:
     stem = _file_stem(inspection_name)
     base = f"{public}/api/v1/cases/{case_id}"
@@ -1175,6 +1211,10 @@ def _download_links(
     if with_opinion:
         lines.append(
             f"- аудиторское мнение (`{stem}_mnenie.docx`): {base}/knowledge/opinion.docx"
+        )
+    if with_conclusion:
+        lines.append(
+            f"- аудиторское заключение (`{stem}_zakluchenie.docx`): {base}/knowledge/conclusion.docx"
         )
     return "\n".join(lines)
 

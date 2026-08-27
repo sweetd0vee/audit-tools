@@ -153,6 +153,7 @@ data/audit_cases/{case_id}/
   programs/              Word-программа проверки
   hypotheses/            Excel-чеклист гипотез
   opinions/              Word — раздел I (аудиторское мнение)
+  reports/               Word — полное аудиторское заключение
   knowledge_index.json
   library.zip
   evidence/              позже: выгрузки клиента (не в Knowledge НПА)
