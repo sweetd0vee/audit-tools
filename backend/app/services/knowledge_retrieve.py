@@ -42,6 +42,10 @@ PUNKT_MENTION_RE = re.compile(
 )
 
 
+def article_nums_in_query(question: str) -> set[str]:
+    return {m.group(1) for m in ARTICLE_MENTION_RE.finditer(question or "")}
+
+
 def punkt_nums_in_query(question: str) -> set[str]:
     return {m.group(1) for m in PUNKT_MENTION_RE.finditer(question or "")}
 
@@ -526,12 +530,18 @@ def gate_ask_evidence(
     mentioned = article_nums_in_query(question)
     if mentioned and corpus_articles is not None and not (mentioned & corpus_articles):
         return []
+    mentioned_p = punkt_nums_in_query(question)
     kept = [ch for ch in evidence if _chunk_passes_gate(question, ch)]
     if mentioned:
         heading_hits = [ch for ch in kept if _article_num(ch.get("text") or "") in mentioned]
         kept = heading_hits
         if not kept:
             return []
+    if mentioned_p:
+        punkt_hits = [ch for ch in kept if mentioned_p & punkt_nums_in_text(ch.get("text") or "")]
+        if not punkt_hits:
+            return []
+        kept = punkt_hits
     title_keys = _requested_title_keys(question)
     if title_keys:
         titled = [ch for ch in kept if _title_matches(ch, title_keys)]
@@ -566,6 +576,11 @@ async def retrieve_for_ask(
     mentioned = article_nums_in_query(question)
     if mentioned and inventory and not (mentioned & inventory):
         return []
+    mentioned_p = punkt_nums_in_query(question)
+    if mentioned_p:
+        inventory_p = {n for ch in chunks for n in punkt_nums_in_text(ch.get("text") or "")}
+        if inventory_p and not (mentioned_p & inventory_p):
+            return []
     evidence = await select_evidence(
         chunks,
         ask_queries(question),

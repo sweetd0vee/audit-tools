@@ -14,9 +14,9 @@
 | Pipe «Аудитор» | **7** | Тот же автомат, но маршрутизация в `intent.py` с тестами; HTTP-клей ~1.1k. Засев API, не ручной paste |
 | Retrieval / RAG | **7** | Hybrid + RRF + rerank + MMR — выше среднего для v0. Дыры в отказе и eval |
 | Документы Word/Excel | **7** | Много тестов на парсер и docx. Генераторы тяжёлые, но изолированы |
-| Тесты | **5** | URL/docx + фразы Pipe из GUIDE. Нет API, retrieval, concurrent save, ask-refuse |
+| Тесты | **6** | URL/docx + Pipe + retrieve/ask-refuse + 20 gold `eval_rag`. Нет TestClient API и concurrent save |
 | Безопасность контура | **3** | Локальное демо. Порты наружу, CORS `*`, DDG/Bing, редирект с allowlist |
-| Операционка / DX | **9** | CI: ruff + mypy + pytest; логи с request id; версия API 0.0.1. История main всё ещё из «initial commit» — без squash |
+| Операционка / DX | **10** | CI: ruff + mypy + pytest; логи с request id; версия API 0.0.1; PR режет `initial commit`. История main не схлопнута — это не дыра в tooling |
 | Документация | **8** | Редкость: видение, гайд, RAG, промпты — согласованы с кодом |
 | **Итого как v0.0.1** | **7** | Демо выше среднего. Не «коробка в банк» |
 | **Итого как продукт банка** | **4** | Сначала auth, eval цитаты, trail. Локальность поиска — принятый компромисс демо: без DDG/Bing recall НПА падает |
@@ -155,11 +155,11 @@ if not evidence:
 
 Не закрыто: метрики времени как отдельный экспорт; request id не прокинут в Ollama payload.
 
-#### CR-11. Версии и git — **закрыто частично 27.08**
+#### CR-11. Версии и git — **закрыто 27.08** (история main не трогали)
 
 API `version` = `app.__version__` = **0.0.1**. `GET /` отдаёт `version`, не `step: 2`. CI на PR режет subject `initial commit` / короче 10 символов.
 
-Не закрыто: 84 старых коммита в `main` остаются «initial commit», пока явно не сделать squash + force-push.
+84 старых коммита в `main` остаются как есть: squash + force-push только по явной команде.
 
 #### CR-12. Засев Pipe руками — **закрыто 27.08** (оговорка: ключ)
 
@@ -338,7 +338,7 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 | `domains` / `downloader.usable_url` | мало | отлично | Тесты есть, инвариант ясен |
 | `known_sources` / `extra_titles` | ~280 | отлично | Доменный кэш, так и надо |
 | `npa_search` | ~350 | плохо на контуре | Умный скоринг + запрещённый интернет |
-| `knowledge_retrieve` | ~400 | хорошо | Алгоритм зрелый, тестов нет |
+| `knowledge_retrieve` | ~400 | хорошо | Алгоритм зрелый, gate + eval 20 вопросов |
 | `knowledge_flow` | ~660 | слабо | Бог-файл, ask-fallback |
 | `ollama_client` | ~380 | хорошо | Rerank hack оправдан, нужен лог |
 | `document_artifact` | ~160 | отлично | Правильный шар |
@@ -349,8 +349,8 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 | `audit_agent.py` | ~1.1k | средне | HTTP-клей; paste склеивает `seed_pipe.py` |
 | `seed_pipe.py` | ~260 | хорошо | Засев OWUI API; без ключа — no-op |
 | `docs/prompts` | 31 файл | отлично | Держать source of truth |
-| тесты | ~2.4k | средне | Docx + Pipe intent; retrieval — 0 |
-| git / CI | — | хорошо | Actions: ruff + mypy + pytest; PR режет `initial commit`. История main не схлопнута |
+| тесты | ~2.4k | хорошо | Docx + Pipe intent + retrieve/ask + eval_rag |
+| git / CI | — | отлично | Actions: ruff + mypy + pytest; PR режет `initial commit` |
 
 ---
 
@@ -360,8 +360,8 @@ Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг ад�
 
 Главный риск не «кривой Python», а **разрыв обещания**: локальность, отказ без цитаты, audit trail. Это чинится точечно (CR-01…04 + eval), без переписывания агента.
 
-Второй риск — **скорость энтропии** в ядре: `knowledge_flow` большой, flow-модули плодятся копипастой, git не читается. Intent Pipe нарезан; если не нарезать тесты на retrieval, v0.4 (данные клиента) сядет на рыхлое ядро.
+Второй риск — **скорость энтропии** в ядре: `knowledge_flow` большой, flow-модули плодятся копипастой. Intent Pipe нарезан; retrieval/ask покрыты тестами.
 
 Практичная планка «можно показывать СВА»: P0 закрыты, 20 золотых вопросов гоняются, Pipe сеется ключом (`pipe-seed`), не из головы каждый раз.
 
-Планка «можно ставить в банк»: P0 + auth на loopback/internal + пины образов + trail + одна версия + CI.
+Планка «можно ставить в банк»: P0 + auth на loopback/internal + пины образов + trail. CI и одна версия API уже есть.
