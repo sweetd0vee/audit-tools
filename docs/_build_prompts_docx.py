@@ -75,14 +75,13 @@ STEPS: list[dict] = [
                 "kind": "User",
                 "label": "Задание: собрать JSON со списком актов",
                 "why": (
-                    "Сюда подставляются название проверки, ключевые слова и период. "
+                    "Сюда подставляются название проверки и ключевые слова. "
                     "Здесь же схема JSON и диапазон числа документов. Не ломайте пример JSON "
                     "«красивым markdown» — модель должна вернуть именно JSON."
                 ),
                 "placeholders": [
                     "inspection_name",
                     "keywords_str",
-                    "period_str",
                     "min_docs",
                     "max_docs",
                 ],
@@ -247,13 +246,12 @@ STEPS: list[dict] = [
                 "kind": "User",
                 "label": "Задание: собрать конспект по теме",
                 "why": (
-                    "Обёртка: название проверки, ключевые слова, период, вставка разделов, "
+                    "Обёртка: название проверки, ключевые слова, вставка разделов, "
                     "целевой объём. Явно сказано не использовать тексты файлов кейса."
                 ),
                 "placeholders": [
                     "inspection",
                     "keywords",
-                    "period",
                     "sections",
                     "target",
                     "target_hi",
@@ -285,7 +283,7 @@ STEPS: list[dict] = [
             {
                 "file": "program_sections.txt",
                 "kind": "Шаблон разделов",
-                "label": "Формат ответа: название, период, вопросы",
+                "label": "Формат ответа: название, вопросы",
                 "why": (
                     "Канон markdown, из которого сервер собирает Word-таблицу. Здесь правите "
                     "как звучит пункт (3–4 предложения, критерий, документы). {items_hint} "
@@ -304,7 +302,6 @@ STEPS: list[dict] = [
                 "placeholders": [
                     "inspection",
                     "keywords",
-                    "period",
                     "document_catalog",
                     "catalog",
                     "fragments",
@@ -360,7 +357,6 @@ STEPS: list[dict] = [
                 "placeholders": [
                     "inspection",
                     "keywords",
-                    "period",
                     "document_catalog",
                     "catalog",
                     "fragments",
@@ -413,7 +409,6 @@ STEPS: list[dict] = [
                 "placeholders": [
                     "inspection",
                     "keywords",
-                    "period",
                     "document_catalog",
                     "hypotheses_block",
                     "program_block",
@@ -471,7 +466,6 @@ STEPS: list[dict] = [
                 "placeholders": [
                     "inspection",
                     "keywords",
-                    "period",
                     "document_catalog",
                     "hypotheses_block",
                     "opinion_block",

@@ -53,8 +53,7 @@ Swagger: http://localhost:8100/docs
 POST /api/v1/cases
 {
   "inspection_name": "Проверка аренды коммерческой недвижимости",
-  "keywords": ["аренда", "валютные расчёты", "НДС", "нежилое помещение"],
-  "period": "2025"
+  "keywords": ["аренда", "валютные расчёты", "НДС", "нежилое помещение"]
 }
 ```
 
@@ -174,7 +173,6 @@ $base = "http://localhost:8100/api/v1"
 $case = Invoke-RestMethod -Method Post -Uri "$base/cases" -ContentType "application/json" -Body (@{
   inspection_name = "Проверка аренды коммерческой недвижимости"
   keywords = @("аренда","валюта","НДС")
-  period = "2025"
 } | ConvertTo-Json)
 
 $id = $case.case_id

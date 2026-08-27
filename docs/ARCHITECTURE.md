@@ -113,7 +113,7 @@ Continue.dev / Aider — отдельный контур «править rule /
 
 ### Есть (и оставляем)
 
-- кейс: `inspection_name`, keywords, period, статус;
+- кейс: `inspection_name`, keywords, статус;
 - propose → select (HITL) → download (manual URL / known_sources / SearXNG);
 - extract HTML/PDF → текст, чанкер по статьям, индекс, ask;
 - Word: обзор актов (`саммари`, см. [SAMMARI.md](SAMMARI.md)), total из знаний модели, программа проверки, Excel-чеклист гипотез, раздел I (`аудиторское мнение`), полное заключение;

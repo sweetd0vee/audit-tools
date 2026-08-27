@@ -55,7 +55,7 @@ docker compose up -d backend
 
 Когда аудитор описал проверку. Модель возвращает JSON со списком актов. Веб на этом шаге ещё нет.
 
-**Плейсхолдеры user:** `{inspection_name}`, `{keywords_str}`, `{period_str}`, `{min_docs}`, `{max_docs}`.
+**Плейсхолдеры user:** `{inspection_name}`, `{keywords_str}`, `{min_docs}`, `{max_docs}`.
 
 ### `propose_system.txt`
 
@@ -77,7 +77,6 @@ docker compose up -d backend
 ```
 Название проверки: {inspection_name}
 Ключевые термины: {keywords_str}
-Период: {period_str}
 
 Верни JSON вида:
 {
@@ -281,7 +280,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 Конспект **из знаний модели**, без файлов кейса.
 
-**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{sections}`, `{target}`, `{target_hi}`.
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{sections}`, `{target}`, `{target_hi}`.
 
 ### `total_system.txt`
 
@@ -341,7 +340,6 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 Название проверки: {inspection}
 Ключевые слова: {keywords}
-Период: {period}
 
 {sections}
 
@@ -355,7 +353,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 Черновик программы СВА в формате таблицы «вопросы, подлежащие аудиту» (как в `docs/программа.docx`), не акт и не заключение. Аудитор задаёт число пунктов: `программа проверки 8` или `программа проверки 10-12`. Без числа — 8–11 пунктов.
 
-**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{document_catalog}`, `{catalog}`, `{fragments}`, `{cards_block}`, `{sections}`, `{items_hint}`, `{target}`, `{target_hi}`. В `program_sections.txt` — `{items_hint}`.
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{document_catalog}`, `{catalog}`, `{fragments}`, `{cards_block}`, `{sections}`, `{items_hint}`, `{target}`, `{target_hi}`. В `program_sections.txt` — `{items_hint}`.
 
 Канонические файлы: [`program_system.txt`](prompts/program_system.txt), [`program_user.txt`](prompts/program_user.txt), [`program_sections.txt`](prompts/program_sections.txt). Модель возвращает markdown с `## Вопросы, подлежащие аудиту` и нумерованным списком; каждый пункт — 3–4 предложения (что проверить, как сверить, какие документы, критерий `[n]`); сервер собирает Word-таблицу.
 ---
@@ -364,7 +362,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 Чеклист 8–10 гипотез в Excel. Контекст: карточки саммари, `total.md`, `program.md`, фрагменты НПА + знания модели. Ответ модели — JSON.
 
-**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{document_catalog}`, `{catalog}`, `{fragments}`, `{cards_block}`, `{total_block}`, `{program_block}`, `{schema}`.
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{document_catalog}`, `{catalog}`, `{fragments}`, `{cards_block}`, `{total_block}`, `{program_block}`, `{schema}`.
 
 Файлы: [`hypotheses_system.txt`](prompts/hypotheses_system.txt), [`hypotheses_user.txt`](prompts/hypotheses_user.txt), [`hypotheses_schema.txt`](prompts/hypotheses_schema.txt).
 
@@ -374,7 +372,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 Черновик **раздела I** аудиторского заключения: «I. Аудиторское мнение по итогам проверки». 2–4 страницы повествования для руководства банка РБ: название проверки, цели и задачи, инструменты, агрегированное мнение по **подтверждённым** гипотезам, резюме рекомендаций. Без таблиц и схем. Шрифт задаёт аудитор: `аудиторское мнение -c` (Calibri) или `-t` (Times New Roman, по умолчанию).
 
-**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{document_catalog}`, `{hypotheses_block}`, `{program_block}`, `{brief_block}`, `{total_block}`, `{cards_block}`, `{fragments}`, `{sections}`, `{target}`, `{target_hi}`.
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{document_catalog}`, `{hypotheses_block}`, `{program_block}`, `{brief_block}`, `{total_block}`, `{cards_block}`, `{fragments}`, `{sections}`, `{target}`, `{target_hi}`.
 
 Файлы: [`opinion_system.txt`](prompts/opinion_system.txt), [`opinion_user.txt`](prompts/opinion_user.txt), [`opinion_sections.txt`](prompts/opinion_sections.txt).
 
@@ -384,7 +382,7 @@ priority: 1=обязательно, 2=желательно, 3=опциональ
 
 Черновик **полного** аудиторского заключения — основной продукт: титул, содержание как в Word, раздел I из уже собранного мнения, **по одному наблюдению на каждую подтверждённую гипотезу**, покрытие пунктов программы, опора на саммари и ссылки `[n]`, таблицы и схемы в наблюдениях, последний раздел — общая информация. Раздел II не пишется. Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman, по умолчанию).
 
-**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{period}`, `{hypothesis_count}`, `{hypothesis_numbers}`, `{observation_outline}`, `{document_catalog}`, `{hypotheses_block}`, `{opinion_block}`, `{program_block}`, `{brief_block}`, `{total_block}`, `{cards_block}`, `{fragments}`, `{sections}`.
+**Плейсхолдеры user:** `{inspection}`, `{keywords}`, `{hypothesis_count}`, `{hypothesis_numbers}`, `{observation_outline}`, `{document_catalog}`, `{hypotheses_block}`, `{opinion_block}`, `{program_block}`, `{brief_block}`, `{total_block}`, `{cards_block}`, `{fragments}`, `{sections}`.
 
 Файлы: [`conclusion_system.txt`](prompts/conclusion_system.txt), [`conclusion_user.txt`](prompts/conclusion_user.txt), [`conclusion_sections.txt`](prompts/conclusion_sections.txt), дописка оборванных наблюдений — [`conclusion_continue_user.txt`](prompts/conclusion_continue_user.txt).
 

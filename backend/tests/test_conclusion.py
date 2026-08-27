@@ -78,13 +78,22 @@ class TestConclusionFont(unittest.TestCase):
         self.assertEqual(parse_opinion_font_flag("аудиторское заключение -t заново"), FONT_TIMES)
         self.assertEqual(parse_opinion_font_flag("аудиторское заключение"), FONT_TIMES)
 
+    def test_flow_does_not_read_case_period(self):
+        from pathlib import Path
+
+        from app.models import CaseState
+        from app.services import conclusion_flow
+
+        src = Path(conclusion_flow.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("state.period", src)
+        self.assertNotIn("period", CaseState.model_fields)
+
 
 class TestConclusionParse(unittest.TestCase):
     def test_parses_observations_and_skips_i_ii(self):
         report = parse_conclusion_markdown(
             SAMPLE_MD,
             hypotheses=[_row(1, "высокий"), _row(3, "средний")],
-            period="2025",
         )
         obs_sections = [s for s in report.sections if s.kind == "observations"]
         general = [s for s in report.sections if s.kind == "general"]
@@ -96,6 +105,10 @@ class TestConclusionParse(unittest.TestCase):
         self.assertIn("сверк", obs_sections[0].observations[0].recommendation.lower())
         self.assertEqual(len(general), 1)
         self.assertEqual(general[0].roman, "IV")
+        self.assertNotIn(
+            "Аудируемый период",
+            [label for label, _ in general[0].general_items],
+        )
         self.assertEqual(obs_sections[0].roman, "III")
         self.assertIn("учёт аренды", obs_sections[0].title.lower())
         titles = [title for _, title in toc_entries(report)]
@@ -140,7 +153,6 @@ V. Общая информация об аудиторской проверке
         report = parse_conclusion_markdown(
             md,
             hypotheses=[_row(1, "высокий"), _row(3, "средний")],
-            period="2025",
         )
         obs_sections = [s for s in report.sections if s.kind == "observations"]
         self.assertEqual(len(obs_sections), 1)
@@ -156,7 +168,6 @@ V. Общая информация об аудиторской проверке
         report = parse_conclusion_markdown(
             "просто текст без структуры",
             hypotheses=[_row(1, "высокий"), _row(2, "низкий")],
-            period="2024",
         )
         obs = report.sections[0].observations
         self.assertEqual(len(obs), 2)
@@ -168,7 +179,6 @@ V. Общая информация об аудиторской проверке
         report = parse_conclusion_markdown(
             "просто текст без структуры",
             hypotheses=rows,
-            period="2025",
         )
         for obs in report.sections[0].observations:
             obs.body = ("Абзац наблюдения о риске контроля. " * 40).strip()
@@ -184,12 +194,11 @@ V. Общая информация об аудиторской проверке
 
     def test_ensure_all_hypotheses_appends_missing(self):
         rows = [_row(n) for n in (1, 3, 4, 5, 6, 8)]
-        report = parse_conclusion_markdown(SAMPLE_MD, hypotheses=rows[:2], period="2025")
+        report = parse_conclusion_markdown(SAMPLE_MD, hypotheses=rows[:2])
         self.assertEqual(len(report.sections[0].observations), 2)
         filled = ensure_all_hypotheses(
             report,
             rows,
-            period="2025",
             inspection_name="Проверка аренды коммерческой недвижимости",
         )
         self.assertEqual(len(filled.sections[0].observations), 6)
@@ -214,7 +223,6 @@ V. Общая информация об аудиторской проверке
         report = parse_conclusion_markdown(
             md,
             hypotheses=[_row(1, "высокий")],
-            period="2025",
             inspection_name="Проверка аренды коммерческой недвижимости",
         )
         self.assertIn("наблюдения по итогам", report.sections[0].title.lower())
@@ -224,14 +232,12 @@ V. Общая информация об аудиторской проверке
 class TestConclusionDocx(unittest.TestCase):
     def test_cover_year_and_background_asset(self):
         self.assertTrue(_COVER_IMAGE.exists(), _COVER_IMAGE)
-        self.assertEqual(_cover_year("2025"), "2025")
-        self.assertEqual(_cover_year("2024 год и 3 квартала 2025 года"), "2025")
+        self.assertEqual(_cover_year(), str(date.today().year))
 
     def test_structure_font_and_observation_box(self):
         report = parse_conclusion_markdown(
             SAMPLE_MD,
             hypotheses=[_row(1, "высокий"), _row(3, "средний")],
-            period="2025",
         )
         opinion = "## Аудиторское мнение\nПо подтверждённым гипотезам отмечается риск учёта аренды."
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,7 +245,6 @@ class TestConclusionDocx(unittest.TestCase):
             write_conclusion_docx(
                 path,
                 inspection_name="Проверка аренды коммерческой недвижимости",
-                period="2025",
                 case_id="abc123",
                 opinion_body=opinion,
                 report=report,
@@ -255,7 +260,7 @@ class TestConclusionDocx(unittest.TestCase):
                 media = [n for n in zf.namelist() if n.startswith("word/media/")]
             self.assertIn("Аудиторское заключение", xml)
             self.assertIn("Проверка аренды коммерческой недвижимости", xml)
-            self.assertIn("Минск 2025", xml)
+            self.assertIn(f"Минск {date.today().year}", xml)
             self.assertIn("Департамент внутреннего аудита", xml)
             self.assertIn("Содержание", texts)
             self.assertIn("I.  Аудиторское мнение по итогам проверки.", texts)
@@ -274,6 +279,8 @@ class TestConclusionDocx(unittest.TestCase):
             self.assertIn("Общая информация об аудиторской проверке.", texts)
             self.assertIn("По подтверждённым гипотезам отмечается риск учёта аренды.", texts)
             self.assertNotIn("Основные нарушения и недостатки", texts)
+            self.assertNotIn("Аудируемый период", texts)
+            self.assertNotIn("Аудируемый период", xml)
             boxes = [t for t in doc.tables if "Наблюдение" in t.cell(0, 0).text]
             self.assertGreaterEqual(len(boxes), 2)
             self.assertIn("3.1", boxes[0].cell(0, 0).text)
@@ -348,7 +355,6 @@ class TestConclusionDocx(unittest.TestCase):
         report = parse_conclusion_markdown(
             md,
             hypotheses=[_row(1, "высокий")],
-            period="2025",
             inspection_name="Проверка аренды",
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -356,7 +362,6 @@ class TestConclusionDocx(unittest.TestCase):
             write_conclusion_docx(
                 path,
                 inspection_name="Проверка аренды",
-                period="2025",
                 case_id="abc123",
                 opinion_body="Мнение.",
                 report=report,
@@ -386,7 +391,6 @@ class TestConclusionPrompts(unittest.TestCase):
             "conclusion_user",
             inspection="Проверка аренды",
             keywords="аренда",
-            period="2025",
             hypothesis_count=6,
             hypothesis_numbers="1, 3, 4, 5, 6, 8",
             observation_outline="3.1 ← гипотеза 1: тест",
