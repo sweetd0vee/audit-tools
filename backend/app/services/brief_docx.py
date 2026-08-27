@@ -22,7 +22,7 @@ def _next_bookmark_id() -> str:
     return str(_BOOKMARK_IDS)
 
 
-def add_hyperlink(paragraph, text: str, url: str, *, italic: bool = False) -> None:
+def add_hyperlink(paragraph, text: str, url: str) -> None:
     """Clickable URL. python-docx has no public helper for this."""
     part = paragraph.part
     r_id = part.relate_to(
@@ -40,8 +40,6 @@ def add_hyperlink(paragraph, text: str, url: str, *, italic: bool = False) -> No
     underline = OxmlElement("w:u")
     underline.set(qn("w:val"), "single")
     r_pr.append(underline)
-    if italic:
-        r_pr.append(OxmlElement("w:i"))
     sz = OxmlElement("w:sz")
     sz.set(qn("w:val"), "24")
     r_pr.append(sz)

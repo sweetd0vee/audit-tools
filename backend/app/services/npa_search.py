@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import html as html_lib
+import logging
 import re
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
@@ -18,6 +19,8 @@ from app.domains import host_allowed
 from app.services.downloader import usable_url
 from app.services.http_constants import BROWSER_HEADERS, NEWS_MARKERS
 from app.services.searxng_client import search_searxng
+
+logger = logging.getLogger(__name__)
 
 _HREF_RE = re.compile(r"""https?://[^\s"'<>\\]+""", re.I)
 _DOC_CODE_RE = re.compile(
@@ -205,14 +208,6 @@ async def find_candidate_urls(
     return [(url, source) for score, url, source in ranked if score >= 20][:MAX_CANDIDATES]
 
 
-async def find_best_url(search_queries: list[str], title: str | None = None) -> dict | None:
-    """Compatibility wrapper: first ranked candidate or None."""
-    hits = await find_candidate_urls(search_queries, title=title)
-    if not hits:
-        return None
-    return {"url": hits[0][0], "title": title or "", "source": hits[0][1]}
-
-
 async def _search_engines(query: str) -> list[tuple[str, str, str]]:
     tasks = [
         _safe_hits("searxng", _from_searxng, query),
@@ -236,7 +231,8 @@ async def _search_engines(query: str) -> list[tuple[str, str, str]]:
 async def _safe_hits(source: str, fn, *args) -> list[tuple[str, str, str]]:
     try:
         return await fn(source, *args)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("search backend %s failed: %s", source, exc)
         return []
 
 

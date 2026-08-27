@@ -26,6 +26,15 @@
 
 Русский интерфейс Open WebUI. Если пункт называется иначе — ищите то же место по смыслу: функции, создать, включить.
 
+**Предпочтительно:** `docker compose up -d --build` и ключ `OPENWEBUI_API_KEY` в корневом `.env`. Сервис `pipe-seed` склеит `intent.py` + `audit_agent.py` и засеет Pipe `auditor` через API. В чате должна появиться модель **Аудитор** (иконка не `ol`).
+
+Если ключа ещё нет (первый вход, админ только что создан):
+
+1. Open WebUI → Настройки → Аккаунт → API Keys — создайте ключ, положите в `.env`.
+2. `docker compose up -d pipe-seed` (или вставьте paste вручную ниже).
+
+Вручную, без API:
+
 1. Откройте http://localhost:3000
 2. Функции **нет** в Рабочем пространстве (там только Модели, Знания, Промпты, Скиллы, Инструменты). Pipe живёт у админа.
 3. Внизу слева нажмите на имя (**Arina**) → **Панель администратора**.  
@@ -33,7 +42,7 @@
 4. Слева в админке пункт **Функции**. Справа **Создать**.
    - **ID Функции:** `auditor` (только латиница, не «Аудитор»)
    - **Название Функции:** `Аудитор`
-5. Вставьте **новый** текст из `seed/openwebui/functions/audit_agent.py` (весь файл).
+5. Вставьте **склеенный** текст: `python seed/openwebui/seed_pipe.py --print` (не сырой `audit_agent.py` — ему нужен `intent.py`).
 6. **Сохранить**.
 7. В списке функций переключатель должен стать **Включено**. Выключенная функция в чате не видна.
 8. Шестерёнка / **Параметры:** `AUDIT_API=http://backend:8100` → **Сохранить**.
@@ -67,7 +76,7 @@
 
 1. `docker compose up -d --build` — Open WebUI :3000, backend :8100.
 2. Open WebUI → **Admin Panel → Functions → Create** (не Workspace).
-3. Вставьте целиком [`functions/audit_agent.py`](functions/audit_agent.py)
+3. Вставьте склеенный paste (`python seed/openwebui/seed_pipe.py --print`) или дождитесь `pipe-seed`.
 4. Включите функцию (toggle). Valves: `AUDIT_API=http://backend:8100`  
    Если WebUI не в Docker — `http://localhost:8100`.
 5. Новый чат → в списке моделей **Аудитор**.

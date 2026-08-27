@@ -3,7 +3,13 @@ import unittest
 from pathlib import Path
 
 from app.models import CaseState, KnowledgeItem, ProposedDocument
-from app.services.case_context import document_catalog, existing_cards, format_npa_sources
+from app.services.case_context import (
+    append_npa_sources_markdown,
+    document_catalog,
+    existing_cards,
+    format_npa_sources,
+    optional_block,
+)
 from app.services.document_artifact import ArtifactSpec, artifact_stale
 
 
@@ -65,6 +71,40 @@ class TestCaseContext(unittest.TestCase):
 
     def test_format_sources_empty(self):
         self.assertEqual(format_npa_sources([]), "Фрагментов НПА нет.")
+
+    def test_optional_block(self):
+        self.assertEqual(
+            optional_block("Метка", "  текст  ", "пусто"),
+            "Метка:\nтекст\n",
+        )
+        self.assertEqual(optional_block("Метка", "  ", "пусто"), "пусто\n")
+
+    def test_append_npa_sources_markdown(self):
+        with_heading: list[str] = []
+        append_npa_sources_markdown(with_heading, [], heading_if_empty=True)
+        self.assertEqual(with_heading, ["## Источники: статьи и фрагменты"])
+
+        skipped: list[str] = []
+        append_npa_sources_markdown(skipped, [])
+        self.assertEqual(skipped, [])
+
+        lines: list[str] = []
+        append_npa_sources_markdown(
+            lines,
+            [
+                {
+                    "n": 1,
+                    "title": "ГК РБ",
+                    "article": "Статья 1",
+                    "url": "https://pravo.by/a",
+                    "excerpt": "текст",
+                }
+            ],
+        )
+        self.assertIn("## Источники: статьи и фрагменты", lines)
+        self.assertIn("### [1] ГК РБ — Статья 1", lines)
+        self.assertIn("https://pravo.by/a", lines)
+        self.assertIn("> текст", lines)
 
 
 class TestArtifactStale(unittest.TestCase):

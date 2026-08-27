@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     ollama_rerank_model: str = "dengcao/Qwen3-Reranker-4B:Q8_0"
     rerank_timeout_sec: float = 60.0
     rag_rerank_candidates: int = 24
+    rag_candidates: int = 40
+    rag_neighbor: int = 1
+    rag_mmr_lambda: float = 0.7
+    # Below this P(yes) the chunk is not evidence. Empty after the gate → refuse.
+    rag_min_rerank: float = 0.30
+    # IDF-weighted lexical floor when the reranker is down (one distinctive term ≈ 1).
+    rag_min_lexical: float = 0.8
     chunk_size: int = 1600
     chunk_overlap: int = 180
     summary_max_chars: int = 14000
@@ -64,6 +71,9 @@ class Settings(BaseSettings):
 
     # LLM prompts (docs/prompts/*.txt). Compose: /app/prompts
     prompts_dir: Optional[Path] = None
+
+    # Observability
+    log_level: str = "INFO"
 
 
 settings = Settings()

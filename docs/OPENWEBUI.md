@@ -148,9 +148,9 @@ Workspace → Модели → **не** создавать вторую моде
 
 Пошагово: [`seed/openwebui/AGENT.md`](../seed/openwebui/AGENT.md). Кратко:
 
-1. http://localhost:3000/admin/functions (не Workspace).
+1. http://localhost:3000/admin/functions (не Workspace) — или дождитесь `pipe-seed` при `compose up` + `OPENWEBUI_API_KEY`.
 2. **Создать**, ID `auditor` (латиница), название `Аудитор`.
-3. Вставить весь [`seed/openwebui/functions/audit_agent.py`](../seed/openwebui/functions/audit_agent.py).
+3. Вставить склеенный paste: `python seed/openwebui/seed_pipe.py --print` (не сырой `audit_agent.py`).
 4. Переключатель **Включено**.
 5. Шестерёнка → Valves → **Сохранить**.
 6. F5 в чате. Новый чат → модель **Аудитор** (иконка **не** `ol`).
@@ -259,6 +259,6 @@ Workspace → Инструменты → [`tools/audit_case.py`](../seed/openweb
 |---|---|
 | `docker-compose.yml` → `open-webui.environment` | RAG-env каждый старт (`ENABLE_PERSISTENT_CONFIG=false`) |
 | `seed/openwebui/RAG_TEMPLATE.txt` | Admin → Документы → шаблон |
-| `seed/openwebui/functions/audit_agent.py` | Admin → Функции |
+| `seed/openwebui/functions/audit_agent.py` + `intent.py` | Admin → Функции через `pipe-seed` / `seed_pipe.py` |
 | `seed/openwebui/SYSTEM_AUDITOR.txt` | только Tools+Ollama |
 | корневой `.env` | `OLLAMA_MODEL`, `OLLAMA_EMBED_MODEL`, `OPENWEBUI_API_KEY` |

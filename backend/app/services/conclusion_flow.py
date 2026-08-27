@@ -12,6 +12,7 @@ from app.services.case_context import (
     document_catalog,
     existing_cards,
     format_npa_sources,
+    optional_block,
     read_truncated_md,
 )
 from app.services.conclusion_docx import (
@@ -82,13 +83,6 @@ def load_opinion_body(case_id: str) -> str:
         if line.startswith("## "):
             return "\n".join(lines[i:]).strip()
     return text.strip()
-
-
-def _optional_block(label: str, text: str, empty: str) -> str:
-    body = (text or "").strip()
-    if body:
-        return f"{label}:\n{body}\n"
-    return f"{empty}\n"
 
 
 def _digest(report) -> list[str]:
@@ -270,27 +264,27 @@ async def _compose_conclusion(
         observation_outline=_observation_outline(hypotheses),
         document_catalog=document_catalog(state),
         hypotheses_block=format_hypotheses_block(hypotheses),
-        opinion_block=_optional_block(
+        opinion_block=optional_block(
             "Раздел I (уже собран, не копировать)",
             opinion_trim,
             "Раздел I ещё не собран.",
         ),
-        program_block=_optional_block(
+        program_block=optional_block(
             "Программа проверки (черновик) — покрой все пункты",
             program_md,
             "Программа проверки ещё не собрана.",
         ),
-        brief_block=_optional_block(
+        brief_block=optional_block(
             "Саммари по актам",
             brief_md,
             "Саммари по базе знаний ещё не собрано.",
         ),
-        total_block=_optional_block(
+        total_block=optional_block(
             "Саммари total",
             total_md,
             "Саммари total ещё не собрано.",
         ),
-        cards_block=_optional_block(
+        cards_block=optional_block(
             "Карточки актов",
             cards,
             "Карточки саммари ещё не собраны.",
@@ -345,13 +339,13 @@ async def _compose_remaining_observations(
         hypothesis_numbers=_hypothesis_numbers(missing),
         next_number=next_number,
         hypotheses_block=format_hypotheses_block(missing),
-        program_block=_optional_block(
+        program_block=optional_block(
             "Программа проверки",
             program_md,
             "Программа проверки ещё не собрана.",
         ),
-        brief_block=_optional_block("Саммари по актам", brief_md, "Саммари ещё не собрано."),
-        cards_block=_optional_block("Карточки актов", cards, "Карточки ещё не собраны."),
+        brief_block=optional_block("Саммари по актам", brief_md, "Саммари ещё не собрано."),
+        cards_block=optional_block("Карточки актов", cards, "Карточки ещё не собраны."),
         fragments=format_npa_sources(sources, limit=18),
         general_tail=general_tail,
     )

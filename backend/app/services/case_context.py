@@ -31,6 +31,33 @@ def existing_cards(state: CaseState, *, limit: int = 8000) -> str:
     return "\n\n".join(blocks)
 
 
+def optional_block(label: str, text: str, empty: str) -> str:
+    body = (text or "").strip()
+    if body:
+        return f"{label}:\n{body}\n"
+    return f"{empty}\n"
+
+
+def append_npa_sources_markdown(
+    lines: list[str],
+    sources: list[dict],
+    *,
+    heading_if_empty: bool = False,
+) -> None:
+    if not sources and not heading_if_empty:
+        return
+    lines.append("## Источники: статьи и фрагменты")
+    for src in sources:
+        article = src.get("article") or "фрагмент"
+        url = src.get("url") or ""
+        url_line = f" {url}" if url else f" файл `{src.get('filename') or ''}`"
+        lines.append(f"### [{src['n']}] {src.get('title')} — {article}")
+        lines.append(url_line.strip())
+        lines.append("")
+        lines.append(f"> {src.get('excerpt') or ''}")
+        lines.append("")
+
+
 def format_npa_sources(sources: list[dict], *, limit: int = 40) -> str:
     blocks = []
     for fr in sources[:limit]:

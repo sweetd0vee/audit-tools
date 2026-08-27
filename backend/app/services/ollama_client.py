@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 import time
@@ -13,6 +14,7 @@ import httpx
 from app.config import settings
 from app.prompts import prompt
 
+logger = logging.getLogger(__name__)
 _CLIENTS: dict[float, httpx.AsyncClient] = {}
 
 
@@ -431,6 +433,8 @@ async def rerank_texts(query: str, documents: list[str]) -> list[float]:
         return list(await asyncio.gather(*[_one(doc) for doc in documents]))
     except FileNotFoundError:
         _rerank_unavailable = True
+        logger.warning("rerank model missing, disabling: %s", model)
         return []
     except Exception:
+        logger.exception("rerank failed query_len=%s docs=%s", len(query), len(documents))
         return []

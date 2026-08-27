@@ -12,6 +12,7 @@ from app.prompts import prompt
 from app.services.brief_flow import collect_brief_sources
 from app.storage import store
 from app.services.case_context import (
+    append_npa_sources_markdown,
     document_catalog,
     existing_cards,
     format_npa_sources,
@@ -333,17 +334,7 @@ def _write_markdown(
         lines.append(f"- Рабочий документ: {row['working_paper']}")
         lines.append(f"- Опора: {row['basis']}")
         lines.append("")
-    if sources:
-        lines.append("## Источники: статьи и фрагменты")
-        for src in sources:
-            article = src.get("article") or "фрагмент"
-            url = src.get("url") or ""
-            url_line = f" {url}" if url else f" файл `{src.get('filename') or ''}`"
-            lines.append(f"### [{src['n']}] {src.get('title')} — {article}")
-            lines.append(url_line.strip())
-            lines.append("")
-            lines.append(f"> {src.get('excerpt') or ''}")
-            lines.append("")
+    append_npa_sources_markdown(lines, sources)
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 

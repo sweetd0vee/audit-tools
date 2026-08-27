@@ -82,10 +82,11 @@ class TestConclusionFont(unittest.TestCase):
         from pathlib import Path
 
         from app.models import CaseState
-        from app.services import conclusion_flow
+        from app.services import conclusion_flow, opinion_flow
 
-        src = Path(conclusion_flow.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("state.period", src)
+        for module in (conclusion_flow, opinion_flow):
+            src = Path(module.__file__).read_text(encoding="utf-8")
+            self.assertNotIn("state.period", src, module.__name__)
         self.assertNotIn("period", CaseState.model_fields)
 
 

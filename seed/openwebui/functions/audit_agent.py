@@ -16,26 +16,34 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 from pydantic import BaseModel, Field
 
+# INTENT_INLINE_START
+# Локально / в pytest: соседний intent.py. Open WebUI принимает один файл —
+# seed_pipe.py подменяет этот блок телом intent.py.
+import sys
+from pathlib import Path as _IntentDir
+
+_intent_dir = str(_IntentDir(__file__).resolve().parent)
+if _intent_dir not in sys.path:
+    sys.path.insert(0, _intent_dir)
+from intent import (  # noqa: E402
+    Cmd,
+    URL_ATTACH_RE,
+    classify,
+    _has_explicit_picks,
+    _is_opinion,
+    _is_retry,
+    _parse_hypothesis_picks,
+    _parse_kb_question,
+    _parse_new_case,
+    _parse_opinion_font,
+    _parse_program_items_spec,
+    _resolve_approval,
+)
+# INTENT_INLINE_END
+
 Emitter = Optional[Callable[[Any], Awaitable[None]]]
 
 CASE_MARK = re.compile(r"<!--audit-case:([a-z0-9]+)-->")
-APPROVE_RE = re.compile(
-    r"(утвержд\w*|подтвержд\w*|выбираю|скачивай|скачай|скачать|бери\s+(эти\s+)?акты)",
-    re.I,
-)
-REJECT_APPROVE_RE = re.compile(r"\bне\s+утвержд", re.I)
-HEX_ID_RE = re.compile(r"\b([a-f0-9]{8,12})\b", re.I)
-EXTRA_MARK_RE = re.compile(
-    r"(?:\bплюс\b|\bдобавь(?:те)?\b|\bдополнительно\b|\bи\s+ещ[её]\b|\bещ[её]\s*:|\s\+\s)\s*[:\-–+]?\s*",
-    re.I,
-)
-KB_ASK_RE = re.compile(
-    r"^\s*(?:"
-    r"вопрос(?:\s+по\s+(?:базе(?:\s+знаний)?|нпа|документам?))?"
-    r"|/ask|/вопрос"
-    r")\s*[:\-–]?\s*(.*)\s*$",
-    re.I | re.S,
-)
 # Канонический текст: docs/prompts/pipe_help.txt. После правки скопируйте сюда и заново вставьте Pipe в Open WebUI.
 NEXT_STEPS = (
     "— `программа проверки` — программа проверки в Word (можно задать число пунктов);\n"
@@ -65,6 +73,85 @@ HELP = f"""Я помогаю собрать документы для прове
 Когда документы скачаются:
 {NEXT_STEPS}
 """
+
+
+_SIMPLE_ARTIFACTS = {
+    "brief": {
+        "endpoint": "brief",
+        "start_message": (
+            "Готовлю карточки существенного по актам в Word. "
+            "Это может занять несколько минут…"
+        ),
+        "fallback_status": "Готовлю саммари…",
+        "error_label": "обзор",
+        "retry_hint": "Сначала должны быть скачаны документы. Напишите `документы` или `утверждаю 1, 2`.",
+        "empty_message": "Обзор не получился. Напишите ещё раз: `саммари`.",
+        "link_flags": {"with_summary": True},
+    },
+    "total": {
+        "endpoint": "total",
+        "start_message": (
+            "Готовлю саммари total — конспект из знаний модели (не из базы). "
+            "Это может занять несколько минут…"
+        ),
+        "fallback_status": "Готовлю саммари total…",
+        "error_label": "саммари total",
+        "retry_hint": "Нужна созданная проверка в этом чате. Напишите тему проверки, если кейса ещё нет.",
+        "empty_message": "Саммари total не получился. Напишите ещё раз: `саммари total`.",
+        "link_flags": {"with_total": True},
+    },
+    "hypotheses": {
+        "endpoint": "hypotheses",
+        "start_message": (
+            "Формулирую чеклист гипотез для проверки в Excel. "
+            "Лучше, если уже есть саммари / total / программа…"
+        ),
+        "fallback_status": "Формулирую гипотезы…",
+        "error_label": "гипотезы",
+        "retry_hint": (
+            "Нужна проверка с документами. "
+            "Желательно сначала `саммари`, `саммари total`, `программа проверки`."
+        ),
+        "empty_message": "Гипотезы не получились. Напишите ещё раз: `гипотезы`.",
+        "link_flags": {"with_hypotheses": True},
+    },
+}
+
+_FONT_ARTIFACTS = {
+    "opinion": {
+        "endpoint": "opinion",
+        "start": (
+            "Готовлю раздел I аудиторского заключения в Word ({font}). "
+            "Это может занять несколько минут…"
+        ),
+        "fallback_status": "Готовлю аудиторское мнение…",
+        "error_label": "аудиторское мнение",
+        "retry_hint": (
+            "Сначала `гипотезы`, затем `утверждаю гипотезы 1, 3, 5`. "
+            "Шрифт: `аудиторское мнение -c` (Calibri) или `-t` (Times New Roman)."
+        ),
+        "empty_message": "Аудиторское мнение не получилось. Напишите ещё раз: `аудиторское мнение`.",
+        "link_flags": {"with_opinion": True},
+    },
+    "conclusion": {
+        "endpoint": "conclusion",
+        "start": (
+            "Готовлю аудиторское заключение (черновик) в Word ({font}). "
+            "Это может занять несколько минут…"
+        ),
+        "fallback_status": "Готовлю аудиторское заключение…",
+        "error_label": "аудиторское заключение",
+        "retry_hint": (
+            "Сначала `гипотезы`, `утверждаю гипотезы 1, 3, 5`, затем `аудиторское мнение`. "
+            "Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman)."
+        ),
+        "empty_message": (
+            "Аудиторское заключение не получилось. "
+            "Напишите ещё раз: `аудиторское заключение`."
+        ),
+        "link_flags": {"with_conclusion": True},
+    },
+}
 
 
 class Pipe:
@@ -107,21 +194,22 @@ class Pipe:
             __user__, __request__
         )
 
-        if not text.strip() or text.strip().lower() in {"помощь", "help", "/help", "?"}:
+        command = classify(text, has_case=bool(case_id))
+        if command == Cmd.HELP:
             return HELP
 
         await _status(__event_emitter__, "Смотрю, на каком вы шаге…")
 
         try:
             # «вопрос …» раньше library/brief: иначе «в данном документе» / «саммари»
-            # внутри текста уводило в чужую ветку.
-            kb_question = _parse_kb_question(text)
-            if kb_question is not None:
+            # внутри текста уводило в чужую ветку. Порядок веток — в classify().
+            if command == Cmd.ASK:
                 if not case_id:
                     return (
                         "В этом чате ещё нет проверки. Сначала напишите, что проверяете, "
                         "утвердите документы — потом: `вопрос …`."
                     )
+                kb_question = _parse_kb_question(text) or ""
                 if not kb_question:
                     return (
                         "Напишите вопрос после слова `вопрос`, например:\n"
@@ -132,15 +220,15 @@ class Pipe:
                     api, timeout, case_id, kb_question, __event_emitter__
                 )
 
-            if _is_select_hypotheses(text):
+            if command == Cmd.SELECT_HYPOTHESES:
                 missing = _need_case(case_id)
                 if missing:
                     return missing
                 assert case_id is not None
-                selected = await self._select_hypotheses(
+                selected, confirmed = await self._select_hypotheses(
                     api, timeout, case_id, text
                 )
-                if _is_opinion(text) and selected.startswith("Подтвердил гипотезы"):
+                if _is_opinion(text) and confirmed:
                     opinion = await self._opinion(
                         api,
                         public,
@@ -153,37 +241,21 @@ class Pipe:
                     return f"{head}\n\n{opinion}"
                 return selected
 
-            if _is_opinion(text):
+            artifacts = {
+                Cmd.OPINION: self._opinion,
+                Cmd.CONCLUSION: self._conclusion,
+                Cmd.PROGRAM: self._program,
+                Cmd.TOTAL: self._total,
+                Cmd.HYPOTHESES: self._hypotheses,
+                Cmd.BRIEF: self._brief,
+            }
+            handler = artifacts.get(command)
+            if handler:
                 return await self._dispatch_artifact(
-                    self._opinion, api, public, timeout, case_id, text, __event_emitter__
+                    handler, api, public, timeout, case_id, text, __event_emitter__
                 )
 
-            if _is_conclusion(text):
-                return await self._dispatch_artifact(
-                    self._conclusion, api, public, timeout, case_id, text, __event_emitter__
-                )
-
-            if _is_program(text):
-                return await self._dispatch_artifact(
-                    self._program, api, public, timeout, case_id, text, __event_emitter__
-                )
-
-            if _is_total(text):
-                return await self._dispatch_artifact(
-                    self._total, api, public, timeout, case_id, text, __event_emitter__
-                )
-
-            if _is_hypotheses(text):
-                return await self._dispatch_artifact(
-                    self._hypotheses, api, public, timeout, case_id, text, __event_emitter__
-                )
-
-            if _is_brief(text):
-                return await self._dispatch_artifact(
-                    self._brief, api, public, timeout, case_id, text, __event_emitter__
-                )
-
-            if _is_approve(text):
+            if command == Cmd.APPROVE:
                 missing = _need_case(case_id)
                 if missing:
                     return missing
@@ -192,21 +264,22 @@ class Pipe:
                     api, public, timeout, case_id, text, __event_emitter__, owui_key
                 )
 
-            if _is_library(text):
+            if command == Cmd.LIBRARY:
                 missing = _need_case(case_id)
                 if missing:
                     return missing
                 assert case_id is not None
                 return await self._library(api, public, timeout, case_id)
 
-            if _is_status(text):
+            if command == Cmd.STATUS:
                 if case_id:
                     return await self._status_case(api, timeout, case_id)
                 return await self._list_cases(api, timeout)
 
-            parsed = _parse_new_case(text)
-            if parsed and not case_id:
-                return await self._start(api, timeout, parsed, __event_emitter__)
+            if command == Cmd.NEW_CASE:
+                parsed = _parse_new_case(text)
+                if parsed:
+                    return await self._start(api, timeout, parsed, __event_emitter__)
 
             return await self._chat(api, timeout, body, case_id, __event_emitter__)
         except httpx.HTTPError as exc:
@@ -550,8 +623,9 @@ class Pipe:
             api, public, self._brief_timeout(timeout), case_id, text, emitter
         )
 
-    async def _brief(
+    async def _simple_artifact(
         self,
+        kind: str,
         api: str,
         public: str,
         timeout: float,
@@ -566,13 +640,50 @@ class Pipe:
             case_id,
             text,
             emitter,
-            endpoint="brief",
-            start_message="Готовлю карточки существенного по актам в Word. Это может занять несколько минут…",
-            fallback_status="Готовлю саммари…",
-            error_label="обзор",
-            retry_hint="Сначала должны быть скачаны документы. Напишите `документы` или `утверждаю 1, 2`.",
-            empty_message="Обзор не получился. Напишите ещё раз: `саммари`.",
-            link_flags={"with_summary": True},
+            **_SIMPLE_ARTIFACTS[kind],
+        )
+
+    async def _font_artifact(
+        self,
+        kind: str,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        spec = _FONT_ARTIFACTS[kind]
+        font = _parse_opinion_font(text)
+        font_name = "Calibri" if font == "c" else "Times New Roman"
+        return await self._stream_build(
+            api,
+            public,
+            timeout,
+            case_id,
+            text,
+            emitter,
+            endpoint=spec["endpoint"],
+            start_message=spec["start"].format(font=font_name),
+            fallback_status=spec["fallback_status"],
+            error_label=spec["error_label"],
+            retry_hint=spec["retry_hint"],
+            empty_message=spec["empty_message"],
+            link_flags=spec["link_flags"],
+            extra_query={"font": font},
+        )
+
+    async def _brief(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        text: str,
+        emitter: Emitter,
+    ) -> str:
+        return await self._simple_artifact(
+            "brief", api, public, timeout, case_id, text, emitter
         )
 
     async def _total(
@@ -584,20 +695,8 @@ class Pipe:
         text: str,
         emitter: Emitter,
     ) -> str:
-        return await self._stream_build(
-            api,
-            public,
-            timeout,
-            case_id,
-            text,
-            emitter,
-            endpoint="total",
-            start_message="Готовлю саммари total — конспект из знаний модели (не из базы). Это может занять несколько минут…",
-            fallback_status="Готовлю саммари total…",
-            error_label="саммари total",
-            retry_hint="Нужна созданная проверка в этом чате. Напишите тему проверки, если кейса ещё нет.",
-            empty_message="Саммари total не получился. Напишите ещё раз: `саммари total`.",
-            link_flags={"with_total": True},
+        return await self._simple_artifact(
+            "total", api, public, timeout, case_id, text, emitter
         )
 
     async def _program(
@@ -651,20 +750,8 @@ class Pipe:
         text: str,
         emitter: Emitter,
     ) -> str:
-        return await self._stream_build(
-            api,
-            public,
-            timeout,
-            case_id,
-            text,
-            emitter,
-            endpoint="hypotheses",
-            start_message="Формулирую чеклист гипотез для проверки в Excel. Лучше, если уже есть саммари / total / программа…",
-            fallback_status="Формулирую гипотезы…",
-            error_label="гипотезы",
-            retry_hint="Нужна проверка с документами. Желательно сначала `саммари`, `саммари total`, `программа проверки`.",
-            empty_message="Гипотезы не получились. Напишите ещё раз: `гипотезы`.",
-            link_flags={"with_hypotheses": True},
+        return await self._simple_artifact(
+            "hypotheses", api, public, timeout, case_id, text, emitter
         )
 
     async def _select_hypotheses(
@@ -673,7 +760,7 @@ class Pipe:
         timeout: float,
         case_id: str,
         text: str,
-    ) -> str:
+    ) -> tuple[str, bool]:
         try:
             status = await _req(
                 "GET",
@@ -685,13 +772,13 @@ class Pipe:
                 f"Не получилось прочитать чеклист гипотез: {exc}\n"
                 "Сначала напишите `гипотезы`.\n"
                 f"<!--audit-case:{case_id}-->"
-            )
+            ), False
         if not status.get("ready"):
             return (
                 "Чеклиста гипотез ещё нет. Сначала напишите `гипотезы`, "
                 "затем: `утверждаю гипотезы 1, 3, 5`.\n"
                 f"<!--audit-case:{case_id}-->"
-            )
+            ), False
         picks = _parse_hypothesis_picks(text)
         if (
             not picks.get("numbers")
@@ -704,7 +791,7 @@ class Pipe:
                 "или: `утверждаю гипотезы все с приоритетом высокий`\n"
                 "или: `утверждаю все гипотезы`.\n"
                 f"<!--audit-case:{case_id}-->"
-            )
+            ), False
         try:
             data = await _req(
                 "POST",
@@ -716,7 +803,7 @@ class Pipe:
             return (
                 f"Не получилось сохранить выбор гипотез: {extra}\n"
                 f"<!--audit-case:{case_id}-->"
-            )
+            ), False
         rows = data.get("hypotheses") or []
         lines = [
             f"Подтвердил гипотезы: {data.get('count') or len(rows)}.",
@@ -733,7 +820,7 @@ class Pipe:
             "(шрифт: `-c` Calibri или `-t` Times New Roman)."
         )
         lines.append(f"<!--audit-case:{case_id}-->")
-        return "\n".join(lines)
+        return "\n".join(lines), True
 
     async def _opinion(
         self,
@@ -744,29 +831,8 @@ class Pipe:
         text: str,
         emitter: Emitter,
     ) -> str:
-        font = _parse_opinion_font(text)
-        font_name = "Calibri" if font == "c" else "Times New Roman"
-        return await self._stream_build(
-            api,
-            public,
-            timeout,
-            case_id,
-            text,
-            emitter,
-            endpoint="opinion",
-            start_message=(
-                f"Готовлю раздел I аудиторского заключения в Word ({font_name}). "
-                "Это может занять несколько минут…"
-            ),
-            fallback_status="Готовлю аудиторское мнение…",
-            error_label="аудиторское мнение",
-            retry_hint=(
-                "Сначала `гипотезы`, затем `утверждаю гипотезы 1, 3, 5`. "
-                "Шрифт: `аудиторское мнение -c` (Calibri) или `-t` (Times New Roman)."
-            ),
-            empty_message="Аудиторское мнение не получилось. Напишите ещё раз: `аудиторское мнение`.",
-            link_flags={"with_opinion": True},
-            extra_query={"font": font},
+        return await self._font_artifact(
+            "opinion", api, public, timeout, case_id, text, emitter
         )
 
     async def _conclusion(
@@ -778,29 +844,8 @@ class Pipe:
         text: str,
         emitter: Emitter,
     ) -> str:
-        font = _parse_opinion_font(text)
-        font_name = "Calibri" if font == "c" else "Times New Roman"
-        return await self._stream_build(
-            api,
-            public,
-            timeout,
-            case_id,
-            text,
-            emitter,
-            endpoint="conclusion",
-            start_message=(
-                f"Готовлю аудиторское заключение (черновик) в Word ({font_name}). "
-                "Это может занять несколько минут…"
-            ),
-            fallback_status="Готовлю аудиторское заключение…",
-            error_label="аудиторское заключение",
-            retry_hint=(
-                "Сначала `гипотезы`, `утверждаю гипотезы 1, 3, 5`, затем `аудиторское мнение`. "
-                "Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman)."
-            ),
-            empty_message="Аудиторское заключение не получилось. Напишите ещё раз: `аудиторское заключение`.",
-            link_flags={"with_conclusion": True},
-            extra_query={"font": font},
+        return await self._font_artifact(
+            "conclusion", api, public, timeout, case_id, text, emitter
         )
 
     async def _library(self, api: str, public: str, timeout: float, case_id: str) -> str:
@@ -883,290 +928,6 @@ def _case_id_from_messages(messages: list) -> Optional[str]:
     return None
 
 
-URL_ATTACH_RE = re.compile(
-    r"(?:к|пункт|акт|номер|id)\s*([a-f0-9]{8,12}|\d{1,2})\s+(?:url|ссылка)\s+(https?://\S+)",
-    re.I,
-)
-
-
-def _clean_url(url: str) -> str:
-    cleaned = (url or "").strip().strip("`\"'<>").rstrip(").,;]")
-    if cleaned.endswith("%60"):
-        cleaned = cleaned[:-3]
-    if "..." in cleaned or "…" in cleaned:
-        return ""
-    if not cleaned.lower().startswith(("http://", "https://")):
-        return ""
-    return cleaned
-
-
-def _is_retry(text: str) -> bool:
-    return bool(re.search(r"скач|ещё раз|еще раз|повтор", text, re.I))
-
-
-def _has_explicit_picks(text: str) -> bool:
-    if re.search(r"все\s+обязательн", text, re.I):
-        return True
-    return bool(re.search(r"утвержд\w*|подтвержд\w*|выбираю", text, re.I)) and bool(
-        re.search(r"\b\d{1,2}\b", text)
-    )
-
-
-def _is_program(text: str) -> bool:
-    t = text.strip().lower()
-    if _is_opinion(t) or _is_conclusion(t):
-        return False
-    if t in {"программа", "программу", "/program", "audit program"}:
-        return True
-    if re.match(r"^\s*(программа|программу)\s+\d", t):
-        return True
-    if re.search(r"(статья|ст\.)\s*\d+", t) and not re.search(r"программ", t):
-        return False
-    return bool(
-        re.search(
-            r"(программ\w*\s+(проверк|аудиторск|аудита)|"
-            r"аудиторск\w*\s+программ|"
-            r"(сделай|составь|подготовь|напиши)\s+программ|"
-            r"/program|audit\s+program)",
-            t,
-        )
-    )
-
-
-def _parse_program_items_spec(text: str) -> Optional[tuple[int, int]]:
-    cleaned = re.sub(r"заново|пересобер\w*|перегенер\w*|force", " ", text, flags=re.I)
-
-    def _pair(spec: str) -> tuple[int, int]:
-        compact = re.sub(r"\s+", "", spec)
-        ranged = re.fullmatch(r"(\d{1,2})[-–—](\d{1,2})", compact)
-        if ranged:
-            lo, hi = int(ranged.group(1)), int(ranged.group(2))
-            if lo > hi:
-                lo, hi = hi, lo
-            return max(3, min(20, lo)), max(3, min(20, hi))
-        n = max(3, min(20, int(compact)))
-        return n, n
-
-    match = re.search(
-        r"(?:программ\w*|audit\s+program|/program)[^\n\d]{0,80}"
-        r"(\d{1,2}\s*[-–—]\s*\d{1,2}|\d{1,2})",
-        cleaned,
-        re.I,
-    )
-    if match:
-        return _pair(match.group(1))
-    match = re.search(
-        r"(?:строго|ровно|только)\s+(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?\s*пункт",
-        cleaned,
-        re.I,
-    )
-    if match:
-        spec = match.group(1) if not match.group(2) else f"{match.group(1)}-{match.group(2)}"
-        return _pair(spec)
-    return None
-
-
-def _is_total(text: str) -> bool:
-    t = text.strip().lower()
-    if t in {
-        "саммари total",
-        "саммари тотал",
-        "total саммари",
-        "/total",
-        "конспект модели",
-        "из головы",
-    }:
-        return True
-    return bool(
-        re.search(
-            r"("
-            r"саммари\s+total|"
-            r"саммари\s+тотал|"
-            r"total\s+саммари|"
-            r"сводк\w*\s+total|"
-            r"конспект\s+(модели|llm|из\s+голов)|"
-            r"из\s+голов\w*\s+модел|"
-            r"(обзор|конспект)\s+без\s+баз"
-            r")",
-            t,
-        )
-    )
-
-
-def _is_hypotheses(text: str) -> bool:
-    t = text.strip().lower()
-    if _is_select_hypotheses(t) or _is_opinion(t) or _is_conclusion(t):
-        return False
-    if t in {
-        "гипотезы",
-        "гипотеза",
-        "checklist",
-        "чеклист",
-        "чеклист гипотез",
-        "/hypotheses",
-        "/hypothesis",
-    }:
-        return True
-    return bool(
-        re.search(
-            r"("
-            r"гипотез\w*|"
-            r"чеклист\s+гипотез|"
-            r"(сделай|составь|подготовь|сформулируй)\s+гипотез|"
-            r"/hypothes"
-            r")",
-            t,
-        )
-    )
-
-
-def _is_select_hypotheses(text: str) -> bool:
-    t = text.strip().lower()
-    if not re.search(r"гипотез", t):
-        return False
-    if REJECT_APPROVE_RE.search(t):
-        return False
-    return bool(re.search(r"утвержд\w*|подтвержд\w*|выбираю", t))
-
-
-def _is_opinion(text: str) -> bool:
-    t = text.strip().lower()
-    if t in {
-        "аудиторское мнение",
-        "мнение аудитора",
-        "/opinion",
-        "/мнение",
-    }:
-        return True
-    return bool(
-        re.search(
-            r"("
-            r"аудиторск\w*\s+мнен|"
-            r"мнен\w*\s+аудитор|"
-            r"(сделай|составь|подготовь|напиши)\s+(аудиторск\w*\s+)?мнен|"
-            r"/opinion|/мнение"
-            r")",
-            t,
-        )
-    )
-
-
-def _parse_hypothesis_picks(text: str) -> dict[str, Any]:
-    t = text.strip().lower()
-    if re.search(r"все\s+(с\s+приоритетом\s+)?высок", t):
-        return {"all_high": True, "numbers": [], "all_rows": False}
-    if re.search(r"все\s+гипотез|утверждаю\s+все(?!\s+обязательн)|подтверждаю\s+все", t):
-        return {"all_rows": True, "numbers": [], "all_high": False}
-    numbers = [int(n) for n in re.findall(r"\b(\d{1,2})\b", t)]
-    numbers = [n for n in numbers if 1 <= n <= 20]
-    return {"numbers": numbers, "all_high": False, "all_rows": False}
-
-
-def _parse_opinion_font(text: str) -> str:
-    cleaned = re.sub(r"заново|пересобер\w*|перегенер\w*|force", " ", text or "", flags=re.I)
-    if re.search(r"(?:^|\s)-c(?:\s|$)|(?<!\w)calibri(?!\w)|калибри", cleaned, re.I):
-        return "c"
-    if re.search(r"(?:^|\s)-t(?:\s|$)|times(?:\s+new\s+roman)?|таймс", cleaned, re.I):
-        return "t"
-    return "t"
-
-
-def _is_conclusion(text: str) -> bool:
-    t = text.strip().lower()
-    if t in {
-        "аудиторское заключение",
-        "заключение аудитора",
-        "/report",
-        "/conclusion",
-        "/заключение",
-    }:
-        return True
-    return bool(
-        re.search(
-            r"("
-            r"аудиторск\w*\s+заключен|"
-            r"заключен\w*\s+аудитор|"
-            r"(сделай|составь|подготовь|напиши)\s+(аудиторск\w*\s+)?заключен|"
-            r"/report|/conclusion"
-            r")",
-            t,
-        )
-    )
-
-
-def _is_brief(text: str) -> bool:
-    t = text.strip().lower()
-    if _is_total(t) or _is_hypotheses(t) or _is_opinion(t) or _is_conclusion(t):
-        return False
-    if t in {"саммари", "сводка", "бриф", "docx", "word", "/brief", "/summary"}:
-        return True
-    if re.search(r"(статья|ст\.)\s*\d+", t) and not re.search(r"\bdocx\b|word-файл", t):
-        return False
-    return bool(
-        re.search(
-            r"(саммари|сводк\w*|бриф|briefing|\bdocx\b|/brief|/summary|"
-            r"обзор\s+(акт|нпа|норм)|word-файл|файл word)",
-            t,
-        )
-    )
-
-
-def _is_approve(text: str) -> bool:
-    if REJECT_APPROVE_RE.search(text):
-        return False
-    if APPROVE_RE.search(text):
-        return True
-    if URL_ATTACH_RE.search(text):
-        return True
-    # Доп. акты по названию — только как реплика целиком, не «плюс» внутри названия проверки
-    return bool(
-        re.match(
-            r"^\s*(добавь(?:те)?|дополнительно|и\s+ещ[её]|ещ[её]\s*:|\+)\b",
-            text,
-            re.I,
-        )
-    )
-
-
-def _is_library(text: str) -> bool:
-    """Команда списка/архива, не любой текст со словом «документ»."""
-    t = text.strip().lower()
-    if (
-        _is_brief(t)
-        or _is_program(t)
-        or _is_total(t)
-        or _is_hypotheses(t)
-        or _is_opinion(t)
-        or _is_conclusion(t)
-        or _is_select_hypotheses(t)
-    ):
-        return False
-    if re.search(r"скачай|скачать|скачивай", t):
-        return False
-    if t in {
-        "документы",
-        "документ",
-        "библиотека",
-        "библиотеку",
-        "файлы",
-        "архив",
-        "/library",
-    }:
-        return True
-    return bool(
-        re.search(
-            r"("
-            r"посмотреть\s+(акты|документы)|"
-            r"покажи\s+(акты|документы)|"
-            r"что\s+скача|"
-            r"список\s+документов|"
-            r"/library"
-            r")",
-            t,
-        )
-    )
-
-
 def _file_stem(inspection_name: str) -> str:
     base = re.sub(r"[^\w\u0400-\u04FF\-]+", "_", inspection_name or "", flags=re.UNICODE)
     return base.strip("_")[:60] or "proverka"
@@ -1219,22 +980,6 @@ def _download_links(
     return "\n".join(lines)
 
 
-def _is_status(text: str) -> bool:
-    t = text.strip().lower()
-    return t in {"статус", "status", "кейсы", "проверки", "/status"} or t.startswith("статус ")
-
-
-def _parse_kb_question(text: str) -> Optional[str]:
-    """Явный вопрос к базе знаний: «вопрос …» / «вопрос по базе: …» / `/ask …`.
-
-    Возвращает текст вопроса (может быть пустым), или None если это не команда ask.
-    """
-    match = KB_ASK_RE.match(text.strip())
-    if not match:
-        return None
-    return (match.group(1) or "").strip()
-
-
 def _message_text(content: Any) -> str:
     if isinstance(content, list):
         parts = []
@@ -1264,140 +1009,6 @@ def _messages_for_chat(body: dict) -> list[dict[str, str]]:
             continue
         out.append({"role": role, "content": text})
     return out[-24:]
-
-
-def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
-    raw = text.strip()
-    if len(raw) < 8:
-        return None
-    if _parse_kb_question(raw) is not None:
-        return None
-    if (
-        _is_approve(raw)
-        or _is_status(raw)
-        or _is_library(raw)
-        or _is_brief(raw)
-        or _is_total(raw)
-        or _is_program(raw)
-        or _is_hypotheses(raw)
-        or _is_opinion(raw)
-        or _is_conclusion(raw)
-        or _is_select_hypotheses(raw)
-    ):
-        return None
-    parts = [p.strip(" .;") for p in re.split(r"[,;\n]", raw) if p.strip()]
-    if not parts:
-        return None
-    name = parts[0]
-    keywords = [part for part in parts[1:] if part]
-    looks_like_case = bool(
-        re.search(r"проверк|аудит|аренда|кредит|валют|касс|нпа", raw, re.I)
-    ) or len(name) >= 12
-    if not looks_like_case:
-        return None
-    return {
-        "inspection_name": name,
-        "keywords": keywords,
-    }
-
-
-def _resolve_approval(
-    text: str, docs: list[dict]
-) -> tuple[list[str], dict[str, str], list[str]]:
-    main, extras_blob = _split_extra_section(text)
-    extras = _parse_extra_titles(extras_blob)
-    manuals: dict[str, str] = {}
-    for match in URL_ATTACH_RE.finditer(text):
-        key, raw_url = match.group(1), match.group(2)
-        url = _clean_url(raw_url)
-        if not url:
-            continue
-        doc_id = _index_or_id(key, docs)
-        if doc_id:
-            manuals[doc_id] = url
-
-    if re.search(r"все\s+обязательн", main, re.I):
-        ids = [d["id"] for d in docs if int(d.get("priority") or 2) == 1]
-        return ids, manuals, extras
-
-    numbers = [int(n) for n in re.findall(r"\b(\d{1,2})\b", main)]
-    ids_from_n = []
-    for n in numbers:
-        if 1 <= n <= len(docs):
-            ids_from_n.append(docs[n - 1]["id"])
-    hex_ids = [h.lower() for h in HEX_ID_RE.findall(main)]
-    known = {d["id"] for d in docs}
-    ids_from_hex = [h for h in hex_ids if h in known]
-    merged = list(dict.fromkeys(ids_from_n + ids_from_hex + list(manuals.keys())))
-    return merged, manuals, extras
-
-
-def _split_extra_section(text: str) -> tuple[str, str]:
-    match = EXTRA_MARK_RE.search(text)
-    if not match:
-        return text, ""
-    return text[: match.start()].strip(), text[match.end() :].strip()
-
-
-def _parse_extra_titles(blob: str) -> list[str]:
-    raw = (blob or "").strip().strip(" .,:;")
-    if not raw:
-        return []
-    parts = re.split(r"\s*[;\n]\s*|\s+\+\s+", raw)
-    out: list[str] = []
-    seen: set[str] = set()
-    for part in parts:
-        chunk = part.strip()
-        and_split = re.search(r"\s+и\s+", chunk, re.I)
-        pieces = [chunk]
-        if and_split:
-            right = chunk[and_split.end() :].strip()
-            if re.match(
-                r"^(закон|кодекс|инструкц|положен|постановлен|указ|декрет|"
-                r"правил|налоговый|гражданский|банковский)",
-                right,
-                re.I,
-            ):
-                left = chunk[: and_split.start()].strip()
-                pieces = [left, right] if left else [right]
-        for piece in pieces:
-            title = re.sub(r"^[\d]+[.)]\s*", "", piece).strip(" .,:;")
-            title = re.sub(
-                r"^(?:и|ещ[её]|также|плюс|добавь(?:те)?|документы?)\s+",
-                "",
-                title,
-                flags=re.I,
-            ).strip(" .,:;")
-            key = re.sub(r"\s+", " ", title.lower())
-            if len(key) < 8 or key in seen:
-                continue
-            if re.search(
-                r"(audit-case|chat_history|если знаете ссылку|вставьте адрес|"
-                r"<!--|</?\w+>|https?://|guid=…)",
-                title,
-                re.I,
-            ):
-                continue
-            if not re.search(
-                r"(закон|кодекс|инструкц|положен|постановлен|указ|декрет|"
-                r"правил|приказ|письмо|разъяснен|нбрб|минфин|налогов)",
-                title,
-                re.I,
-            ):
-                continue
-            seen.add(key)
-            out.append(title)
-    return out
-
-
-def _index_or_id(key: str, docs: list[dict]) -> Optional[str]:
-    if key.isdigit():
-        n = int(key)
-        if 1 <= n <= len(docs):
-            return docs[n - 1]["id"]
-        return None
-    known = {d["id"] for d in docs}
-    return key.lower() if key.lower() in known else None
 
 
 def _priority_label(p: Any) -> str:

@@ -140,6 +140,7 @@ class AskResponse(BaseModel):
     model: str
     used_embeddings: bool = False
     used_reranker: bool = False
+    used_summaries: bool = False
 
 
 class ChatMessage(BaseModel):

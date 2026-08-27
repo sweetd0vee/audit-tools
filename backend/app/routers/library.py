@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -20,6 +21,7 @@ from app.services.library_flow import run_download, run_propose, run_propose_eve
 from app.storage import store
 
 router = APIRouter(prefix="/api/v1", tags=["library"])
+logger = logging.getLogger(__name__)
 _CASE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -38,6 +40,7 @@ def create_case(body: CreateCaseRequest) -> CreateCaseResponse:
         keywords=body.keywords,
         notes=body.notes,
     )
+    logger.info("case created id=%s name=%s", state.case_id, state.inspection_name)
     return CreateCaseResponse(
         case_id=state.case_id,
         status=state.status,
@@ -77,6 +80,7 @@ async def propose(case_id: str) -> ProposeResponse:
     try:
         state = await run_propose(case_id)
     except Exception as exc:  # noqa: BLE001
+        logger.exception("propose failed case=%s", case_id)
         raise HTTPException(status_code=502, detail=f"Propose failed: {exc}") from exc
 
     return ProposeResponse(
@@ -131,6 +135,7 @@ async def download(case_id: str) -> DownloadResponse:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            logger.exception("download failed case=%s", case_id)
             raise HTTPException(status_code=502, detail=f"Download failed: {exc}") from exc
 
     selected = [d for d in state.documents if d.selected]

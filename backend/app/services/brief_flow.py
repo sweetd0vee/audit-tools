@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.services.brief_docx import write_brief_docx
+from app.services.case_context import append_npa_sources_markdown
 from app.services.document_artifact import (
     ArtifactSpec,
     ElapsedTimer,
@@ -212,16 +213,7 @@ def _write_markdown(
         lines.append(f"## {ch['title']}")
         lines.append(ch.get("body") or "")
         lines.append("")
-    lines.append("## Источники: статьи и фрагменты")
-    for src in sources:
-        article = src.get("article") or "фрагмент"
-        url = src.get("url") or ""
-        url_line = f" {url}" if url else f" файл `{src.get('filename') or ''}`"
-        lines.append(f"### [{src['n']}] {src.get('title')} — {article}")
-        lines.append(url_line.strip())
-        lines.append("")
-        lines.append(f"> {src.get('excerpt') or ''}")
-        lines.append("")
+    append_npa_sources_markdown(lines, sources, heading_if_empty=True)
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 

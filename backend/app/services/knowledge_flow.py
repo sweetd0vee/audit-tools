@@ -322,11 +322,8 @@ def fragments_from_item(
     return _fragments_from_spans(state, item, picked, start_n=start_n)
 
 
-_fragments_from_item = fragments_from_item
-
-
 def _hydrate_item_chunks(case_id: str, item: KnowledgeItem, parts: list[str]) -> list[dict]:
-    chunks = chunks_from_item(item, "", parts)
+    chunks = chunks_from_item(item, parts)
     index = _load_index(case_id)
     by_id = {c.get("id"): c for c in index.get("chunks") or []}
     for ch in chunks:

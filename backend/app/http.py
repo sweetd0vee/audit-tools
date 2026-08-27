@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 
 from fastapi import HTTPException
@@ -8,6 +9,8 @@ from fastapi.responses import StreamingResponse
 
 from app.models import CaseState
 from app.storage import store
+
+logger = logging.getLogger(__name__)
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -33,6 +36,7 @@ async def sse_from_events(events: AsyncIterator[dict]) -> AsyncIterator[str]:
             yield sse_line(event)
         yield sse_line({"type": "done"})
     except Exception as exc:  # noqa: BLE001
+        logger.exception("SSE stream failed")
         yield sse_line({"type": "error", "message": str(exc)})
 
 

@@ -163,15 +163,6 @@ def _is_section_ii(title: str) -> bool:
     return "основные результаты" in (title or "").lower()
 
 
-def _is_section_iii(title: str) -> bool:
-    low = (title or "").lower()
-    return (
-        "наблюдения по итогам" in low
-        or "принципам налогообложения" in low
-        or "защиты прав плательщиков" in low
-    )
-
-
 def _is_tax_template_title(title: str) -> bool:
     low = (title or "").lower()
     return "принципам налогообложения" in low or "защиты прав плательщиков" in low

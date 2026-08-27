@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ from app.services.extra_titles import (
     search_queries_for_title,
 )
 from app.services.known_sources import lookup_known_url
-from app.services.knowledge_flow import rebuild_index
+from app.services.knowledge_index import rebuild_index
 from app.services.npa_search import expand_official_urls, extract_doc_code, find_candidate_urls
 from app.services.ollama_client import propose_documents, propose_documents_events
 from app.storage import store

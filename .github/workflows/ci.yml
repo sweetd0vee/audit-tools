@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: lint · types · tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - name: Install
+        run: pip install -r backend/requirements-dev.txt
+      - name: Ruff
+        run: ruff check backend/app backend/tests
+      - name: Ruff format
+        run: ruff format --check backend/app backend/tests
+      - name: Mypy
+        run: mypy
+      - name: Pytest
+        run: pytest
+        env:
+          PYTHONPATH: backend
+
+  commit-messages:
+    name: commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject placeholder subjects
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=0
+          while IFS= read -r subject; do
+            [ -z "$subject" ] && continue
+            lower=$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]')
+            case "$lower" in
+              "initial commit"|"intiial commit"|"first commit"|"wip"|"fix"|"update")
+                echo "Reject: $subject"
+                bad=1
+                ;;
+            esac
+            if [ "${#subject}" -lt 10 ]; then
+              echo "Too short: $subject"
+              bad=1
+            fi
+          done < <(git log --format=%s "origin/${GITHUB_BASE_REF}..HEAD")
+          if [ "$bad" -ne 0 ]; then
+            echo "Use a real subject, e.g. 'add request logging to FastAPI'."
+            exit 1
+          fi

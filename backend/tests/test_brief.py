@@ -8,7 +8,7 @@ from app.models import CaseState, KnowledgeItem, ProposedDocument
 from app.services.brief_docx import write_brief_docx
 from app.services.brief_flow import collect_brief_sources
 from app.services.citations import excerpt_for_cite, extract_article_ref, origin_url, pages_estimate
-from app.services.knowledge_flow import _fragments_from_item
+from app.services.knowledge_flow import fragments_from_item
 
 
 class TestArticleRef(unittest.TestCase):
@@ -142,7 +142,7 @@ class TestCollectSources(unittest.TestCase):
             self.assertEqual(sources[0]["n"], 1)
             self.assertTrue(any(s.get("article") for s in sources))
             self.assertTrue(all(s.get("url") for s in sources))
-            frags = _fragments_from_item(state, item)
+            frags = fragments_from_item(state, item)
             self.assertTrue(frags)
 
     def test_covers_start_and_end_not_keyword_hits(self):
@@ -167,7 +167,7 @@ class TestCollectSources(unittest.TestCase):
                 keywords=["валюта"],
                 knowledge=[item],
             )
-            blob = " ".join(fr["text"] for fr in _fragments_from_item(state, item))
+            blob = " ".join(fr["text"] for fr in fragments_from_item(state, item))
             self.assertIn("Статья 1.", blob)
             self.assertIn("Статья 24.", blob)
             sources = collect_brief_sources(state)

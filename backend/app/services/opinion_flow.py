@@ -14,6 +14,7 @@ from app.services.case_context import (
     document_catalog,
     existing_cards,
     format_npa_sources,
+    optional_block,
     read_truncated_md,
 )
 from app.services.document_artifact import (
@@ -81,10 +82,6 @@ def parse_opinion_font_flag(text: str) -> str:
     return DEFAULT_FONT
 
 
-def font_query_value(font: str) -> str:
-    return "c" if font == FONT_CALIBRI else "t"
-
-
 def opinion_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
     _ = case_id
     return artifact_download_name(inspection_name, OPINION_SPEC, ext=ext)
@@ -119,13 +116,6 @@ def format_hypotheses_block(rows: list[dict[str, str]]) -> str:
                 lines.append(f"   {label}: {value}")
         lines.append("")
     return "\n".join(lines).strip() or "Подтверждённых гипотез нет."
-
-
-def _optional_block(label: str, text: str, empty: str) -> str:
-    body = (text or "").strip()
-    if body:
-        return f"{label}:\n{body}\n"
-    return f"{empty}\n"
 
 
 def _digest(body: str, limit: int = 8) -> list[str]:
@@ -249,22 +239,22 @@ async def _compose_opinion(
         keywords=", ".join(state.keywords) or "не указаны",
         document_catalog=document_catalog(state),
         hypotheses_block=format_hypotheses_block(hypotheses),
-        program_block=_optional_block(
+        program_block=optional_block(
             "Программа проверки (черновик)",
             program_md,
             "Программа проверки ещё не собрана.",
         ),
-        brief_block=_optional_block(
+        brief_block=optional_block(
             "Саммари по актам",
             brief_md,
             "Саммари по базе знаний ещё не собрано.",
         ),
-        total_block=_optional_block(
+        total_block=optional_block(
             "Саммари total",
             total_md,
             "Саммари total ещё не собрано.",
         ),
-        cards_block=_optional_block(
+        cards_block=optional_block(
             "Карточки актов",
             cards,
             "Карточки саммари ещё не собраны.",

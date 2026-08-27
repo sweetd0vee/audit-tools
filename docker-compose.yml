@@ -10,7 +10,7 @@ name: ai-auditor
 # API:      http://localhost:8100/docs
 # Поиск:    http://localhost:8080  (внутренний, не для аудитора)
 #
-# Засев чата: seed/openwebui/README.md
+# Засев чата: seed/openwebui/seed_pipe.py (сервис pipe-seed при up)
 # Админский гайд (числа RAG, модели, Pipe): docs/OPENWEBUI.md
 # Если volume open-webui-data уже жил — RAG-env всё равно применяется:
 # ENABLE_PERSISTENT_CONFIG=false, иначе остаются MiniLM / hybrid off / top-k=3.
@@ -70,6 +70,24 @@ services:
         Клиентские факты (суммы, договоры, выгрузки) из этих фрагментов не выводи, если их там нет.
 
         {{CONTEXT}}
+    networks:
+      - ai-auditor
+
+  pipe-seed:
+    build:
+      context: ./backend
+    container_name: audit-tools-pipe-seed
+    restart: on-failure
+    depends_on:
+      - open-webui
+    volumes:
+      - ./seed/openwebui:/seed:ro
+    environment:
+      OPENWEBUI_URL: http://open-webui:8080
+      OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
+      PIPE_AUDIT_API: http://backend:8100
+      PIPE_PUBLIC_API: http://localhost:8100
+    command: ["python", "/seed/seed_pipe.py"]
     networks:
       - ai-auditor
 

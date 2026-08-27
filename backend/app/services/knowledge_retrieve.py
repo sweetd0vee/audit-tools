@@ -452,7 +452,7 @@ def _keyword_overlap(text: str, query_tokens: list[str]) -> float:
     return score
 
 
-def chunks_from_item(item: KnowledgeItem, text: str, parts: list[str]) -> list[dict]:
+def chunks_from_item(item: KnowledgeItem, parts: list[str]) -> list[dict]:
     out: list[dict] = []
     for i, part in enumerate(parts):
         out.append(
