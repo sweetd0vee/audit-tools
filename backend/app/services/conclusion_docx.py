@@ -642,6 +642,66 @@ def toc_entries(doc: ConclusionDocument | None = None, **_: object) -> list[tupl
     ]
 
 
+_LINES_PER_PAGE = 22
+_CHARS_PER_LINE = 62
+
+
+def _plain_len(text: str) -> int:
+    cleaned = _strip_md(text or "")
+    cleaned = re.sub(r"\|+", " ", cleaned)
+    return len(re.sub(r"\s+", " ", cleaned).strip())
+
+
+def _lines_for_text(text: str) -> float:
+    lines = 0.0
+    for raw in (text or "").splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            lines += 0.4
+            continue
+        if stripped.startswith("|"):
+            lines += 1.0
+            continue
+        width = _plain_len(stripped) or 1
+        lines += max(1.0, math.ceil(width / _CHARS_PER_LINE))
+    return lines
+
+
+def estimate_toc_pages(
+    opinion_body: str,
+    report: ConclusionDocument | None,
+) -> dict[str, int]:
+    """Page numbers for the TOC: cover=1, contents=2, body follows."""
+    observations: list[Observation] = []
+    intro = ""
+    if report is not None:
+        for section in report.sections:
+            if section.kind == "observations":
+                intro = section.intro or ""
+                observations = list(section.observations)
+                break
+    toc_lines = 8 + len(observations)
+    toc_pages = 1 if toc_lines <= 28 else 2
+    cursor = 2 + toc_pages
+
+    pages: dict[str, int] = {"I": cursor}
+    opinion_lines = _lines_for_text(opinion_body) + 3
+    cursor += max(1, math.ceil(opinion_lines / _LINES_PER_PAGE))
+
+    pages["III"] = cursor
+    cursor += max(0.25, _lines_for_text(intro) / _LINES_PER_PAGE)
+    for observation in observations:
+        pages[observation.number] = int(cursor)
+        chunk_lines = (
+            10
+            + _lines_for_text(observation.body)
+            + _lines_for_text(observation.recommendation)
+        )
+        cursor += max(0.55, chunk_lines / _LINES_PER_PAGE)
+    pages["IV"] = max(int(cursor), pages["III"])
+    return pages
+
+
 def _add_runs(paragraph, parts: list[tuple[str, dict]], *, font: str) -> None:
     for text, opts in parts:
         if not text:
@@ -1192,24 +1252,24 @@ def _enable_update_fields(doc: Document) -> None:
     settings_el.append(el)
 
 
-def _add_pageref(paragraph, bookmark: str, *, font: str) -> None:
+def _add_page_field(paragraph, *, font: str, size: int = 9) -> None:
     def fld(kind: str) -> None:
         run = paragraph.add_run()
         el = OxmlElement("w:fldChar")
         el.set(qn("w:fldCharType"), kind)
         run._r.append(el)
-        _set_run_font(run, size=_FONT_SIZE, font=font)
+        _set_run_font(run, size=size, font=font)
 
     fld("begin")
     instr_run = paragraph.add_run()
     instr = OxmlElement("w:instrText")
-    instr.set(qn("xml:space"), "preserve")
-    instr.text = f" PAGEREF {bookmark} \\h "
+    instr.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instr.text = " PAGE "
     instr_run._r.append(instr)
-    _set_run_font(instr_run, size=_FONT_SIZE, font=font)
+    _set_run_font(instr_run, size=size, font=font)
     fld("separate")
-    placeholder = paragraph.add_run("·")
-    _set_run_font(placeholder, size=_FONT_SIZE, font=font)
+    placeholder = paragraph.add_run("2")
+    _set_run_font(placeholder, size=size, font=font)
     fld("end")
 
 
@@ -1219,7 +1279,7 @@ def _write_toc_line(
     title: str,
     *,
     font: str,
-    bookmark: str = "",
+    page: int | None,
     indent_cm: float = 0.0,
     bold_label: bool = True,
 ) -> None:
@@ -1242,11 +1302,18 @@ def _write_toc_line(
     else:
         _add_runs(paragraph, [(f"{label}.  {heading}", {})], font=font)
     paragraph.add_run("\t")
-    if bookmark:
-        _add_pageref(paragraph, bookmark, font=font)
+    number = "—" if page is None else str(page)
+    run = paragraph.add_run(number)
+    _set_run_font(run, size=_FONT_SIZE, font=font)
 
 
-def _write_toc(doc: Document, report: ConclusionDocument, *, font: str) -> None:
+def _write_toc(
+    doc: Document,
+    report: ConclusionDocument,
+    *,
+    font: str,
+    opinion_body: str = "",
+) -> None:
     heading = _add_styled_paragraph(
         doc, font=font, align="left", space_after=14, first_line=False
     )
@@ -1259,20 +1326,21 @@ def _write_toc(doc: Document, report: ConclusionDocument, *, font: str) -> None:
                 iii_title = section.title
             observations = list(section.observations)
             break
-    _write_toc_line(doc, "I", _SECTION_I, font=font, bookmark="sec_I")
-    _write_toc_line(doc, "II", _SECTION_II, font=font, bookmark="")
-    _write_toc_line(doc, "III", iii_title, font=font, bookmark="sec_III")
+    pages = estimate_toc_pages(opinion_body, report)
+    _write_toc_line(doc, "I", _SECTION_I, font=font, page=pages.get("I", 3))
+    _write_toc_line(doc, "II", _SECTION_II, font=font, page=None)
+    _write_toc_line(doc, "III", iii_title, font=font, page=pages.get("III", pages.get("I", 3) + 1))
     for observation in observations:
         _write_toc_line(
             doc,
             observation.number,
             observation.title or "Наблюдение",
             font=font,
-            bookmark=f"obs_{observation.number.replace('.', '_')}",
+            page=pages.get(observation.number, pages.get("III")),
             indent_cm=1.0,
             bold_label=False,
         )
-    _write_toc_line(doc, "IV", _SECTION_LAST, font=font, bookmark="sec_IV")
+    _write_toc_line(doc, "IV", _SECTION_LAST, font=font, page=pages.get("IV"))
     _blank(doc, font=font, after=0)
     doc.add_page_break()
 
@@ -1316,13 +1384,18 @@ def write_conclusion_docx(
 
     section.different_first_page_header_footer = True
     footer = section.footer.paragraphs[0]
-    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    footer.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    footer.paragraph_format.tab_stops.add_tab_stop(
+        Cm(16.0), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.SPACES
+    )
     fr = footer.add_run(f"Черновик · {_TITLE} · {inspection_name} · кейс {case_id}")
     _set_run_font(fr, size=9, italic=True, font=font)
+    footer.add_run("\t")
+    _add_page_field(footer, font=font, size=9)
 
     _enable_update_fields(doc)
     _write_title_page(doc, inspection_name=inspection_name, period=period, font=font)
-    _write_toc(doc, report, font=font)
+    _write_toc(doc, report, font=font, opinion_body=opinion_body or "")
 
     _add_roman_heading(doc, "I", _SECTION_I, font=font, bookmark="sec_I")
     add_opinion_markdown(doc, opinion_body or "", font=font)

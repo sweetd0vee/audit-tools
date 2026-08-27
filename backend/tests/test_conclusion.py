@@ -1,3 +1,4 @@
+import re
 import tempfile
 import unittest
 import zipfile
@@ -8,6 +9,7 @@ from app.services.conclusion_docx import (
     _COVER_IMAGE,
     _cover_year,
     ensure_all_hypotheses,
+    estimate_toc_pages,
     parse_conclusion_markdown,
     toc_entries,
     write_conclusion_docx,
@@ -160,6 +162,25 @@ V. Общая информация об аудиторской проверке
         self.assertEqual(obs[0].materiality, "высокий")
         self.assertEqual(obs[1].materiality, "низкий")
 
+    def test_toc_page_numbers_increase_with_observations(self):
+        rows = [_row(n) for n in range(1, 7)]
+        report = parse_conclusion_markdown(
+            "просто текст без структуры",
+            hypotheses=rows,
+            period="2025",
+        )
+        for obs in report.sections[0].observations:
+            obs.body = ("Абзац наблюдения о риске контроля. " * 40).strip()
+            obs.recommendation = "Закрепить процедуру сверки в ЛПА банка."
+        pages = estimate_toc_pages("Цели аудита. " * 80, report)
+        self.assertGreaterEqual(pages["I"], 3)
+        self.assertGreater(pages["III"], pages["I"])
+        self.assertGreaterEqual(pages["3.1"], pages["III"])
+        self.assertGreater(pages["3.6"], pages["3.1"])
+        self.assertGreaterEqual(pages["IV"], pages["3.6"])
+        numbers = [pages["I"], pages["III"], pages["3.1"], pages["3.6"], pages["IV"]]
+        self.assertGreater(len(set(numbers)), 1)
+
     def test_ensure_all_hypotheses_appends_missing(self):
         rows = [_row(n) for n in (1, 3, 4, 5, 6, 8)]
         report = parse_conclusion_markdown(SAMPLE_MD, hypotheses=rows[:2], period="2025")
@@ -287,8 +308,21 @@ class TestConclusionDocx(unittest.TestCase):
                 xml.find("По подтверждённой гипотезе"),
                 xml.find("Аудиторская рекомендация"),
             )
-            self.assertIn("PAGEREF", xml)
-            self.assertIn("w:updateFields", zipfile.ZipFile(path).read("word/settings.xml").decode("utf-8"))
+            self.assertNotIn("PAGEREF", xml)
+            with zipfile.ZipFile(path) as footers:
+                footer_xml = "\n".join(
+                    footers.read(n).decode("utf-8")
+                    for n in footers.namelist()
+                    if n.startswith("word/footer")
+                )
+            self.assertIn("PAGE", footer_xml)
+            toc_i = re.search(r"Аудиторское мнение по итогам проверки\.\t(\d+)", texts)
+            toc_iv = re.search(r"Общая информация об аудиторской проверке\.\t(\d+)", texts)
+            self.assertIsNotNone(toc_i)
+            self.assertIsNotNone(toc_iv)
+            self.assertGreaterEqual(int(toc_i.group(1)), 3)
+            self.assertGreater(int(toc_iv.group(1)), int(toc_i.group(1)))
+            self.assertIn("3.1.  Неполная сверка договоров аренды.", texts)
 
     def test_markdown_table_and_scheme_in_observation(self):
         md = """
