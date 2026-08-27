@@ -92,7 +92,7 @@ def add_bookmark(paragraph, name: str) -> None:
     start.set(qn("w:name"), name)
     end = OxmlElement("w:bookmarkEnd")
     end.set(qn("w:id"), bid)
-    paragraph._p.append(start)
+    paragraph._p.insert(0, start)
     paragraph._p.append(end)
 
 

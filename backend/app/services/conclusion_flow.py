@@ -44,7 +44,7 @@ from app.services.opinion_flow import (
 from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
 
-CONCLUSION_SCHEMA = 3
+CONCLUSION_SCHEMA = 4
 CONCLUSION_SPEC = ArtifactSpec(
     meta_key="conclusion",
     directory="reports",
