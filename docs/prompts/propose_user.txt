@@ -1,6 +1,5 @@
 Название проверки: {inspection_name}
 Ключевые термины: {keywords_str}
-Период: {period_str}
 
 Верни JSON вида:
 {

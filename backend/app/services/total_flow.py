@@ -63,7 +63,6 @@ def _total_stale(state: CaseState) -> bool:
         extra={
             "keywords": list(state.keywords),
             "inspection_name": state.inspection_name,
-            "period": state.period or None,
         },
     )
 
@@ -150,7 +149,6 @@ def _save_total_meta(
         body=body,
         extra={
             "keywords": list(state.keywords),
-            "period": state.period or None,
             "schema": TOTAL_SCHEMA,
             "source": "model_knowledge",
         },
@@ -161,7 +159,6 @@ def _write_markdown(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     body: str,
@@ -170,7 +167,7 @@ def _write_markdown(
     lines = [
         "# Конспект по теме (знания модели)",
         f"**{inspection_name}**",
-        f"Период: {period or 'не указан'}. Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
+        f"Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",
         "Черновик из знаний LLM, без опоры на скачанные акты базы знаний. "
         "Номера `[n]` — ссылки на список источников в конце. Сверяйте с первоисточником.",
@@ -195,7 +192,6 @@ async def _compose_total(state: CaseState) -> str:
         "total_user",
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords) or "не указаны",
-        period=state.period or "не указан",
         sections=prompt("total_sections").strip(),
         target=target,
         target_hi=target + 1500,
@@ -255,7 +251,6 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
     _write_markdown(
         paths.md,
         inspection_name=state.inspection_name,
-        period=state.period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,
@@ -264,7 +259,6 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
     write_total_docx(
         paths.primary,
         inspection_name=state.inspection_name,
-        period=state.period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,

@@ -59,7 +59,6 @@ class CaseStore:
         self,
         inspection_name: str,
         keywords: list[str],
-        period: str | None = None,
         notes: str | None = None,
     ) -> CaseState:
         case_id = new_id()
@@ -72,7 +71,6 @@ class CaseStore:
             status=CaseStatus.created,
             inspection_name=inspection_name.strip(),
             keywords=[k.strip() for k in keywords if k.strip()],
-            period=period,
             notes=notes,
         )
         self.save(state)

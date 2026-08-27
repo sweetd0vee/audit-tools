@@ -303,7 +303,6 @@ def _write_markdown(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     rows: list[dict[str, str]],
@@ -313,7 +312,7 @@ def _write_markdown(
     lines = [
         "# Чеклист гипотез внутренней аудиторской проверки",
         f"**{inspection_name}**",
-        f"Период: {period or 'не указан'}. Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
+        f"Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",
         "Черновик планирования СВА банка РБ. Основной файл — Excel.",
         "",
@@ -418,7 +417,6 @@ async def _compose_hypotheses(state: CaseState, sources: list[dict]) -> str:
         "hypotheses_user",
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords) or "не указаны",
-        period=state.period or "не указан",
         document_catalog=document_catalog(state),
         catalog="\n".join(catalog) or "список пуст — не выдумывай номера статей как факт",
         fragments=format_npa_sources(sources),
@@ -491,7 +489,6 @@ async def build_hypotheses_events(
     _write_markdown(
         paths.md,
         inspection_name=state.inspection_name,
-        period=state.period,
         keywords=state.keywords,
         case_id=case_id,
         rows=rows,
@@ -501,7 +498,6 @@ async def build_hypotheses_events(
     write_hypotheses_xlsx(
         paths.primary,
         inspection_name=state.inspection_name,
-        period=state.period,
         keywords=state.keywords,
         case_id=case_id,
         rows=rows,

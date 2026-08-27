@@ -59,7 +59,6 @@ class KnowledgeItem(BaseModel):
 class CreateCaseRequest(BaseModel):
     inspection_name: str = Field(min_length=3, description="Название проверки")
     keywords: list[str] = Field(default_factory=list, description="Ключевые термины")
-    period: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -121,7 +120,6 @@ class CaseState(BaseModel):
     status: CaseStatus = CaseStatus.created
     inspection_name: str
     keywords: list[str] = Field(default_factory=list)
-    period: Optional[str] = None
     notes: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

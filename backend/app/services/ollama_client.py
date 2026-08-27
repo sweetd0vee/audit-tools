@@ -55,17 +55,14 @@ def extract_json_value(text: str) -> Any:
 def build_user_prompt(
     inspection_name: str,
     keywords: list[str],
-    period: str | None = None,
     max_docs: int | None = None,
 ) -> str:
     max_docs = max_docs or settings.max_docs_to_propose
     keywords_str = ", ".join(keywords) if keywords else "(не указаны)"
-    period_str = period or "не указан"
     return prompt(
         "propose_user",
         inspection_name=inspection_name,
         keywords_str=keywords_str,
-        period_str=period_str,
         min_docs=max(8, max_docs - 3),
         max_docs=max_docs,
     )
@@ -111,7 +108,6 @@ def normalize_documents(parsed: dict[str, Any], max_docs: int) -> tuple[list[str
 async def propose_documents_events(
     inspection_name: str,
     keywords: list[str],
-    period: str | None = None,
     max_docs: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield debug/chat/token events, then a final 'result' event."""
@@ -121,7 +117,7 @@ async def propose_documents_events(
     def elapsed_ms() -> int:
         return int((time.perf_counter() - t0) * 1000)
 
-    user_prompt = build_user_prompt(inspection_name, keywords, period, max_docs)
+    user_prompt = build_user_prompt(inspection_name, keywords, max_docs)
 
     yield {
         "type": "status",
@@ -222,13 +218,12 @@ async def propose_documents_events(
 async def propose_documents(
     inspection_name: str,
     keywords: list[str],
-    period: str | None = None,
     max_docs: int | None = None,
 ) -> dict[str, Any]:
     """Non-stream wrapper used by classic /propose."""
     result: dict[str, Any] | None = None
     async for event in propose_documents_events(
-        inspection_name, keywords, period, max_docs
+        inspection_name, keywords, max_docs
     ):
         if event.get("type") == "result":
             result = event["payload"]

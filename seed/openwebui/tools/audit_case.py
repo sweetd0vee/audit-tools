@@ -40,11 +40,10 @@ class Tools:
         self,
         inspection_name: str,
         keywords: str,
-        period: str = "",
     ) -> str:
         """
         Создать кейс проверки. Вызови ПЕРВЫМ, когда аудитор назвал тему проверки.
-        keywords — через запятую. period — год, если сказали.
+        keywords — через запятую.
         """
         kws = [x.strip() for x in keywords.split(",") if x.strip()]
         data = await self._req(
@@ -53,7 +52,6 @@ class Tools:
             {
                 "inspection_name": inspection_name,
                 "keywords": kws,
-                "period": period or None,
             },
         )
         return (

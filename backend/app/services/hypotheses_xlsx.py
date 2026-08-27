@@ -43,7 +43,6 @@ def write_hypotheses_xlsx(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     rows: list[dict[str, Any]],
@@ -113,18 +112,16 @@ def write_hypotheses_xlsx(
     meta["A1"].font = Font(bold=True, size=14, color="1F4E79")
     meta["A3"] = "Проверка"
     meta["B3"] = inspection_name
-    meta["A4"] = "Период"
-    meta["B4"] = period or "не указан"
-    meta["A5"] = "Ключевые слова"
-    meta["B5"] = ", ".join(keywords) or "—"
-    meta["A6"] = "Кейс"
-    meta["B6"] = case_id
-    meta["A8"] = "Примечания модели"
-    meta["B8"] = (notes or "").strip() or "—"
-    meta["B8"].alignment = _WRAP
+    meta["A4"] = "Ключевые слова"
+    meta["B4"] = ", ".join(keywords) or "—"
+    meta["A5"] = "Кейс"
+    meta["B5"] = case_id
+    meta["A7"] = "Примечания модели"
+    meta["B7"] = (notes or "").strip() or "—"
+    meta["B7"].alignment = _WRAP
     meta.column_dimensions["A"].width = 22
     meta.column_dimensions["B"].width = 80
-    meta.row_dimensions[8].height = 60
+    meta.row_dimensions[7].height = 60
 
     legend = wb.create_sheet("Как читать", 2)
     legend["A1"] = "Колонки"

@@ -190,7 +190,6 @@ def _write_markdown(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     overview: str,
@@ -200,7 +199,7 @@ def _write_markdown(
     lines = [
         f"# Саммари нормативной базы",
         f"**{inspection_name}**",
-        f"Период: {period or 'не указан'}. Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
+        f"Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",
         "Карточка по каждому акту — существенное для этой проверки, не перечень всех статей. "
         "Номера статей — из текста актов. Официальный URL — страница скачивания.",
@@ -332,7 +331,6 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
     _write_markdown(
         paths.md,
         inspection_name=state.inspection_name,
-        period=state.period,
         keywords=state.keywords,
         case_id=case_id,
         overview=overview,
@@ -342,7 +340,6 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
     write_brief_docx(
         paths.primary,
         inspection_name=state.inspection_name,
-        period=state.period,
         keywords=state.keywords,
         case_id=case_id,
         overview=overview,

@@ -49,7 +49,6 @@ async def run_propose(case_id: str) -> CaseState:
     result = await propose_documents(
         inspection_name=state.inspection_name,
         keywords=state.keywords,
-        period=state.period,
     )
     return _persist_propose(state, result)
 
@@ -61,7 +60,6 @@ async def run_propose_events(case_id: str):
     async for event in propose_documents_events(
         inspection_name=state.inspection_name,
         keywords=state.keywords,
-        period=state.period,
     ):
         if event.get("type") == "result":
             result_payload = event["payload"]

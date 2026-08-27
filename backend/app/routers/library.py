@@ -36,7 +36,6 @@ def create_case(body: CreateCaseRequest) -> CreateCaseResponse:
     state = store.create(
         inspection_name=body.inspection_name,
         keywords=body.keywords,
-        period=body.period,
         notes=body.notes,
     )
     return CreateCaseResponse(

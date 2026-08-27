@@ -178,7 +178,6 @@ def _write_markdown(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     body: str,
@@ -190,7 +189,6 @@ def _write_markdown(
         f"# {OPINION_DOC_TITLE}",
         "",
         f"**Название проверки:** {inspection_name}",
-        f"**Аудируемый период:** {period or 'уточняется'}",
         f"**Шрифт:** {font}",
         f"Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         f"Подтверждённые гипотезы: {ns}.",
@@ -249,7 +247,6 @@ async def _compose_opinion(
         "opinion_user",
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords) or "не указаны",
-        period=state.period or "не указан",
         document_catalog=document_catalog(state),
         hypotheses_block=format_hypotheses_block(hypotheses),
         program_block=_optional_block(
@@ -344,7 +341,6 @@ async def build_opinion_events(
         raise ValueError("Модель вернула пустое аудиторское мнение.")
 
     name = (state.inspection_name or "").strip()
-    period = state.period
     paths = artifact_paths(case_id, name, OPINION_SPEC)
     yield {
         "type": "status",
@@ -354,7 +350,6 @@ async def build_opinion_events(
     _write_markdown(
         paths.md,
         inspection_name=name,
-        period=period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,
@@ -364,7 +359,6 @@ async def build_opinion_events(
     write_opinion_docx(
         paths.primary,
         inspection_name=name,
-        period=period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,

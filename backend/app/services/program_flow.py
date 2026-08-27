@@ -248,7 +248,6 @@ def _write_markdown(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     body: str,
@@ -259,7 +258,6 @@ def _write_markdown(
         "# ПРОГРАММА",
         "",
         f"**Название проверки:** {inspection_name}",
-        f"**Аудируемый период:** {period or 'уточняется'}",
         "**Сроки проведения:**",
         "**Руководитель проверки:**",
         "**Члены рабочей группы:**",
@@ -321,7 +319,6 @@ async def _compose_program(
         "program_user",
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords) or "не указаны",
-        period=state.period or "не указан",
         document_catalog=document_catalog(state),
         catalog="\n".join(catalog) or "список пуст — не выдумывай номера статей как факт",
         fragments=format_npa_sources(sources),
@@ -401,7 +398,6 @@ async def build_program_events(
             "## Вопросы, подлежащие аудиту\n\n" + (body or "")
         )
     questions = fit_program_questions(questions, hi)
-    period = parse_program_heading(body, "Аудируемый период") or state.period
     name = parse_program_heading(body, "Название проверки") or state.inspection_name
 
     paths = artifact_paths(case_id, state.inspection_name, PROGRAM_SPEC)
@@ -413,7 +409,6 @@ async def build_program_events(
     _write_markdown(
         paths.md,
         inspection_name=name,
-        period=period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,
@@ -423,7 +418,6 @@ async def build_program_events(
     write_program_docx(
         paths.primary,
         inspection_name=name,
-        period=period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,
