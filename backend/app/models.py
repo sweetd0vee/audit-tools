@@ -141,6 +141,7 @@ class AskResponse(BaseModel):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     model: str
     used_embeddings: bool = False
+    used_reranker: bool = False
 
 
 class ChatMessage(BaseModel):

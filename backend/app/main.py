@@ -31,6 +31,7 @@ def root():
         "docs": "/docs",
         "ollama_model": settings.ollama_model,
         "embed_model": settings.ollama_embed_model,
+        "rerank_model": settings.ollama_rerank_model,
         "searxng_url": settings.searxng_url,
         "data_root": str(settings.data_root),
     }

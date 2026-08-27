@@ -722,6 +722,111 @@ class TestAskRetrieval(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Статья 624.", blob)
         self.assertNotIn("Статья 626.", blob)
 
+    async def test_rerank_promotes_true_article(self):
+        from app.services.knowledge_retrieve import retrieve_for_ask
+
+        chunks = [
+            {
+                "id": "noise:0",
+                "item_id": "noise",
+                "title": "Инструкция",
+                "filename": "i.txt",
+                "text": ("срок регистрации договора аренды " * 25)
+                + "\nсм. также статью 625, норма в другом акте.",
+                "embedding": [],
+            },
+            {
+                "id": "gk:0",
+                "item_id": "gk",
+                "title": "Гражданский кодекс",
+                "filename": "gk.txt",
+                "text": "Статья 625. Договор аренды\nСрок регистрации договора аренды недвижимости.",
+                "embedding": [],
+            },
+        ]
+
+        async def fake_embed(texts):
+            return [[1.0, 0.1] for _ in texts]
+
+        async def fake_rerank(query, docs):
+            return [0.05 if "Статья 12." in d else 0.95 for d in docs]
+
+        picked = await retrieve_for_ask(
+            chunks,
+            "срок регистрации договора аренды",
+            top_k=1,
+            embed_fn=fake_embed,
+            rerank_fn=fake_rerank,
+        )
+        self.assertTrue(picked)
+        self.assertIn("Статья 625.", picked[0]["text"])
+        self.assertNotIn("см. также статью 625", picked[0]["text"])
+        self.assertAlmostEqual(picked[0].get("rerank_score"), 0.95)
+
+    async def test_rerank_failure_keeps_hybrid_order(self):
+        from app.services.knowledge_retrieve import retrieve_for_ask
+
+        chunks = [
+            {
+                "id": "gk:0",
+                "item_id": "gk",
+                "title": "ГК",
+                "filename": "gk.txt",
+                "text": "Статья 625. Договор аренды\nсрок аренды недвижимости " * 10,
+                "embedding": [],
+            },
+            {
+                "id": "other:0",
+                "item_id": "other",
+                "title": "Прочее",
+                "filename": "o.txt",
+                "text": "Канцелярия без нормы.",
+                "embedding": [],
+            },
+        ]
+
+        async def fake_embed(texts):
+            return [[1.0 if "625" in t or "аренда" in t.lower() else 0.0, 0.1] for t in texts]
+
+        async def boom(query, docs):
+            raise RuntimeError("ollama down")
+
+        picked = await retrieve_for_ask(
+            chunks,
+            "ст. 625 срок аренды",
+            top_k=1,
+            embed_fn=fake_embed,
+            rerank_fn=boom,
+        )
+        self.assertTrue(picked)
+        self.assertIn("Статья 625.", picked[0]["text"])
+
+
+class TestRerankScoring(unittest.TestCase):
+    def test_yes_no_and_logprobs(self):
+        from app.services.ollama_client import format_rerank_prompt, score_rerank_response
+
+        prompt = format_rerank_prompt("ст. 625", "Статья 625. Договор аренды")
+        self.assertIn("<Query>: ст. 625", prompt)
+        self.assertIn("<Document>: Статья 625.", prompt)
+        self.assertEqual(score_rerank_response("yes"), 1.0)
+        self.assertEqual(score_rerank_response("no"), 0.0)
+        data = {
+            "logprobs": {
+                "content": [
+                    {
+                        "token": "yes",
+                        "logprob": 0.0,
+                        "top_logprobs": [
+                            {"token": "yes", "logprob": 0.0},
+                            {"token": "no", "logprob": -20.0},
+                        ],
+                    }
+                ]
+            }
+        }
+        self.assertGreater(score_rerank_response("maybe", data), 0.99)
+
     async def test_neighbor_does_not_glue_next_article(self):
         from app.services.knowledge_retrieve import select_evidence
 

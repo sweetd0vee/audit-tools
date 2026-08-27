@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import re
 import time
 from collections.abc import AsyncIterator
@@ -320,3 +322,120 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     if not vectors and data.get("embedding"):
         vectors = [data["embedding"]]
     return [list(map(float, v)) for v in vectors]
+
+
+# Qwen3-Reranker is a causal LM: P(yes|query, doc). Ollama has no /api/rerank
+# (0.32 returns 404), so we score via /api/generate + yes/no token.
+_RERANK_INSTRUCT = (
+    "Given a question about Belarusian statutes and regulations, retrieve the "
+    "passage that contains the applicable article, clause, or rule."
+)
+_RERANK_DOC_CHARS = 4000
+_RERANK_CONCURRENCY = 4
+_rerank_unavailable = False
+
+
+def format_rerank_prompt(query: str, document: str, instruct: str = _RERANK_INSTRUCT) -> str:
+    doc = " ".join((document or "").split())
+    if len(doc) > _RERANK_DOC_CHARS:
+        doc = doc[:_RERANK_DOC_CHARS]
+    q = " ".join((query or "").split())
+    return (
+        "<|im_start|>system\n"
+        "Judge whether the Document meets the requirements based on the Query "
+        'and the Instruct provided. Note that the answer can only be "yes" or "no".'
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        f"<Instruct>: {instruct}\n"
+        f"<Query>: {q}\n"
+        f"<Document>: {doc}<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n\n</think>\n\n"
+    )
+
+
+def _token_logprob(entry: Any, name: str) -> float | None:
+    if not isinstance(entry, dict):
+        return None
+    key = name.lower()
+    if str(entry.get("token") or "").strip().lower() == key:
+        try:
+            return float(entry.get("logprob"))
+        except (TypeError, ValueError):
+            return None
+    for item in entry.get("top_logprobs") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("token") or "").strip().lower() != key:
+            continue
+        try:
+            return float(item.get("logprob"))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def score_rerank_response(text: str, data: dict[str, Any] | None = None) -> float:
+    """Map a generate() payload to P(yes). Falls back to the decoded token."""
+    payload = data or {}
+    logprobs = payload.get("logprobs")
+    if isinstance(logprobs, dict):
+        content = logprobs.get("content") or logprobs.get("tokens") or []
+        first = content[0] if content else logprobs
+        yes_lp = _token_logprob(first, "yes")
+        no_lp = _token_logprob(first, "no")
+        if yes_lp is not None or no_lp is not None:
+            yes_s = math.exp(yes_lp) if yes_lp is not None else 0.0
+            no_s = math.exp(no_lp) if no_lp is not None else 0.0
+            denom = yes_s + no_s
+            if denom > 0:
+                return yes_s / denom
+    token = (text or "").strip().lower()
+    if token.startswith("yes") or token.startswith("да"):
+        return 1.0
+    if token.startswith("no") or token.startswith("нет"):
+        return 0.0
+    return 0.5
+
+
+async def _rerank_one(query: str, document: str) -> float:
+    payload = {
+        "model": settings.ollama_rerank_model,
+        "prompt": format_rerank_prompt(query, document),
+        "stream": False,
+        "raw": True,
+        "think": False,
+        "options": {
+            "temperature": 0.0,
+            "num_predict": 1,
+            "num_ctx": 4096,
+        },
+    }
+    client = _ollama_client(settings.rerank_timeout_sec)
+    resp = await client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
+    if resp.status_code == 404:
+        raise FileNotFoundError(settings.ollama_rerank_model)
+    resp.raise_for_status()
+    data = resp.json()
+    return score_rerank_response(str(data.get("response") or ""), data)
+
+
+async def rerank_texts(query: str, documents: list[str]) -> list[float]:
+    """Score (query, doc) pairs. Empty list = caller keeps hybrid order."""
+    global _rerank_unavailable
+    model = (settings.ollama_rerank_model or "").strip()
+    if _rerank_unavailable or not model or not documents:
+        return []
+    sem = asyncio.Semaphore(_RERANK_CONCURRENCY)
+
+    async def _one(doc: str) -> float:
+        async with sem:
+            return await _rerank_one(query, doc)
+
+    try:
+        return list(await asyncio.gather(*[_one(doc) for doc in documents]))
+    except FileNotFoundError:
+        _rerank_unavailable = True
+        return []
+    except Exception:
+        return []

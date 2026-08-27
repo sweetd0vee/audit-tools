@@ -30,7 +30,7 @@ from app.services.citations import (
 )
 from app.services.document_artifact import ElapsedTimer
 from app.services.extract import TEXT_EXTS, extract_text
-from app.services.ollama_client import chat_complete, embed_texts
+from app.services.ollama_client import chat_complete, embed_texts, rerank_texts
 from app.services.openwebui_client import (
     OpenWebUIError,
     add_file_to_knowledge,
@@ -611,7 +611,7 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
         _save_index(case_id, index)
 
     evidence = await retrieve_for_ask(
-        chunks, question, top_k=top_k, embed_fn=embed_texts
+        chunks, question, top_k=top_k, embed_fn=embed_texts, rerank_fn=rerank_texts
     )
     _persist_item_embeddings(case_id, chunks)
     if not evidence:
@@ -620,6 +620,7 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
     context_parts = []
     sources = []
     used_embeddings = False
+    used_reranker = False
     for i, ch in enumerate(evidence, start=1):
         article = extract_article_ref(ch.get("text") or "")
         title = ch.get("title") or ""
@@ -636,6 +637,8 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
         )
         if ch.get("embedding"):
             used_embeddings = True
+        if ch.get("rerank_score") is not None:
+            used_reranker = True
     summaries = _summary_context(state, question)
     summary_block = (
         f"Конспекты актов (ориентир, не источник номера статьи):\n{summaries}\n\n"
@@ -662,6 +665,7 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
         "sources": sources,
         "model": settings.ollama_model,
         "used_embeddings": used_embeddings,
+        "used_reranker": used_reranker,
         "used_summaries": bool(summaries),
     }
 

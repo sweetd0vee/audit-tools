@@ -1,7 +1,7 @@
 """Query-focused evidence selection for summarization and ask.
 
 Pipeline (legal RAG, no extra services):
-  multi-query → BM25 + keyword + dense → RRF → MMR → neighbor expand → merge.
+  multi-query → BM25 + keyword + dense → RRF → rerank → MMR → neighbor expand → merge.
 
 This is retrieve-then-stuff (LangChain "stuff" + quote-style compression):
 one LLM call over the selected spans, not map-reduce over the whole act.
@@ -24,6 +24,7 @@ from app.services.chunker import (
 )
 
 EmbedFn = Callable[[list[str]], Awaitable[list[list[float]]]]
+RerankFn = Callable[[str, list[str]], Awaitable[list[float]]]
 
 # «ст. 625», «статья 12.1», «ст 38» — BM25 must see the canonical heading, not just the digits.
 ARTICLE_MENTION_RE = re.compile(
@@ -289,6 +290,8 @@ async def select_evidence(
     mmr_lambda: float | None = None,
     always_include_first: bool = True,
     embed_fn: EmbedFn | None = None,
+    rerank_fn: RerankFn | None = None,
+    rerank_query: str | None = None,
 ) -> list[dict]:
     """Return document-ordered merged spans for one stuff-style LLM call."""
     if not chunks:
@@ -349,7 +352,19 @@ async def select_evidence(
     if always_include_first and ids and ids[0] not in cand_ids:
         cand_ids = [ids[0]] + cand_ids
 
-    rel_raw = [fused.get(cid, 0.0) for cid in cand_ids]
+    rerank_scores = await _rerank_candidates(
+        lookup, cand_ids, queries, rerank_fn, rerank_query
+    )
+    if rerank_scores:
+        ranked = sorted(rerank_scores.items(), key=lambda x: x[1], reverse=True)
+        reranked = [cid for cid, _ in ranked]
+        rest = [cid for cid in cand_ids if cid not in rerank_scores]
+        cand_ids = reranked + rest
+
+    rel_raw = [
+        rerank_scores.get(cid, fused.get(cid, 0.0)) if rerank_scores else fused.get(cid, 0.0)
+        for cid in cand_ids
+    ]
     rel_norm = _minmax(rel_raw)
     pairwise: dict[tuple[str, str], float] = {}
     for i, left_id in enumerate(cand_ids):
@@ -366,12 +381,42 @@ async def select_evidence(
     return _merge_consecutive(lookup, expanded, budget)
 
 
+async def _rerank_candidates(
+    lookup: dict[str, dict],
+    cand_ids: list[str],
+    queries: list[str],
+    rerank_fn: RerankFn | None,
+    rerank_query: str | None,
+) -> dict[str, float]:
+    if rerank_fn is None or not cand_ids:
+        return {}
+    limit = max(settings.rag_rerank_candidates, 1)
+    pool_ids = cand_ids[:limit]
+    query = (rerank_query or (queries[0] if queries else "") or "").strip()
+    if not query:
+        return {}
+    docs = [(lookup[cid].get("text") or "")[:4000] for cid in pool_ids]
+    try:
+        scores = await rerank_fn(query, docs)
+    except Exception:
+        return {}
+    if not scores or len(scores) != len(pool_ids):
+        return {}
+    out: dict[str, float] = {}
+    for cid, score in zip(pool_ids, scores):
+        value = float(score)
+        out[cid] = value
+        lookup[cid]["rerank_score"] = value
+    return out
+
+
 async def retrieve_for_ask(
     chunks: list[dict],
     question: str,
     *,
     top_k: int | None = None,
     embed_fn: EmbedFn | None = None,
+    rerank_fn: RerankFn | None = None,
 ) -> list[dict]:
     """Library-wide hybrid retrieve for `вопрос …`. No preamble injection."""
     return await select_evidence(
@@ -381,6 +426,8 @@ async def retrieve_for_ask(
         budget_chars=max(settings.summary_max_chars, 24000),
         always_include_first=False,
         embed_fn=embed_fn,
+        rerank_fn=rerank_fn,
+        rerank_query=question,
     )
 
 

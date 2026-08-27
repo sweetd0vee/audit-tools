@@ -37,6 +37,11 @@ class Settings(BaseSettings):
 
     # Knowledge / RAG
     ollama_embed_model: str = "qwen3-embedding:latest"
+    # Query-time cross-encoder. Empty = skip. Official qwen3-reranker is not on
+    # Ollama library; dengcao's Q8_0 is the usual local stand-in (~640 MB).
+    ollama_rerank_model: str = "dengcao/Qwen3-Reranker-0.6B:Q8_0"
+    rerank_timeout_sec: float = 60.0
+    rag_rerank_candidates: int = 24
     chunk_size: int = 1600
     chunk_overlap: int = 180
     summary_max_chars: int = 14000
