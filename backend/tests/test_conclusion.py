@@ -5,6 +5,8 @@ from pathlib import Path
 
 from app.prompts import prompt
 from app.services.conclusion_docx import (
+    _COVER_IMAGE,
+    _cover_year,
     parse_conclusion_markdown,
     toc_entries,
     write_conclusion_docx,
@@ -86,14 +88,65 @@ class TestConclusionParse(unittest.TestCase):
         self.assertEqual(len(obs_sections[0].observations), 2)
         self.assertEqual(obs_sections[0].observations[0].number, "3.1")
         self.assertEqual(obs_sections[0].observations[0].materiality, "высокий")
+        self.assertNotIn("существенность", obs_sections[0].observations[0].body.lower())
         self.assertIn("сверк", obs_sections[0].observations[0].recommendation.lower())
         self.assertEqual(len(general), 1)
         self.assertEqual(general[0].roman, "IV")
+        self.assertEqual(obs_sections[0].roman, "III")
+        self.assertIn("принципам налогообложения", obs_sections[0].title.lower())
         titles = [title for _, title in toc_entries(report)]
-        self.assertEqual(titles[0], "Аудиторское мнение по итогам проверки.")
-        self.assertEqual(titles[1], "Основные результаты аудита и итоговые аудиторские рекомендации.")
-        self.assertTrue(any("общая информация" in t.lower() for t in titles))
-        self.assertGreaterEqual(len(titles), 4)
+        self.assertEqual(
+            titles,
+            [
+                "Аудиторское мнение по итогам проверки.",
+                "Основные результаты аудита и итоговые аудиторские рекомендации.",
+                "Оценка соответствия деятельности принципам налогообложения и защиты прав плательщиков.",
+                "Общая информация об аудиторской проверке.",
+            ],
+        )
+        self.assertEqual([roman for roman, _ in toc_entries(report)], ["I", "II", "III", "IV"])
+
+    def test_merges_extra_observation_sections_into_iii(self):
+        md = """
+## Содержание
+III. Тема А
+IV. Тема Б
+V. Общая информация об аудиторской проверке
+
+## Раздел III. Тема А
+### Наблюдение 3.1. Первое
+существенность: высокий
+гипотеза: 1
+Текст первого наблюдения.
+рекомендация:
+Сделать первое.
+
+## Раздел IV. Тема Б
+### Наблюдение 4.1. Второе
+существенность: средний
+гипотеза: 3
+Текст второго наблюдения.
+рекомендация:
+Сделать второе.
+
+## Раздел V. Общая информация об аудиторской проверке
+### Аудируемый период
+2025
+"""
+        report = parse_conclusion_markdown(
+            md,
+            hypotheses=[_row(1, "высокий"), _row(3, "средний")],
+            period="2025",
+        )
+        obs_sections = [s for s in report.sections if s.kind == "observations"]
+        self.assertEqual(len(obs_sections), 1)
+        self.assertEqual(len(obs_sections[0].observations), 2)
+        self.assertEqual(obs_sections[0].observations[0].number, "3.1")
+        self.assertEqual(obs_sections[0].observations[1].number, "3.2")
+        self.assertEqual(
+            [title for _, title in toc_entries(report)][2],
+            "Оценка соответствия деятельности принципам налогообложения и защиты прав плательщиков.",
+        )
 
     def test_fallback_uses_all_hypotheses(self):
         report = parse_conclusion_markdown(
@@ -108,6 +161,11 @@ class TestConclusionParse(unittest.TestCase):
 
 
 class TestConclusionDocx(unittest.TestCase):
+    def test_cover_year_and_background_asset(self):
+        self.assertTrue(_COVER_IMAGE.exists(), _COVER_IMAGE)
+        self.assertEqual(_cover_year("2025"), "2025")
+        self.assertEqual(_cover_year("2024 год и 3 квартала 2025 года"), "2025")
+
     def test_structure_font_and_observation_box(self):
         report = parse_conclusion_markdown(
             SAMPLE_MD,
@@ -131,12 +189,23 @@ class TestConclusionDocx(unittest.TestCase):
 
             doc = Document(str(path))
             texts = "\n".join(p.text for p in doc.paragraphs)
-            self.assertIn("АУДИТОРСКОЕ ЗАКЛЮЧЕНИЕ", texts)
-            self.assertIn("Проверка аренды коммерческой недвижимости", texts)
+            with zipfile.ZipFile(path) as zf:
+                xml = zf.read("word/document.xml").decode("utf-8")
+                media = [n for n in zf.namelist() if n.startswith("word/media/")]
+            self.assertIn("Аудиторское заключение", xml)
+            self.assertIn("Проверка аренды коммерческой недвижимости", xml)
+            self.assertIn("Минск 2025", xml)
+            self.assertIn("Департамент внутреннего аудита", xml)
             self.assertIn("Разделы аудиторского заключения", texts)
-            self.assertIn("Аудиторское мнение по итогам проверки.", texts)
-            self.assertIn("Основные результаты аудита и итоговые аудиторские рекомендации.", texts)
-            self.assertIn("Раздел III.", texts)
+            self.assertIn("I.\tАудиторское мнение по итогам проверки.", texts)
+            self.assertIn("II.\tОсновные результаты аудита и итоговые аудиторские рекомендации.", texts)
+            self.assertIn(
+                "III.\tОценка соответствия деятельности принципам налогообложения и защиты прав плательщиков.",
+                texts,
+            )
+            self.assertIn("IV.\tОбщая информация об аудиторской проверке.", texts)
+            self.assertNotIn("Раздел III.", texts)
+            self.assertNotIn("Учёт аренды и сверка договоров", texts)
             self.assertIn("Уровень существенности:", texts)
             self.assertIn("высокий", texts)
             self.assertIn("Аудитор:", texts)
@@ -150,10 +219,37 @@ class TestConclusionDocx(unittest.TestCase):
             self.assertGreaterEqual(len(boxes), 2)
             self.assertIn("3.1", boxes[0].cell(0, 0).text)
             self.assertTrue(boxes[0].cell(0, 1).paragraphs[0].runs[0].italic)
-            with zipfile.ZipFile(path) as zf:
-                xml = zf.read("word/document.xml").decode("utf-8")
+            from docx.oxml.ns import qn
+
+            tbl_borders = boxes[0]._tbl.tblPr.find(qn("w:tblBorders"))
+            self.assertIsNotNone(tbl_borders)
+            self.assertEqual(tbl_borders.find(qn("w:top")).get(qn("w:val")), "nil")
+            self.assertEqual(tbl_borders.find(qn("w:left")).get(qn("w:val")), "nil")
+            boxed = {
+                p.text.strip(): p._p.find(qn("w:pPr")).find(qn("w:pBdr")) is not None
+                for p in doc.paragraphs
+                if p._p.find(qn("w:pPr")) is not None
+                and p._p.find(qn("w:pPr")).find(qn("w:pBdr")) is not None
+            }
+            boxed_text = "\n".join(boxed)
+            self.assertIn("Уровень существенности:", boxed_text)
+            self.assertIn("Аудитор:", boxed_text)
+            self.assertIn("Объект аудита:", boxed_text)
+            self.assertIn("Руководитель объекта аудита:", boxed_text)
+            self.assertIn("Аудиторская рекомендация:", boxed_text)
+            self.assertIn("Обеспечить регулярную сверку регистров аренды с действующими договорами.", boxed_text)
+            self.assertIn("Срок –", boxed_text)
             self.assertIn("Calibri", xml)
             self.assertIn("w:tbl", xml)
+            self.assertIn("w:pBdr", xml)
+            self.assertIn('behindDoc="1"', xml)
+            self.assertTrue(any(n.endswith(".png") for n in media), media)
+            self.assertTrue(doc.sections[0].different_first_page_header_footer)
+            self.assertLess(xml.find("Наблюдение 3.1"), xml.find("По подтверждённой гипотезе"))
+            self.assertLess(
+                xml.find("По подтверждённой гипотезе"),
+                xml.find("Аудиторская рекомендация"),
+            )
 
 
 class TestConclusionPrompts(unittest.TestCase):
@@ -179,7 +275,9 @@ class TestConclusionPrompts(unittest.TestCase):
         self.assertIn("Раздел II", system)
         self.assertIn("существенн", system)
         self.assertIn("Наблюдение 3.1", sections)
+        self.assertIn("принципам налогообложения", sections)
         self.assertIn("Общая информация", sections)
+        self.assertNotIn("сгруппируй", sections.lower())
         self.assertIn("{hypotheses_block}", prompt("conclusion_user"))
         self.assertIn("подтверждённ", user)
         self.assertNotIn("{missing}", user)

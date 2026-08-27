@@ -35,10 +35,10 @@ from app.services.opinion_flow import (
     parse_document_font,
     resolve_opinion_file,
 )
-from app.services.program_flow import parse_program_heading, resolve_program_file
+from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
 
-CONCLUSION_SCHEMA = 1
+CONCLUSION_SCHEMA = 2
 CONCLUSION_SPEC = ArtifactSpec(
     meta_key="conclusion",
     directory="reports",
@@ -313,9 +313,9 @@ async def build_conclusion_events(
         hypotheses=hypotheses,
         period=state.period,
     )
-    name = parse_program_heading(opinion_body, "Название проверки") or state.inspection_name
-    period = parse_program_heading(opinion_body, "Аудируемый период") or state.period
-    paths = artifact_paths(case_id, state.inspection_name, CONCLUSION_SPEC)
+    name = (state.inspection_name or "").strip()
+    period = state.period
+    paths = artifact_paths(case_id, name, CONCLUSION_SPEC)
     yield {
         "type": "status",
         "message": "Собираю Word с аудиторским заключением…",

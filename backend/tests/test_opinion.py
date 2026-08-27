@@ -113,6 +113,33 @@ class TestOpinionDocx(unittest.TestCase):
             self.assertIn("Calibri", xml)
             self.assertNotIn("w:tbl", xml)
 
+    def test_keeps_case_title_and_drops_model_title_section(self):
+        body = """
+## Название проверки
+Проверка соблюдения принципов налогообложения и требований нормативных правовых актов.
+
+## Цели и задачи аудита
+Цели аудита:
+- Оценка учёта аренды.
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opinion.docx"
+            write_opinion_docx(
+                path,
+                inspection_name="Проверка аренды коммерческой недвижимости",
+                period=None,
+                keywords=["аренда"],
+                case_id="c1",
+                body=body,
+                font=FONT_TIMES,
+            )
+            from docx import Document
+
+            texts = "\n".join(p.text for p in Document(str(path)).paragraphs)
+            self.assertIn("Проверка аренды коммерческой недвижимости", texts)
+            self.assertNotIn("принципов налогообложения", texts)
+            self.assertIn("Оценка учёта аренды", texts)
+
     def test_times_default_in_xml(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "opinion.docx"
@@ -151,6 +178,7 @@ class TestOpinionPrompts(unittest.TestCase):
             target_hi=7200,
         )
         self.assertIn("подтверждённ", system)
+        self.assertIn("дословн", system)
         self.assertIn("таблиц", system)
         self.assertIn("Цели и задачи аудита", sections)
         self.assertIn("Инструменты проверки", sections)
@@ -158,6 +186,7 @@ class TestOpinionPrompts(unittest.TestCase):
         self.assertIn("Рекомендации", sections)
         self.assertIn("{hypotheses_block}", prompt("opinion_user"))
         self.assertIn("подтверждённ", user)
+        self.assertIn("дословн", user)
 
     def test_format_hypotheses_block(self):
         text = format_hypotheses_block([_row(1, "высокий"), _row(3, "средний")])

@@ -30,10 +30,10 @@ from app.services.document_artifact import (
 from app.services.hypotheses_flow import selected_hypothesis_rows
 from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete
-from app.services.program_flow import parse_program_heading, resolve_program_file
+from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
 
-OPINION_SCHEMA = 1
+OPINION_SCHEMA = 2
 OPINION_SPEC = ArtifactSpec(
     meta_key="opinion",
     directory="opinions",
@@ -343,9 +343,9 @@ async def build_opinion_events(
     if not (body or "").strip():
         raise ValueError("Модель вернула пустое аудиторское мнение.")
 
-    name = parse_program_heading(body, "Название проверки") or state.inspection_name
-    period = parse_program_heading(body, "Аудируемый период") or state.period
-    paths = artifact_paths(case_id, state.inspection_name, OPINION_SPEC)
+    name = (state.inspection_name or "").strip()
+    period = state.period
+    paths = artifact_paths(case_id, name, OPINION_SPEC)
     yield {
         "type": "status",
         "message": "Собираю Word с аудиторским мнением…",

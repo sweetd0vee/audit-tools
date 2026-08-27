@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
 from app.services.brief_docx import (
     _add_opinion_paragraph,
+    _set_cell_borders,
     _set_cell_width,
     _set_document_base_font,
     _set_run_font,
@@ -24,10 +26,23 @@ from app.services.brief_docx import (
 
 _FONT_SIZE = 14
 _TITLE = "Аудиторское заключение (черновик)"
+_COVER_TITLE = "Аудиторское заключение"
+_COVER_DEPT = "Департамент внутреннего аудита"
+_COVER_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "conclusion_cover.png"
+_COVER_DRAWING_ID = 100
 _TOC_HEADING = "Разделы аудиторского заключения"
 _SECTION_I = "Аудиторское мнение по итогам проверки."
 _SECTION_II = "Основные результаты аудита и итоговые аудиторские рекомендации."
+_SECTION_III = (
+    "Оценка соответствия деятельности принципам налогообложения и защиты прав плательщиков."
+)
 _SECTION_LAST = "Общая информация об аудиторской проверке."
+_CANONICAL_TOC: list[tuple[str, str]] = [
+    ("I", _SECTION_I),
+    ("II", _SECTION_II),
+    ("III", _SECTION_III),
+    ("IV", _SECTION_LAST),
+]
 _ROMAN = [
     "",
     "I",
@@ -57,7 +72,7 @@ _OBS_RE = re.compile(
     re.I,
 )
 _MATERIALITY_RE = re.compile(
-    r"^(?:уровень\s+)?существенности:\s*(высокий|средний|низкий)\b",
+    r"^(?:уровень\s+)?существенност[иь]:\s*(высокий|средний|низкий)\b",
     re.I,
 )
 _HYP_RE = re.compile(r"^гипотеза:\s*(\d+)\b", re.I)
@@ -146,6 +161,11 @@ def _is_section_i(title: str) -> bool:
 
 def _is_section_ii(title: str) -> bool:
     return "основные результаты" in (title or "").lower()
+
+
+def _is_section_iii(title: str) -> bool:
+    low = (title or "").lower()
+    return "принципам налогообложения" in low or "защиты прав плательщиков" in low
 
 
 def _is_general(title: str) -> bool:
@@ -321,7 +341,7 @@ def fallback_from_hypotheses(
         sections=[
             ReportSection(
                 roman="III",
-                title="Наблюдения аудитора в ходе проверки",
+                title=_SECTION_III.rstrip("."),
                 observations=observations,
                 kind="observations",
             ),
@@ -424,7 +444,7 @@ def parse_conclusion_markdown(
                 continue
             current = ReportSection(
                 roman=code or roman_numeral(len(sections) + 3),
-                title=title or "Наблюдения аудитора в ходе проверки",
+                title=_SECTION_III.rstrip(".") if (not title or _is_section_iii(title)) else title,
                 intro=_clean_paragraphs("\n".join(body_lines)),
                 kind="observations",
             )
@@ -435,7 +455,7 @@ def parse_conclusion_markdown(
                 roman = code.split(".", 1)[0] if "." in code else roman_numeral(len(sections) + 3)
                 current = ReportSection(
                     roman=roman_numeral(int(roman)) if roman.isdigit() else roman,
-                    title="Наблюдения аудитора в ходе проверки",
+                    title=_SECTION_III.rstrip("."),
                     kind="observations",
                 )
             fallback = "средний"
@@ -452,18 +472,7 @@ def parse_conclusion_markdown(
         leftover_text = _clean_paragraphs("\n".join(leftovers))
         return fallback_from_hypotheses(hypotheses, leftover=leftover_text, period=period)
 
-    if not any(s.kind == "general" for s in sections):
-        last_n = _roman_to_int(observation_sections[-1].roman) + 1
-        sections.append(
-            ReportSection(
-                roman=roman_numeral(last_n),
-                title=_SECTION_LAST.rstrip("."),
-                general_items=default_general_items(period),
-                kind="general",
-            )
-        )
-    _renumber_sections(sections)
-    return ConclusionDocument(sections=sections)
+    return ConclusionDocument(sections=_canonicalize_report(sections, period=period))
 
 
 def _roman_to_int(value: str) -> int:
@@ -476,30 +485,45 @@ def _roman_to_int(value: str) -> int:
         return 3
 
 
-def _renumber_sections(sections: list[ReportSection]) -> None:
-    n = 3
+def _canonicalize_report(
+    sections: list[ReportSection],
+    *,
+    period: str | None = None,
+) -> list[ReportSection]:
+    observations: list[Observation] = []
+    intro_parts: list[str] = []
+    general: ReportSection | None = None
     for section in sections:
-        if section.kind == "observations":
-            section.roman = roman_numeral(n)
-            for i, obs in enumerate(section.observations, start=1):
-                obs.number = f"{n}.{i}"
-            n += 1
-        elif section.kind == "general":
-            section.roman = roman_numeral(n)
-
-
-def toc_entries(doc: ConclusionDocument) -> list[tuple[str, str]]:
-    entries = [("I", _SECTION_I), ("II", _SECTION_II)]
-    for section in doc.sections:
-        title = section.title.strip().rstrip(".")
         if section.kind == "general":
-            title = _SECTION_LAST
-        else:
-            title = title + "."
-        entries.append((section.roman, title))
-    if not any("общая информация" in title.lower() for _, title in entries):
-        entries.append((roman_numeral(len(entries) + 1), _SECTION_LAST))
-    return entries
+            general = section
+            continue
+        if section.intro:
+            intro_parts.append(section.intro)
+        observations.extend(section.observations)
+    if general is None:
+        general = ReportSection(
+            roman="IV",
+            title=_SECTION_LAST.rstrip("."),
+            general_items=default_general_items(period),
+            kind="general",
+        )
+    else:
+        general.roman = "IV"
+        general.title = _SECTION_LAST.rstrip(".")
+    obs = ReportSection(
+        roman="III",
+        title=_SECTION_III.rstrip("."),
+        intro=_clean_paragraphs("\n\n".join(intro_parts)),
+        observations=observations,
+        kind="observations",
+    )
+    for i, item in enumerate(obs.observations, start=1):
+        item.number = f"3.{i}"
+    return [obs, general]
+
+
+def toc_entries(_doc: ConclusionDocument | None = None) -> list[tuple[str, str]]:
+    return list(_CANONICAL_TOC)
 
 
 def _add_runs(paragraph, parts: list[tuple[str, dict]], *, font: str) -> None:
@@ -593,16 +617,54 @@ def _set_tbl_center(table) -> None:
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
 
-def _add_observation_box(doc: Document, observation: Observation, *, font: str) -> None:
+def _set_paragraph_borders(paragraph) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    existing = p_pr.find(qn("w:pBdr"))
+    if existing is not None:
+        p_pr.remove(existing)
+    p_bdr = OxmlElement("w:pBdr")
+    for edge, space in (("top", "1"), ("left", "4"), ("bottom", "1"), ("right", "4")):
+        el = OxmlElement(f"w:{edge}")
+        el.set(qn("w:val"), "single")
+        el.set(qn("w:sz"), "4")
+        el.set(qn("w:space"), space)
+        el.set(qn("w:color"), "auto")
+        p_bdr.append(el)
+    p_pr.append(p_bdr)
+
+
+def _add_boxed_paragraph(
+    doc: Document,
+    *,
+    font: str,
+    first_line: bool = False,
+    space_before: int = 0,
+):
+    paragraph = _add_styled_paragraph(
+        doc,
+        font=font,
+        align="justify",
+        space_before=space_before,
+        space_after=0,
+        first_line=first_line,
+    )
+    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    _set_paragraph_borders(paragraph)
+    return paragraph
+
+
+def _add_observation_header(doc: Document, observation: Observation, *, font: str) -> None:
     table = doc.add_table(rows=1, cols=2)
     _set_tbl_grid(table, [4.5, 13.0])
-    _set_table_borders(table, val="single", sz="4", color="000000")
+    _set_table_borders(table, val="nil")
     _set_tbl_center(table)
     row = table.rows[0]
     _set_row_height(row, 795)
     left, right = row.cells
     _set_cell_width(left, 4.5)
     _set_cell_width(right, 13.0)
+    _set_cell_borders(left, val="nil")
+    _set_cell_borders(right, val="nil")
     left.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     right.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
 
@@ -621,9 +683,9 @@ def _add_observation_box(doc: Document, observation: Observation, *, font: str) 
     _set_run_font(title_run, size=_FONT_SIZE, italic=True, font=font)
     title_run.underline = True
 
-    materiality = _add_styled_paragraph(
-        doc, font=font, align="justify", space_before=8, space_after=4, first_line=False
-    )
+
+def _add_observation_summary(doc: Document, observation: Observation, *, font: str) -> None:
+    materiality = _add_boxed_paragraph(doc, font=font, first_line=True, space_before=6)
     _add_runs(
         materiality,
         [
@@ -633,48 +695,196 @@ def _add_observation_box(doc: Document, observation: Observation, *, font: str) 
         font=font,
     )
 
-    auditor = _add_styled_paragraph(doc, font=font, align="justify", space_after=0, first_line=False)
+    auditor = _add_boxed_paragraph(doc, font=font)
     _add_runs(
         auditor,
         [("\t", {"bold": True, "italic": True}), ("Аудитор:", {})],
         font=font,
     )
 
-    obj = _add_styled_paragraph(doc, font=font, align="justify", space_after=0, first_line=False)
+    obj = _add_boxed_paragraph(doc, font=font)
     _add_runs(obj, [("          ", {"bold": True}), ("Объект аудита: ", {})], font=font)
 
-    head = _add_styled_paragraph(doc, font=font, align="justify", space_after=8, first_line=False)
+    head = _add_boxed_paragraph(doc, font=font, first_line=True)
     _add_runs(head, [("Руководитель объекта аудита: ", {})], font=font)
 
-    _blank(doc, font=font)
+    _add_boxed_paragraph(doc, font=font, first_line=True)
 
-    rec_label = _add_styled_paragraph(doc, font=font, align="justify", space_after=4, first_line=False)
+    rec_label = _add_boxed_paragraph(doc, font=font)
     _add_runs(rec_label, [("          Аудиторская рекомендация: ", {"bold": True})], font=font)
 
-    if observation.recommendation:
-        _add_opinion_paragraph(
-            doc,
-            observation.recommendation,
-            font=font,
-            size=_FONT_SIZE,
-            first_line=True,
-            space_after=4,
-        )
-    deadline = _add_styled_paragraph(doc, font=font, align="justify", space_after=12, first_line=False)
+    rec_parts = [ln.strip() for ln in (observation.recommendation or "").splitlines() if ln.strip()]
+    if not rec_parts:
+        rec_parts = [""]
+    for part in rec_parts:
+        rec = _add_boxed_paragraph(doc, font=font, first_line=True)
+        if part:
+            _add_runs(rec, [(part, {})], font=font)
+
+    deadline = _add_boxed_paragraph(doc, font=font, first_line=True)
     _add_runs(deadline, [("Срок – ", {"bold": True})], font=font)
     _blank(doc, font=font)
 
 
-def _add_section_heading(doc: Document, roman: str, *, font: str, title: str = "") -> None:
-    p = _add_styled_paragraph(doc, font=font, align="left", space_before=12, space_after=8, first_line=False)
+def _add_roman_heading(doc: Document, roman: str, title: str, *, font: str) -> None:
+    p = _add_styled_paragraph(
+        doc, font=font, align="left", space_before=12, space_after=10, first_line=False
+    )
+    heading = (title or "").strip()
+    if heading and not heading.endswith("."):
+        heading += "."
     _add_runs(
         p,
-        [("Раздел ", {"bold": True, "size": 16}), (f"{roman}.", {"bold": True, "size": 16})],
+        [
+            (f"{roman}.", {"bold": True, "size": 16}),
+            ("\t", {"bold": True, "size": 16}),
+            (heading, {"bold": True, "size": 16}),
+        ],
         font=font,
     )
-    if title and "общая информация" not in title.lower():
-        t = _add_styled_paragraph(doc, font=font, align="justify", space_after=8, first_line=False)
-        _add_runs(t, [(title.rstrip(".") + ".", {"bold": True})], font=font)
+
+
+def _add_section_heading(doc: Document, roman: str, *, font: str, title: str = "") -> None:
+    _add_roman_heading(doc, roman, title or _SECTION_III, font=font)
+
+
+def _emu(cm: float) -> int:
+    return int(Cm(cm))
+
+
+def _next_cover_drawing_id() -> int:
+    global _COVER_DRAWING_ID
+    _COVER_DRAWING_ID += 1
+    return _COVER_DRAWING_ID
+
+
+def _cover_year(period: str | None) -> str:
+    years = re.findall(r"20\d{2}", period or "")
+    if years:
+        return years[-1]
+    return str(date.today().year)
+
+
+def _xml_escape(text: str) -> str:
+    return (
+        (text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _float_inline_picture(inline, *, left_cm: float, top_cm: float, behind: bool = True) -> None:
+    drawing = inline.getparent()
+    extent = inline.find(qn("wp:extent"))
+    cx = extent.get("cx") if extent is not None else str(_emu(21.0))
+    cy = extent.get("cy") if extent is not None else str(_emu(29.7))
+    doc_pr = inline.find(qn("wp:docPr"))
+    graphic = inline.find(qn("a:graphic"))
+    cnv = inline.find(qn("wp:cNvGraphicFramePr"))
+
+    anchor = OxmlElement("wp:anchor")
+    anchor.set("distT", "0")
+    anchor.set("distB", "0")
+    anchor.set("distL", "0")
+    anchor.set("distR", "0")
+    anchor.set("simplePos", "0")
+    anchor.set("relativeHeight", "0")
+    anchor.set("behindDoc", "1" if behind else "0")
+    anchor.set("locked", "0")
+    anchor.set("layoutInCell", "1")
+    anchor.set("allowOverlap", "1")
+
+    simple = OxmlElement("wp:simplePos")
+    simple.set("x", "0")
+    simple.set("y", "0")
+    anchor.append(simple)
+
+    pos_h = OxmlElement("wp:positionH")
+    pos_h.set("relativeFrom", "page")
+    off_h = OxmlElement("wp:posOffset")
+    off_h.text = str(_emu(left_cm))
+    pos_h.append(off_h)
+    anchor.append(pos_h)
+
+    pos_v = OxmlElement("wp:positionV")
+    pos_v.set("relativeFrom", "page")
+    off_v = OxmlElement("wp:posOffset")
+    off_v.text = str(_emu(top_cm))
+    pos_v.append(off_v)
+    anchor.append(pos_v)
+
+    new_extent = OxmlElement("wp:extent")
+    new_extent.set("cx", cx)
+    new_extent.set("cy", cy)
+    anchor.append(new_extent)
+
+    effect = OxmlElement("wp:effectExtent")
+    for edge in ("l", "t", "r", "b"):
+        effect.set(edge, "0")
+    anchor.append(effect)
+    anchor.append(OxmlElement("wp:wrapNone"))
+    if doc_pr is not None:
+        anchor.append(doc_pr)
+    if cnv is not None:
+        anchor.append(cnv)
+    if graphic is not None:
+        anchor.append(graphic)
+    drawing.replace(inline, anchor)
+
+
+def _add_cover_textbox(
+    paragraph,
+    text: str,
+    *,
+    left_cm: float,
+    top_cm: float,
+    width_cm: float,
+    height_cm: float,
+    font: str,
+    size_pt: int,
+    bold: bool = True,
+    align: str = "left",
+) -> None:
+    shape_id = _next_cover_drawing_id()
+    cx = _emu(width_cm)
+    cy = _emu(height_cm)
+    bold_xml = "<w:b/><w:bCs/>" if bold else ""
+    xml = (
+        '<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        ' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+        ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0"'
+        f' relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">'
+        '<wp:simplePos x="0" y="0"/>'
+        f'<wp:positionH relativeFrom="page"><wp:posOffset>{_emu(left_cm)}</wp:posOffset></wp:positionH>'
+        f'<wp:positionV relativeFrom="page"><wp:posOffset>{_emu(top_cm)}</wp:posOffset></wp:positionV>'
+        f'<wp:extent cx="{cx}" cy="{cy}"/>'
+        '<wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        '<wp:wrapNone/>'
+        f'<wp:docPr id="{shape_id}" name="Cover {shape_id}"/>'
+        '<wp:cNvGraphicFramePr/>'
+        "<a:graphic>"
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        "<wps:wsp><wps:cNvSpPr txBox=\"1\"/><wps:spPr>"
+        f'<a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln>'
+        "</wps:spPr><wps:txbx><w:txbxContent><w:p>"
+        f'<w:pPr><w:jc w:val="{align}"/><w:spacing w:before="0" w:after="0"/></w:pPr>'
+        "<w:r><w:rPr>"
+        f'<w:rFonts w:ascii="{_xml_escape(font)}" w:hAnsi="{_xml_escape(font)}"'
+        f' w:cs="{_xml_escape(font)}"/>{bold_xml}'
+        f'<w:sz w:val="{size_pt * 2}"/><w:szCs w:val="{size_pt * 2}"/>'
+        "</w:rPr>"
+        f"<w:t>{_xml_escape(text)}</w:t>"
+        "</w:r></w:p></w:txbxContent></wps:txbx>"
+        '<wps:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="ctr"/>'
+        "</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing>"
+    )
+    run = paragraph.add_run()
+    run._r.append(parse_xml(xml))
 
 
 def _write_title_page(
@@ -684,39 +894,68 @@ def _write_title_page(
     period: str | None,
     font: str,
 ) -> None:
-    for _ in range(4):
-        _blank(doc, font=font, after=0)
-    dept = _add_styled_paragraph(doc, font=font, align="center", space_after=6)
-    _add_runs(dept, [("Департамент внутреннего аудита", {"size": 14})], font=font)
-    for _ in range(6):
-        _blank(doc, font=font, after=0)
-    title = _add_styled_paragraph(doc, font=font, align="center", space_after=4)
-    _add_runs(title, [("АУДИТОРСКОЕ ЗАКЛЮЧЕНИЕ", {"bold": True, "size": 20})], font=font)
-    draft = _add_styled_paragraph(doc, font=font, align="center", space_after=18)
-    _add_runs(draft, [("(черновик)", {"italic": True, "size": 14})], font=font)
-    name = _add_styled_paragraph(doc, font=font, align="center", space_after=12)
-    _add_runs(
+    paragraph = doc.add_paragraph()
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(0)
+    fmt.space_after = Pt(0)
+    fmt.line_spacing = 1.0
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    if not _COVER_IMAGE.exists():
+        raise FileNotFoundError(f"Нет подложки титула: {_COVER_IMAGE}")
+    picture_run = paragraph.add_run()
+    inline = picture_run.add_picture(str(_COVER_IMAGE), width=Cm(21.0), height=Cm(29.7))
+    _float_inline_picture(inline._inline, left_cm=0.0, top_cm=0.0, behind=True)
+
+    name = (inspection_name or "Проверка").strip()
+    _add_cover_textbox(
+        paragraph,
+        _COVER_TITLE,
+        left_cm=3.5,
+        top_cm=6.2,
+        width_cm=14.0,
+        height_cm=1.8,
+        font=font,
+        size_pt=20,
+        align="center",
+    )
+    _add_cover_textbox(
+        paragraph,
         name,
-        [((inspection_name or "Проверка").strip(), {"bold": True, "size": 16})],
+        left_cm=3.5,
+        top_cm=9.4,
+        width_cm=14.0,
+        height_cm=4.5,
         font=font,
+        size_pt=16,
+        align="center",
     )
-    period_s = (period or "").strip() or "уточняется"
-    per = _add_styled_paragraph(doc, font=font, align="center", space_after=8)
-    _add_runs(per, [(f"Аудируемый период: {period_s}", {"italic": True, "size": 12})], font=font)
-    for _ in range(8):
-        _blank(doc, font=font, after=0)
-    note = _add_styled_paragraph(doc, font=font, align="center", space_after=0)
-    _add_runs(
-        note,
-        [
-            (
-                "Черновик для правки аудитором. Не утверждённый акт службы внутреннего аудита.",
-                {"italic": True, "size": 11},
-            )
-        ],
+    _add_cover_textbox(
+        paragraph,
+        f"Минск {_cover_year(period)}",
+        left_cm=3.0,
+        top_cm=26.6,
+        width_cm=5.8,
+        height_cm=1.3,
         font=font,
+        size_pt=14,
+        align="left",
     )
-    doc.add_page_break()
+    _add_cover_textbox(
+        paragraph,
+        _COVER_DEPT,
+        left_cm=9.0,
+        top_cm=26.6,
+        width_cm=10.2,
+        height_cm=1.3,
+        font=font,
+        size_pt=14,
+        align="right",
+    )
+    break_run = paragraph.add_run()
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    break_run._r.append(br)
 
 
 def _write_toc(doc: Document, entries: list[tuple[str, str]], *, font: str) -> None:
@@ -738,16 +977,7 @@ def _write_toc(doc: Document, entries: list[tuple[str, str]], *, font: str) -> N
 
 
 def _write_general_section(doc: Document, section: ReportSection, *, font: str) -> None:
-    h = _add_styled_paragraph(doc, font=font, align="left", space_before=12, space_after=12, first_line=False)
-    _add_runs(
-        h,
-        [
-            (f"{section.roman}.", {"bold": True, "size": 16}),
-            ("\t", {"bold": True, "size": 16}),
-            (_SECTION_LAST, {"bold": True, "size": 16}),
-        ],
-        font=font,
-    )
+    _add_roman_heading(doc, section.roman, _SECTION_LAST, font=font)
     for label, value in section.general_items:
         lab = _add_styled_paragraph(
             doc, font=font, align="justify", space_before=8, space_after=2, first_line=False
@@ -783,6 +1013,7 @@ def write_conclusion_docx(
     section.top_margin = Cm(2.0)
     section.bottom_margin = Cm(2.0)
 
+    section.different_first_page_header_footer = True
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
     fr = footer.add_run(f"Черновик · {_TITLE} · {inspection_name} · кейс {case_id}")
@@ -791,16 +1022,7 @@ def write_conclusion_docx(
     _write_title_page(doc, inspection_name=inspection_name, period=period, font=font)
     _write_toc(doc, toc_entries(report), font=font)
 
-    h1 = _add_styled_paragraph(doc, font=font, align="left", space_after=10, first_line=False)
-    _add_runs(
-        h1,
-        [
-            ("I.", {"bold": True, "size": 16}),
-            ("\t", {"bold": True, "size": 16}),
-            (_SECTION_I, {"bold": True, "size": 16}),
-        ],
-        font=font,
-    )
+    _add_roman_heading(doc, "I", _SECTION_I, font=font)
     add_opinion_markdown(doc, opinion_body or "", font=font)
     doc.add_page_break()
 
@@ -808,13 +1030,14 @@ def write_conclusion_docx(
         if block.kind == "general":
             _write_general_section(doc, block, font=font)
             continue
-        _add_section_heading(doc, block.roman, font=font, title=block.title)
+        _add_section_heading(doc, block.roman, font=font, title=_SECTION_III)
         if block.intro:
             _add_body_markdown(doc, block.intro, font=font)
         for observation in block.observations:
+            _add_observation_header(doc, observation, font=font)
             if observation.body:
                 _add_body_markdown(doc, observation.body, font=font)
-            _add_observation_box(doc, observation, font=font)
+            _add_observation_summary(doc, observation, font=font)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
