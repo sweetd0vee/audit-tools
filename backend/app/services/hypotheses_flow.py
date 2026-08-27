@@ -10,7 +10,6 @@ from app.config import settings
 from app.models import CaseState
 from app.prompts import prompt
 from app.services.brief_flow import collect_brief_sources
-from app.storage import store
 from app.services.case_context import (
     append_npa_sources_markdown,
     document_catalog,
@@ -35,6 +34,7 @@ from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete, extract_json_value
 from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
+from app.storage import store
 
 HYPOTHESES_SCHEMA = 2
 HYPOTHESES_SPEC = ArtifactSpec(
@@ -223,8 +223,7 @@ def resolve_hypothesis_selection(
         return picked
     wanted: list[int] = []
     seen: set[int] = set()
-    for raw in numbers or []:
-        n = int(raw)
+    for n in numbers or []:
         if n in seen:
             continue
         seen.add(n)

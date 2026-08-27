@@ -115,6 +115,7 @@ services:
       - OPENWEBUI_URL=http://open-webui:8080
       - OPENWEBUI_API_KEY=${OPENWEBUI_API_KEY:-}
       - PROMPTS_DIR=/app/prompts
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       - searxng
       - open-webui

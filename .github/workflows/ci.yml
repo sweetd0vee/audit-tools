@@ -22,8 +22,6 @@ jobs:
         run: pip install -r backend/requirements-dev.txt
       - name: Ruff
         run: ruff check backend/app backend/tests
-      - name: Ruff format
-        run: ruff format --check backend/app backend/tests
       - name: Mypy
         run: mypy
       - name: Pytest

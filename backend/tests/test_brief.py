@@ -1,8 +1,8 @@
 import tempfile
 import unittest
-from unittest.mock import patch
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from app.models import CaseState, KnowledgeItem, ProposedDocument
 from app.services.brief_docx import write_brief_docx

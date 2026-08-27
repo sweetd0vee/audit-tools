@@ -167,6 +167,8 @@ class Tools:
             f"/api/v1/cases/{case_id}/knowledge/ask",
             {"question": question},
         )
+        if data.get("refused"):
+            return f"{data.get('answer')}\n\nsources: отказ (в базе нет подходящего фрагмента)"
         sources = data.get("sources") or []
         cites = "; ".join(
             f"[{s.get('n')}] {s.get('title')}" for s in sources[:8]

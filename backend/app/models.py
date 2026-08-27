@@ -141,6 +141,8 @@ class AskResponse(BaseModel):
     used_embeddings: bool = False
     used_reranker: bool = False
     used_summaries: bool = False
+    refused: bool = False
+    refuse_reason: Optional[str] = None
 
 
 class ChatMessage(BaseModel):

@@ -209,7 +209,7 @@ def _cards_budget(state: CaseState, *, total_limit: int = 7000, per: int = 1800)
     for item in state.knowledge:
         if item.summary_status != "ok" or not (item.summary or "").strip():
             continue
-        body = item.summary.strip()
+        body = (item.summary or "").strip()
         if len(body) > per:
             body = body[:per] + "\n…"
         chunk = f"# {item.title}\n{body}"

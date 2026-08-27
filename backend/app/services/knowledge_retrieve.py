@@ -9,6 +9,8 @@ one LLM call over the selected spans, not map-reduce over the whole act.
 
 from __future__ import annotations
 
+import logging
+import math
 import re
 from collections.abc import Awaitable, Callable, Sequence
 
@@ -23,6 +25,8 @@ from app.services.chunker import (
     tokenize,
 )
 
+logger = logging.getLogger(__name__)
+
 EmbedFn = Callable[[list[str]], Awaitable[list[list[float]]]]
 RerankFn = Callable[[str, list[str]], Awaitable[list[float]]]
 
@@ -31,8 +35,15 @@ ARTICLE_MENTION_RE = re.compile(
     r"(?i)(?:статьи|статью|статьёй|статьей|статье|статья|ст\.?)\s*№?\s*(\d+(?:\.\d+)?)"
 )
 ARTICLE_HEADING_RE = re.compile(
-    r"(?im)^\s*(?:статья|ст\.)\s+(\d+(?:\.\d+)?)\b"
+    r"(?im)^\s*(?:#{1,6}\s+)?(?:статья|ст\.)\s+(\d+(?:\.\d+)?)\b"
 )
+PUNKT_MENTION_RE = re.compile(
+    r"(?i)(?:пункта|пункту|пункте|пунктом|пункт|п\.)\s*(\d+(?:\.\d+)*)"
+)
+
+
+def article_nums_in_query(question: str) -> set[str]:
+    return {m.group(1) for m in ARTICLE_MENTION_RE.finditer(question or "")}
 
 
 def article_query_variants(question: str) -> list[str]:
@@ -44,7 +55,14 @@ def article_query_variants(question: str) -> list[str]:
         if num in seen:
             continue
         seen.add(num)
-        out.extend([f"Статья {num}", f"Ст. {num}", f"статья {num}"])
+        out.extend([f"Статья {num}", f"Ст. {num}", f"статья {num}", f"## Статья {num}"])
+    for match in PUNKT_MENTION_RE.finditer(question or ""):
+        num = match.group(1)
+        key = f"p:{num}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.extend([f"пункт {num}", f"п. {num}"])
     return out
 
 
@@ -229,7 +247,13 @@ def _merge_consecutive(lookup: dict[str, dict], ids: list[str], budget: int) -> 
         head["merged_from"] = group
         scores = [p.get("rerank_score") for p in parts if p.get("rerank_score") is not None]
         if scores:
-            head["rerank_score"] = max(float(s) for s in scores)
+            head["rerank_score"] = max(float(s or 0) for s in scores)
+        fused_scores = [p.get("fused_score") for p in parts if p.get("fused_score") is not None]
+        if fused_scores:
+            head["fused_score"] = max(float(s or 0) for s in fused_scores)
+        lex_scores = [p.get("lexical_score") for p in parts if p.get("lexical_score") is not None]
+        if lex_scores:
+            head["lexical_score"] = max(float(s or 0) for s in lex_scores)
         merged.append(head)
         used += len(text)
         if used >= budget:
@@ -275,9 +299,9 @@ async def _embed_queries_and_chunks(
         if kind == "q":
             q_embs.append(list(map(float, vec)))
             continue
-        ch = by_id.get(kind)
-        if ch is not None:
-            ch["embedding"] = list(map(float, vec))
+        found = by_id.get(kind)
+        if found is not None:
+            found["embedding"] = list(map(float, vec))
             embedded += 1
     return q_embs, embedded
 
@@ -346,8 +370,13 @@ async def select_evidence(
     fused = rrf_fuse(rankings + dense_rankings) if dense_rankings else fused_lex
     for cid, boost in _heading_boosts(queries, lookup).items():
         fused[cid] = fused.get(cid, 0.0) + boost
+    for cid, boost in _title_boosts(queries, lookup).items():
+        fused[cid] = fused.get(cid, 0.0) + boost
     if always_include_first and ids:
         fused[ids[0]] = fused.get(ids[0], 0.0) + 1.0 / 60.0
+    for cid, score in fused.items():
+        if cid in lookup:
+            lookup[cid]["fused_score"] = float(score)
 
     cand_ids = [cid for cid, _ in sorted(fused.items(), key=lambda x: x[1], reverse=True) if cid in lookup]
     if pool:
@@ -402,6 +431,7 @@ async def _rerank_candidates(
     try:
         scores = await rerank_fn(query, docs)
     except Exception:
+        logger.warning("Rerank failed; keeping hybrid order", exc_info=True)
         return {}
     if not scores or len(scores) != len(pool_ids):
         return {}
@@ -415,6 +445,110 @@ async def _rerank_candidates(
     return out
 
 
+def corpus_article_nums(chunks: list[dict]) -> set[str]:
+    return {num for ch in chunks if (num := _article_num(ch.get("text") or ""))}
+
+
+def _idf_lexical_score(question: str, text: str, df: dict[str, int], n_docs: int) -> float:
+    """Count query terms that are rare in this library. Stops 'срок' from matching everything."""
+    q_tokens = [t for t in tokenize(question) if len(t) >= 4]
+    if not q_tokens or n_docs <= 0:
+        return 0.0
+    blob = set(tokenize(text))
+    score = 0.0
+    for tok in q_tokens:
+        if tok not in blob:
+            continue
+        freq = df.get(tok, 0)
+        if freq / n_docs >= 0.45:
+            continue
+        score += math.log(1.0 + n_docs / (freq + 0.5))
+    return score
+
+
+def _chunk_passes_gate(question: str, chunk: dict) -> bool:
+    text = chunk.get("text") or ""
+    mentioned = article_nums_in_query(question)
+    heading = _article_num(text)
+    if mentioned and heading and heading in mentioned:
+        return True
+    rerank = chunk.get("rerank_score")
+    if rerank is not None:
+        return float(rerank) >= settings.rag_min_rerank
+    lexical = chunk.get("lexical_score")
+    if lexical is None:
+        lexical = _keyword_overlap(text, tokenize(question))
+    return float(lexical) >= settings.rag_min_lexical
+
+
+def _requested_title_keys(question: str) -> list[str]:
+    q = f" {(question or '').lower()} "
+    keys: list[str] = []
+    if any(x in q for x in (" гражданск", " гк ", " гк.", " гк,")):
+        keys.append("гражданск")
+    if any(x in q for x in (" налогов", " нк ", " нк.", " нк,")):
+        keys.append("налог")
+    if any(x in q for x in (" нбрб", " национального банка")):
+        keys.append("нбрб")
+    if "валют" in q:
+        keys.append("валют")
+    return keys
+
+
+def _title_matches(chunk: dict, keys: list[str]) -> bool:
+    hay = f"{chunk.get('title') or ''} {chunk.get('filename') or ''}".lower()
+    return any(key in hay for key in keys)
+
+
+def gate_ask_evidence(
+    question: str,
+    evidence: list[dict],
+    *,
+    corpus_articles: set[str] | None = None,
+) -> list[dict]:
+    """Drop weak / wrong-article spans. Empty result means the caller must refuse."""
+    mentioned = article_nums_in_query(question)
+    if mentioned and corpus_articles is not None and not (mentioned & corpus_articles):
+        return []
+    kept = [ch for ch in evidence if _chunk_passes_gate(question, ch)]
+    if mentioned:
+        heading_hits = [ch for ch in kept if _article_num(ch.get("text") or "") in mentioned]
+        kept = heading_hits
+        if not kept:
+            return []
+    title_keys = _requested_title_keys(question)
+    if title_keys:
+        titled = [ch for ch in kept if _title_matches(ch, title_keys)]
+        if titled:
+            return titled
+        return []
+    return kept
+
+
+def _title_boosts(queries: list[str], lookup: dict[str, dict]) -> dict[str, float]:
+    qset = {t for t in tokenize(" ".join(queries)) if len(t) >= 4}
+    if not qset:
+        return {}
+    boosts: dict[str, float] = {}
+    for cid, ch in lookup.items():
+        tset = set(tokenize(ch.get("title") or ""))
+        if qset & tset:
+            boosts[cid] = 0.35
+    return boosts
+
+
+def _attach_lexical_scores(question: str, lookup: dict[str, dict]) -> None:
+    docs = list(lookup.values())
+    n = len(docs) or 1
+    df: dict[str, int] = {}
+    tokenized = [set(tokenize(ch.get("text") or "")) for ch in docs]
+    for toks in tokenized:
+        for tok in toks:
+            df[tok] = df.get(tok, 0) + 1
+    for ch, toks in zip(docs, tokenized):
+        ch["lexical_score"] = _idf_lexical_score(question, " ".join(toks), df, n)
+
+
 async def retrieve_for_ask(
     chunks: list[dict],
     question: str,
@@ -423,17 +557,34 @@ async def retrieve_for_ask(
     embed_fn: EmbedFn | None = None,
     rerank_fn: RerankFn | None = None,
 ) -> list[dict]:
-    """Library-wide hybrid retrieve for `вопрос …`. No preamble injection."""
-    return await select_evidence(
+    """Library-wide hybrid retrieve for `вопрос …`. Empty list = refuse, never preamble."""
+    inventory = corpus_article_nums(chunks)
+    mentioned = article_nums_in_query(question)
+    if mentioned and inventory and not (mentioned & inventory):
+        return []
+    evidence = await select_evidence(
         chunks,
         ask_queries(question),
         top_k=top_k or settings.rag_top_k,
         budget_chars=max(settings.summary_max_chars, 24000),
+        candidates=settings.rag_candidates,
+        neighbor=settings.rag_neighbor,
+        mmr_lambda=settings.rag_mmr_lambda,
         always_include_first=False,
         embed_fn=embed_fn,
         rerank_fn=rerank_fn,
         rerank_query=question,
     )
+    n = len(chunks) or 1
+    df: dict[str, int] = {}
+    for ch in chunks:
+        for tok in set(tokenize(ch.get("text") or "")):
+            df[tok] = df.get(tok, 0) + 1
+    for span in evidence:
+        span["lexical_score"] = _idf_lexical_score(
+            question, span.get("text") or "", df, n
+        )
+    return gate_ask_evidence(question, evidence, corpus_articles=inventory)
 
 
 def _keyword_overlap(text: str, query_tokens: list[str]) -> float:

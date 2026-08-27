@@ -31,7 +31,7 @@
                │             │              │
         ┌──────▼──────┐ ┌────▼─────┐ ┌──────▼──────┐
         │ Ollama      │ │ SearXNG  │ │ DuckDB /    │
-        │ LLM+embed   │ │ allowlist│ │ файлы кейса │
+        │ LLM+embed   │ │ + DDG/Bing│ │ файлы кейса │
         └─────────────┘ └──────────┘ └─────────────┘
                              │
                     Open WebUI Chroma (индекс чата)
@@ -49,7 +49,7 @@
 | **Open WebUI Function Pipe** | Фазы проверки, HITL в чате | Один Python-файл, не форк | v0.0.1 |
 | **Open WebUI Tools** | Запасной native FC путь | Тонкие HTTP-обёртки | есть (fallback) |
 | **Ollama** | LLM + embeddings | Нет | есть |
-| **SearXNG** | Добыча актов, не RAG в каждом вопросе | Нет — свой `settings.yml` с allowlist | есть |
+| **SearXNG** | Один из поисковиков URL актов, не RAG в каждом вопросе | Нет — свой `settings.yml` с allowlist | есть |
 | **Chroma в Open WebUI** | Индекс Knowledge для чата | Нет | есть (sync) |
 | **DuckDB** | SQL по выгрузкам клиента, без своей аналитической UI | Нет — tool «выполни SQL» | план v0.4 |
 | **python-docx / шаблоны банка** | Саммари, программа, мнение, заключение; позже WP | Шаблоны + заполнение полей | v0.0.1 документы планирования; WP — план v0.5 |
@@ -114,7 +114,7 @@ Continue.dev / Aider — отдельный контур «править rule /
 ### Есть (и оставляем)
 
 - кейс: `inspection_name`, keywords, статус;
-- propose → select (HITL) → download (manual URL / known_sources / SearXNG);
+- propose → select (HITL) → download (manual URL / known_sources / SearXNG + DDG/Bing, качаем только allowlist);
 - extract HTML/PDF → текст, чанкер по статьям, индекс, ask;
 - Word: обзор актов (`саммари`, см. [SAMMARI.md](SAMMARI.md)), total из знаний модели, программа проверки, Excel-чеклист гипотез, раздел I (`аудиторское мнение`), полное заключение;
 - обычный чат без RAG (`POST /chat`);
@@ -131,7 +131,7 @@ Continue.dev / Aider — отдельный контур «править rule /
 | Модуль | Почему свой | Чего не пишем вокруг |
 |---|---|---|
 | **Case store** | Контур проверки, статусы, кто утвердил список | Не пишем админку кейсов. Список кейсов — tool + папки / позже SQLite |
-| **NPA library** | Allowlist РБ, known_sources, политика «не искать клиентским текстом» | Не пишем краулер pravo.by |
+| **NPA library** | Allowlist **скачивания** РБ, known_sources; поиск URL — SearXNG + DDG/Bing | Не пишем краулер pravo.by |
 | **Ingest НПА** | Статья/пункт важнее дефолтного сплиттера Open WebUI | Не пишем свою vector DB, если хватает markdown `## Статья` + Open WebUI |
 | **Evidence store** | Выгрузки клиента ≠ НПА. Отдельные пути, отдельные tools | Не RAG по Excel |
 | **Tests** | Процедура, выборка, критерий ok/finding — доменная модель | Не UI конструктора тестов |
@@ -175,14 +175,15 @@ SQLite появится, когда понадобятся поиск по ке�
 название + keywords
   → LLM propose (Ollama)
   → аудитор утверждает document_ids          ← HITL, без этого download нет
-  → URL: manual → known_sources → SearXNG
+  → URL: manual → known_sources → SearXNG + DuckDuckGo + Bing
+  → из выдачи оставляем только allowlist (pravo.by / etalonline.by / nbrb.by / …)
   → knowledge_raw + extract → knowledge_text
   → саммари на диск + Word на 6–10 стр. (команда «саммари»)
   → нормализация markdown (## Статья N)   ← план v0.1; чанкер по статье уже есть
   → Open WebUI Knowledge коллекция npa-{case_id}
 ```
 
-Клиентские данные в SearXNG **не передаются**.
+Клиентские файлы в поиск **не** передаются. В запрос уходит название акта: без DDG/Bing SearXNG один не находит часть официальных редакций. Это внешний fallback v0.0.1, не air-gap.
 
 ### 5.2 Спросить норму
 
@@ -194,7 +195,7 @@ SQLite появится, когда понадобятся поиск по ке�
   → ответ + блок «Откуда в базе знаний» (его дописывает Pipe)
 ```
 
-Без префикса `вопрос` это **не** RAG, а обычный чат (`POST /api/v1/chat`). Веб-поиск в обоих потоках **выключен**. SearXNG — только добыча в библиотеку.
+Без префикса `вопрос` это **не** RAG, а обычный чат (`POST /api/v1/chat`). Веб-поиск в обоих потоках чата **выключен**. SearXNG / DDG / Bing — только добыча URL в библиотеку; файл качается, если хост в allowlist.
 
 ### 5.3 Спросить факт (план v0.4)
 
@@ -277,7 +278,8 @@ Air-gap: образы и веса моделей едут файлами, не �
 ## 9. Доверие и контур
 
 - Ollama, Open WebUI, SearXNG, данные кейса — на машине/контуре банка.
-- Allowlist поиска железно в SearXNG **и** в сервере (defense in depth).
+- **Поиск URL** в v0.0.1: SearXNG (allowlist в `settings.yml`) **и** напрямую DuckDuckGo HTML + Bing. Запрос — название акта, не файл клиента.
+- **Скачивание** железно по allowlist в сервере (`domains.host_allowed`). Чужой хост из выдачи DDG/Bing не качается.
 - Tools, которые трогают `evidence/`, не имеют права ходить в интернет.
 - Модель не ставит суждение и не подписывает WP.
 - Trail: что скачали, из какого URL, какой чанк ушёл в ответ, какой tool с какими аргументами.

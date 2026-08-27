@@ -70,7 +70,7 @@ def write_hypotheses_xlsx(
         ),
     )
     for i, row in enumerate(ordered, start=1):
-        values = []
+        values: list[object] = []
         for key in keys:
             if key == "n":
                 values.append(i)

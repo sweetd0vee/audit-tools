@@ -189,11 +189,15 @@ def library_archive(case_id: str):
     state = require_case(case_id)
     path = store.archive_path(case_id)
     if not path.exists():
-        path = store.write_library_archive(case_id)
-        if path and path.exists() and not state.meta.get("archive_name"):
-            state.meta["archive_name"] = store.archive_filename(state.inspection_name, case_id)
-            state.meta["archive_path"] = str(path)
-            store.save(state)
+        rebuilt = store.write_library_archive(case_id)
+        if rebuilt is not None:
+            path = rebuilt
+            if path.exists() and not state.meta.get("archive_name"):
+                state.meta["archive_name"] = store.archive_filename(
+                    state.inspection_name, case_id
+                )
+                state.meta["archive_path"] = str(path)
+                store.save(state)
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Archive not found")
 

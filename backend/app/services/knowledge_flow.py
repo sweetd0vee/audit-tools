@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
@@ -13,14 +14,8 @@ from app.services.chunker import (
     chunk_text,
     even_sample,
     keyword_score,
+    normalize_npa_text,
     sequential_windows,
-    tokenize,
-)
-from app.services.knowledge_retrieve import (
-    chunks_from_item,
-    retrieval_queries,
-    retrieve_for_ask,
-    select_evidence,
 )
 from app.services.citations import (
     excerpt_for_cite,
@@ -30,6 +25,12 @@ from app.services.citations import (
 )
 from app.services.document_artifact import ElapsedTimer
 from app.services.extract import TEXT_EXTS, extract_text
+from app.services.knowledge_retrieve import (
+    chunks_from_item,
+    retrieval_queries,
+    retrieve_for_ask,
+    select_evidence,
+)
 from app.services.ollama_client import chat_complete, embed_texts, rerank_texts
 from app.services.openwebui_client import (
     OpenWebUIError,
@@ -39,6 +40,8 @@ from app.services.openwebui_client import (
     upload_file,
 )
 from app.storage import store
+
+logger = logging.getLogger(__name__)
 
 
 def _index_path(case_id: str) -> Path:
@@ -110,7 +113,7 @@ def ingest_library(case_id: str) -> CaseState:
         if path.name in existing:
             continue
         try:
-            text = extract_text(path)
+            text = normalize_npa_text(extract_text(path))
         except Exception as exc:  # noqa: BLE001
             items.append(
                 KnowledgeItem(
@@ -163,7 +166,7 @@ def add_uploaded_file(case_id: str, filename: str, content: bytes) -> KnowledgeI
         extract_status="pending",
     )
     try:
-        text = extract_text(dest)
+        text = normalize_npa_text(extract_text(dest))
         text_path = _text_dir(case_id) / f"{Path(safe).stem}.txt"
         text_path.write_text(text, encoding="utf-8")
         item.text_path = str(text_path)
@@ -181,9 +184,9 @@ def add_uploaded_file(case_id: str, filename: str, content: bytes) -> KnowledgeI
 
 def _item_text(item: KnowledgeItem) -> str:
     if item.text_path and Path(item.text_path).exists():
-        return Path(item.text_path).read_text(encoding="utf-8")
+        return normalize_npa_text(Path(item.text_path).read_text(encoding="utf-8"))
     if item.local_path and Path(item.local_path).exists():
-        return extract_text(Path(item.local_path))
+        return normalize_npa_text(extract_text(Path(item.local_path)))
     return ""
 
 
@@ -204,6 +207,7 @@ def rebuild_index(case_id: str, state: CaseState | None = None) -> dict:
                     "title": item.title,
                     "filename": item.filename,
                     "text": part,
+                    "article": extract_article_ref(part),
                     "embedding": [],
                 }
             )
@@ -555,29 +559,6 @@ async def build_knowledge_events(case_id: str) -> AsyncIterator[dict]:
     }
 
 
-def _summary_context(state: CaseState, question: str, budget: int = 8000) -> str:
-    q_tokens = list(tokenize(question)) + [question]
-    scored: list[tuple[float, str, str]] = []
-    for item in state.knowledge:
-        body = (item.summary or "").strip()
-        if not body:
-            continue
-        score = keyword_score(f"{item.title}\n{body}", q_tokens)
-        scored.append((score, item.title, body))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    blocks: list[str] = []
-    used = 0
-    per_cap = 5000
-    for _score, title, body in scored:
-        take = body if len(body) <= per_cap else body[: per_cap - 1] + "…"
-        piece = f"### {title}\n{take}"
-        if used + len(piece) > budget and blocks:
-            break
-        blocks.append(piece)
-        used += len(piece)
-    return "\n\n".join(blocks)
-
-
 def _drop_stale_embeddings(index: dict) -> bool:
     """Do not cosine-compare a qwen query vector with leftover MiniLM rows."""
     stored = (index.get("embed_model") or "").strip()
@@ -589,6 +570,59 @@ def _drop_stale_embeddings(index: dict) -> bool:
     index["embed_model"] = current
     index["embedded"] = 0
     return True
+
+
+def _refuse_ask(case_id: str, question: str, reason: str) -> dict:
+    answer = prompt("ask_refuse")
+    payload = {
+        "answer": answer.strip(),
+        "sources": [],
+        "model": settings.ollama_model,
+        "used_embeddings": False,
+        "used_reranker": False,
+        "used_summaries": False,
+        "refused": True,
+        "refuse_reason": reason,
+    }
+    _append_ask_trail(case_id, question, payload, reason=reason)
+    logger.info("ask refused case=%s reason=%s", case_id, reason)
+    return payload
+
+
+def _append_ask_trail(
+    case_id: str,
+    question: str,
+    payload: dict,
+    *,
+    reason: str | None = None,
+    evidence: list[dict] | None = None,
+) -> None:
+    sources = payload.get("sources") or []
+    record = {
+        "ts": datetime.utcnow().isoformat(),
+        "case_id": case_id,
+        "question": question,
+        "refused": bool(payload.get("refused")),
+        "reason": reason,
+        "chunk_ids": [ch.get("id") for ch in (evidence or []) if ch.get("id")],
+        "filenames": [s.get("filename") for s in sources if s.get("filename")],
+        "articles": [s.get("article") for s in sources if s.get("article")],
+        "scores": [
+            {
+                "id": ch.get("id"),
+                "rerank": ch.get("rerank_score"),
+                "fused": ch.get("fused_score"),
+                "lexical": ch.get("lexical_score"),
+            }
+            for ch in (evidence or [])
+        ],
+        "used_embeddings": bool(payload.get("used_embeddings")),
+        "used_reranker": bool(payload.get("used_reranker")),
+    }
+    try:
+        store.append_jsonl(case_id, "trail/ask.jsonl", record)
+    except Exception:
+        logger.warning("ask trail write failed case=%s", case_id, exc_info=True)
 
 
 async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
@@ -612,42 +646,41 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
     )
     _persist_item_embeddings(case_id, chunks)
     if not evidence:
-        evidence = chunks[:top_k]
+        return _refuse_ask(case_id, question, "no_evidence")
 
+    by_item = {item.id: item for item in state.knowledge}
     context_parts = []
     sources = []
     used_embeddings = False
     used_reranker = False
     for i, ch in enumerate(evidence, start=1):
-        article = extract_article_ref(ch.get("text") or "")
+        article = ch.get("article") or extract_article_ref(ch.get("text") or "")
         title = ch.get("title") or ""
         label = f"{title} — {article}" if article else title
         context_parts.append(f"[{i}] {label}\n{ch['text']}")
+        item = by_item.get(ch.get("item_id") or "")
         sources.append(
             {
                 "n": i,
                 "title": title,
                 "filename": ch.get("filename"),
+                "item_id": ch.get("item_id"),
+                "chunk_id": ch.get("id"),
                 "article": article,
                 "excerpt": excerpt_for_cite(ch.get("text") or ""),
+                "url": origin_url(state, item) if item else None,
+                "score": ch.get("rerank_score", ch.get("fused_score")),
             }
         )
         if ch.get("embedding"):
             used_embeddings = True
         if ch.get("rerank_score") is not None:
             used_reranker = True
-    summaries = _summary_context(state, question)
-    summary_block = (
-        f"Конспекты актов (ориентир, не источник номера статьи):\n{summaries}\n\n"
-        if summaries
-        else ""
-    )
     user = prompt(
         "ask_user",
         inspection=state.inspection_name,
         keywords=", ".join(state.keywords),
         question=question,
-        summary_block=summary_block,
         context="\n".join(context_parts),
     )
     answer = await chat_complete(
@@ -657,14 +690,25 @@ async def ask(case_id: str, question: str, top_k: int | None = None) -> dict:
         timeout=settings.ollama_timeout_sec,
         num_ctx=settings.ollama_num_ctx,
     )
-    return {
+    payload = {
         "answer": answer,
         "sources": sources,
         "model": settings.ollama_model,
         "used_embeddings": used_embeddings,
         "used_reranker": used_reranker,
-        "used_summaries": bool(summaries),
+        "used_summaries": False,
+        "refused": False,
+        "refuse_reason": None,
     }
+    _append_ask_trail(case_id, question, payload, evidence=evidence)
+    logger.info(
+        "ask case=%s sources=%s embeddings=%s rerank=%s",
+        case_id,
+        len(sources),
+        used_embeddings,
+        used_reranker,
+    )
+    return payload
 
 
 def export_pack_files(case_id: str) -> list[tuple[str, bytes]]:

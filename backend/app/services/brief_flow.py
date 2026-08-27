@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.config import settings
+from app.models import CaseState
+from app.prompts import prompt
 from app.services.brief_docx import write_brief_docx
 from app.services.case_context import append_npa_sources_markdown
 from app.services.document_artifact import (
@@ -20,16 +22,14 @@ from app.services.document_artifact import (
     resolve_artifact_file,
     save_artifact_meta,
 )
+from app.services.knowledge_index import embed_index, rebuild_index
 from app.services.knowledge_ingest import ingest_library
-from app.prompts import prompt
-from app.services.knowledge_index import rebuild_index, embed_index
 from app.services.knowledge_summarize import (
     FRAGMENTS_PER_ITEM,
     fragments_from_item,
     summarize_item,
 )
 from app.services.ollama_client import chat_complete
-from app.models import CaseState
 from app.storage import store
 
 BRIEF_SCHEMA = 4
@@ -198,7 +198,7 @@ def _write_markdown(
     sources: list[dict],
 ) -> None:
     lines = [
-        f"# Саммари нормативной базы",
+        "# Саммари нормативной базы",
         f"**{inspection_name}**",
         f"Ключевые слова: {', '.join(keywords) or '—'}. Кейс `{case_id}`.",
         "",

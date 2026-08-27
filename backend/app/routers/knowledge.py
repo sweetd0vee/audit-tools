@@ -9,8 +9,8 @@ from typing import Optional
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from app.http import require_case, sse_response
 from app.config import settings
+from app.http import require_case, sse_response
 from app.models import (
     AskRequest,
     AskResponse,
@@ -20,12 +20,20 @@ from app.models import (
     OpenWebUISyncRequest,
     SelectHypothesesRequest,
 )
+from app.prompts import prompt
 from app.services.brief_flow import (
     brief_download_name,
     brief_status,
     build_brief,
     build_brief_events,
     resolve_brief_file,
+)
+from app.services.conclusion_flow import (
+    build_conclusion,
+    build_conclusion_events,
+    conclusion_download_name,
+    conclusion_status,
+    resolve_conclusion_file,
 )
 from app.services.hypotheses_flow import (
     build_hypotheses,
@@ -35,13 +43,12 @@ from app.services.hypotheses_flow import (
     resolve_hypotheses_file,
     select_hypotheses,
 )
-from app.services.conclusion_flow import (
-    build_conclusion,
-    build_conclusion_events,
-    conclusion_download_name,
-    conclusion_status,
-    resolve_conclusion_file,
-)
+from app.services.knowledge_flow import ask, build_knowledge_events
+from app.services.knowledge_index import rebuild_index
+from app.services.knowledge_ingest import add_uploaded_file, ingest_library
+from app.services.knowledge_owui import export_pack_files, openwebui_status, sync_openwebui
+from app.services.ollama_client import chat_messages
+from app.services.openwebui_client import OpenWebUIError
 from app.services.opinion_flow import (
     build_opinion,
     build_opinion_events,
@@ -63,14 +70,7 @@ from app.services.total_flow import (
     total_download_name,
     total_status,
 )
-from app.services.knowledge_flow import ask, build_knowledge_events
-from app.services.knowledge_index import rebuild_index
-from app.services.knowledge_ingest import add_uploaded_file, ingest_library
-from app.services.knowledge_owui import export_pack_files, openwebui_status, sync_openwebui
-from app.services.ollama_client import chat_messages
-from app.services.openwebui_client import OpenWebUIError
 from app.storage import store
-from app.prompts import prompt
 
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
 logger = logging.getLogger(__name__)

@@ -481,6 +481,13 @@ class Pipe:
                 f"<!--audit-case:{case_id}-->"
             )
         sources = result.get("sources") or []
+        if result.get("refused"):
+            return (
+                f"{(result.get('answer') or '').strip()}\n\n"
+                "**Откуда в базе знаний:** отказ — подходящих фрагментов нет, "
+                "номер статьи из памяти модели не подставляется.\n"
+                f"<!--audit-case:{case_id}-->"
+            )
         cites = []
         for s in sources[:6]:
             title = s.get("title") or s.get("filename") or "документ"

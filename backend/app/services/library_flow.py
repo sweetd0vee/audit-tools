@@ -14,11 +14,13 @@ from app.services.extra_titles import (
     norm_title,
     search_queries_for_title,
 )
-from app.services.known_sources import lookup_known_url
 from app.services.knowledge_index import rebuild_index
+from app.services.known_sources import lookup_known_url
 from app.services.npa_search import expand_official_urls, extract_doc_code, find_candidate_urls
 from app.services.ollama_client import propose_documents, propose_documents_events
 from app.storage import store
+
+logger = logging.getLogger(__name__)
 
 
 def _persist_propose(state: CaseState, result: dict) -> CaseState:
@@ -250,6 +252,7 @@ async def run_download(case_id: str) -> CaseState:
     try:
         return await _download_selected(state, case_id, selected)
     except Exception:
+        logger.exception("download aborted case=%s", case_id)
         latest = store.get(case_id)
         if latest.status == CaseStatus.downloading:
             latest.status = CaseStatus.failed
@@ -303,6 +306,14 @@ async def _download_selected(
                 result = await download_url(url, lib_dir, doc.title, i)
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
+                logger.warning(
+                    "download miss case=%s title=%s source=%s url=%s err=%s",
+                    case_id,
+                    doc.title,
+                    source,
+                    url,
+                    exc,
+                )
                 return False
             _record_download(doc, result, source, manifest_items)
             saved = True

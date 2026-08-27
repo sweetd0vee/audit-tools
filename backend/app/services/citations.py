@@ -5,14 +5,14 @@ import re
 from app.models import CaseState, KnowledgeItem
 
 ARTICLE_LINE_RE = re.compile(
-    r"(?im)^\s*((?:статья|ст\.)\s+\d+(?:\.\d+)?(?:\s*[.\-–—:]\s*[^\n]{0,90})?)",
+    r"(?im)^\s*#*\s*((?:статья|ст\.)\s+\d+(?:\.\d+)?(?:\s*[.\-–—:]\s*[^\n]{0,90})?)",
 )
 PUNKT_RE = re.compile(r"(?i)(?:пункт|п\.)\s+\d+(?:\.\d+)*")
 CITE_RE = re.compile(r"\[(\d+)\]")
 
 
 OUTLINE_RE = re.compile(
-    r"(?im)^\s*((?:глава|раздел|часть|статья|ст\.)\s+[^\n]{1,120})",
+    r"(?im)^\s*#*\s*((?:глава|раздел|часть|статья|ст\.)\s+[^\n]{1,120})",
 )
 
 

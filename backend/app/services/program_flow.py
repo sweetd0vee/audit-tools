@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.models import CaseState
+from app.prompts import prompt
 from app.services.brief_docx import write_program_docx
 from app.services.brief_flow import collect_brief_sources
 from app.services.case_context import (
@@ -28,7 +29,6 @@ from app.services.document_artifact import (
 )
 from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete
-from app.prompts import prompt
 
 PROGRAM_SCHEMA = 5
 PROGRAM_SPEC = ArtifactSpec(
@@ -88,7 +88,8 @@ def normalize_program_item_range(
         items_min = items_max
     if items_max is None:
         items_max = items_min
-    lo, hi = _clamp_items(int(items_min)), _clamp_items(int(items_max))
+    assert items_min is not None and items_max is not None
+    lo, hi = _clamp_items(items_min), _clamp_items(items_max)
     if lo > hi:
         lo, hi = hi, lo
     return lo, hi

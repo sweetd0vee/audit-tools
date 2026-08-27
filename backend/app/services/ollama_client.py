@@ -356,8 +356,9 @@ def _token_logprob(entry: Any, name: str) -> float | None:
         return None
     key = name.lower()
     if str(entry.get("token") or "").strip().lower() == key:
+        lp = entry.get("logprob")
         try:
-            return float(entry.get("logprob"))
+            return float(lp) if lp is not None else None
         except (TypeError, ValueError):
             return None
     for item in entry.get("top_logprobs") or []:
@@ -365,8 +366,9 @@ def _token_logprob(entry: Any, name: str) -> float | None:
             continue
         if str(item.get("token") or "").strip().lower() != key:
             continue
+        lp = item.get("logprob")
         try:
-            return float(item.get("logprob"))
+            return float(lp) if lp is not None else None
         except (TypeError, ValueError):
             continue
     return None

@@ -9,7 +9,7 @@
 1. Аудитор создаёт кейс: **название проверки** + **ключевые слова**
 2. Локальная LLM (Ollama) предлагает список НПА / документов
 3. Аудитор валидирует и выбирает документы (`document_ids`) и при необходимости дописывает свои названия (`extra_titles`)
-4. Backend ищет через **SearXNG** (только allowlist доменов РБ) и **скачивает** в папку кейса
+4. Backend ищет URL через **SearXNG + DuckDuckGo + Bing** и **скачивает** только страницы с allowlist доменов РБ
 
 ```
 data/audit_cases/{case_id}/
@@ -27,7 +27,7 @@ data/audit_cases/{case_id}/
   library.zip
 ```
 
-Клиентские данные в поиск **не отправляются**.
+Клиентские файлы в поиск **не отправляются**. В запрос уходит название акта.
 
 ## Запуск
 
@@ -41,6 +41,16 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8100
 ```
 
 Swagger: http://localhost:8100/docs
+
+Проверки перед пушем (то же гоняет GitHub Actions):
+
+```powershell
+pip install -r requirements-dev.txt
+cd ..
+ruff check backend/app backend/tests
+mypy
+pytest
+```
 
 Нужны запущенные:
 - Ollama (`qwen3.8:27b`)
@@ -75,7 +85,7 @@ POST /api/v1/cases/{case_id}/select
 }
 ```
 
-### 4. Скачать через SearXNG
+### 4. Скачать (поиск URL → allowlist)
 ```http
 POST /api/v1/cases/{case_id}/download
 ```
@@ -147,13 +157,15 @@ POST /api/v1/cases/{case_id}/knowledge/openwebui/sync
 - government.by
 - president.gov.by
 
-## Fallback, если SearXNG пустой
+## Как ищем URL
 
-Поисковики часто банят SearXNG (403 / suspended). Поэтому download идёт так:
+Поисковики часто банят SearXNG (403 / suspended), и одного allowlist-индекса мало: без DDG/Bing часть актов на `pravo.by` не находится. Download идёт так:
 
 1. `manual_urls` из `/select` (если аудитор указал ссылку)
 2. curated `known_sources.py` (официальные URL по названию акта)
-3. SearXNG (allowlist)
+3. параллельный поиск: SearXNG + DuckDuckGo HTML + Bing; в кандидаты попадают только URL с allowlist выше
+
+На диск качается страница с `pravo.by` / `etalonline.by` / `nbrb.by` (и остальной allowlist). Сам запрос при этом уходит во внешние поисковики — это не air-gap.
 
 Пример select с ручной ссылкой:
 

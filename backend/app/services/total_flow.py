@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.models import CaseState
+from app.prompts import prompt
 from app.services.brief_docx import write_total_docx
 from app.services.document_artifact import (
     ArtifactSpec,
@@ -20,7 +21,6 @@ from app.services.document_artifact import (
     save_artifact_meta,
 )
 from app.services.ollama_client import chat_complete
-from app.prompts import prompt
 from app.storage import store
 
 TOTAL_SCHEMA = 1

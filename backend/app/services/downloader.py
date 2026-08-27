@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -12,6 +13,8 @@ from app.config import settings
 from app.domains import host_allowed
 from app.filenames import slugify
 from app.services.http_constants import DOWNLOAD_BROWSER_HEADERS, NEWS_MARKERS
+
+logger = logging.getLogger(__name__)
 
 _PLACEHOLDER = re.compile(r"(?:\.{3}|…)")
 
@@ -138,7 +141,8 @@ async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict
             for href in fulltext_links(content, final_url)[:4]:
                 try:
                     hop_url, hop_content, hop_type = await _fetch(client, href)
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("fulltext hop failed url=%s err=%s", href, exc)
                     continue
                 if is_usable_npa_page(hop_url, hop_content, hop_type):
                     final_url, content, content_type = hop_url, hop_content, hop_type

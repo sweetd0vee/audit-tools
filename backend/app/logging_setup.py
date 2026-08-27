@@ -6,7 +6,7 @@ import time
 import uuid
 from contextvars import ContextVar
 
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import settings
 
@@ -38,10 +38,10 @@ def configure_logging() -> None:
         handler.addFilter(filt)
         root.addHandler(handler)
     else:
-        for handler in root.handlers:
-            handler.addFilter(filt)
-            if handler.formatter is None:
-                handler.setFormatter(formatter)
+        for existing in root.handlers:
+            existing.addFilter(filt)
+            if existing.formatter is None:
+                existing.setFormatter(formatter)
 
     for name in _QUIET_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
@@ -71,13 +71,13 @@ class RequestLogMiddleware:
         started = time.perf_counter()
         status_code = 500
 
-        async def send_wrapper(message: dict) -> None:
+        async def send_wrapper(message: Message) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = int(message.get("status") or 500)
                 headers = list(message.get("headers") or [])
                 headers.append((b"x-request-id", rid.encode("ascii")))
-                message = {**message, "headers": headers}
+                message["headers"] = headers
             await send(message)
 
         try:

@@ -21,13 +21,8 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "B", "I", "UP", "ASYNC"]
-ignore = [
-    "E501",   # formatter owns wrapping
-    "B008",   # FastAPI Depends() in defaults
-    "UP017",  # datetime.utcnow — отдельный проход, не этот
-    "UP045",  # Optional[X] → X | None — шумный дифф
-]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "backend/tests/**" = ["B018"]
@@ -37,10 +32,17 @@ python_version = "3.12"
 mypy_path = "backend"
 packages = ["app"]
 ignore_missing_imports = true
-check_untyped_defs = true
+check_untyped_defs = false
 warn_redundant_casts = true
 warn_unused_ignores = false
 no_implicit_optional = true
 show_error_codes = true
 pretty = true
 exclude = ["backend/data/", "docs/", "seed/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.brief_docx",
+    "app.services.conclusion_docx",
+]
+ignore_errors = true

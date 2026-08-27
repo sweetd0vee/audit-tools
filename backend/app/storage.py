@@ -96,6 +96,13 @@ class CaseStore:
                 cases.append(CaseState.model_validate_json(state_path.read_text(encoding="utf-8")))
         return cases
 
+    def append_jsonl(self, case_id: str, rel_path: str, payload: dict) -> Path:
+        path = self.case_dir(case_id) / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return path
+
     def write_manifest(self, case_id: str, payload: dict) -> Path:
         path = self.case_dir(case_id) / "manifest.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

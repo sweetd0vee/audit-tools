@@ -24,7 +24,7 @@ def existing_cards(state: CaseState, *, limit: int = 8000) -> str:
     blocks = []
     for item in state.knowledge:
         if item.summary_status == "ok" and (item.summary or "").strip():
-            body = item.summary.strip()
+            body = (item.summary or "").strip()
             if len(body) > limit:
                 body = body[:limit] + "\n…"
             blocks.append(f"# {item.title}\n{body}")
