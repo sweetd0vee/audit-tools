@@ -82,7 +82,6 @@ class TestBriefDocx(unittest.TestCase):
             write_brief_docx(
                 path,
                 inspection_name="Проверка аренды",
-                period="2025",
                 keywords=["аренда", "НДС"],
                 case_id="3a23fb6db4a9",
                 overview="Смотрите аренду в [1].",
@@ -292,7 +291,6 @@ class TestTotalParse(unittest.TestCase):
             write_total_docx(
                 path,
                 inspection_name="Проверка аренды",
-                period="2025",
                 keywords=["аренда"],
                 case_id="c1",
                 body="## Суть темы\nДоговор аренды [1].",
@@ -336,7 +334,6 @@ class TestProgramDocx(unittest.TestCase):
             write_program_docx(
                 path,
                 inspection_name="Проверка аренды коммерческой недвижимости",
-                period="2025",
                 keywords=["аренда", "НДС"],
                 case_id="3a23fb6db4a9",
                 body="## Вопросы, подлежащие аудиту\n\n1. Анализ договоров аренды. Критерий: [1].",
@@ -354,8 +351,8 @@ class TestProgramDocx(unittest.TestCase):
             info_text = "\n".join(cell.text for row in info.rows for cell in row.cells)
             self.assertIn("Название проверки", info_text)
             self.assertIn("Проверка аренды коммерческой недвижимости", info_text)
-            self.assertIn("Аудируемый период", info_text)
-            self.assertIn("2025", info_text)
+            self.assertNotIn("Аудируемый период", info_text)
+            self.assertNotIn("2025", info_text)
             header = " ".join(cell.text for cell in questions_table.rows[0].cells)
             self.assertIn("Вопросы, подлежащие аудиту", header)
             body_text = "\n".join(
@@ -436,7 +433,6 @@ class TestProgramItems(unittest.TestCase):
             "program_user",
             inspection="Проверка аренды",
             keywords="аренда",
-            period="2025",
             document_catalog="",
             catalog="",
             fragments="",

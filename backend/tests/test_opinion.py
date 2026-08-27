@@ -91,7 +91,6 @@ class TestOpinionDocx(unittest.TestCase):
             write_opinion_docx(
                 path,
                 inspection_name="Проверка аренды коммерческой недвижимости",
-                period="2025",
                 keywords=["аренда"],
                 case_id="abc123",
                 body=body,
@@ -127,7 +126,6 @@ class TestOpinionDocx(unittest.TestCase):
             write_opinion_docx(
                 path,
                 inspection_name="Проверка аренды коммерческой недвижимости",
-                period=None,
                 keywords=["аренда"],
                 case_id="c1",
                 body=body,
@@ -146,7 +144,6 @@ class TestOpinionDocx(unittest.TestCase):
             write_opinion_docx(
                 path,
                 inspection_name="Проверка кассы",
-                period=None,
                 keywords=[],
                 case_id="c1",
                 body="## Аудиторское мнение\nКраткий вывод по подтверждённым гипотезам.",
@@ -165,7 +162,6 @@ class TestOpinionPrompts(unittest.TestCase):
             "opinion_user",
             inspection="Проверка аренды",
             keywords="аренда",
-            period="2025",
             document_catalog="",
             hypotheses_block="1. тест",
             program_block="",

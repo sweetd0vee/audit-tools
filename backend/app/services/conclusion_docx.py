@@ -84,11 +84,11 @@ _TAX_HINTS = ("налог", "ндс", "плательщик", "налогооб�
 _GENERAL_LABELS = (
     "Основание проведения аудита",
     "Срок проведения",
-    "Аудируемый период",
     "Группа аудиторов",
     "Вид аудита",
     "Дата составления заключения",
 )
+_DROPPED_GENERAL_LABELS = ("Аудируемый период",)
 
 
 @dataclass
@@ -208,15 +208,13 @@ def _clean_paragraphs(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def default_general_items(period: str | None) -> list[tuple[str, str]]:
-    period_s = (period or "").strip() or "уточняется"
+def default_general_items() -> list[tuple[str, str]]:
     return [
         (
             "Основание проведения аудита",
             "уточняется (приказ / план работы службы внутреннего аудита — заполняет аудитор)",
         ),
         ("Срок проведения", "уточняется"),
-        ("Аудируемый период", period_s),
         ("Группа аудиторов", "заполняет аудитор"),
         ("Вид аудита", "Тематическая аудиторская проверка"),
         ("Дата составления заключения", "заполняет аудитор"),
@@ -276,10 +274,11 @@ def _parse_observation_block(
     )
 
 
-def _parse_general_items(lines: list[str], period: str | None) -> list[tuple[str, str]]:
+def _parse_general_items(lines: list[str]) -> list[tuple[str, str]]:
     items: list[tuple[str, str]] = []
     current_label = ""
     current_lines: list[str] = []
+    known_labels = _GENERAL_LABELS + _DROPPED_GENERAL_LABELS
 
     def flush() -> None:
         nonlocal current_label, current_lines
@@ -293,9 +292,11 @@ def _parse_general_items(lines: list[str], period: str | None) -> list[tuple[str
     for raw in lines:
         stripped = raw.strip()
         bare = _bare(stripped)
-        label = next((lab for lab in _GENERAL_LABELS if bare.lower().startswith(lab.lower())), None)
+        label = next((lab for lab in known_labels if bare.lower().startswith(lab.lower())), None)
         if label:
             flush()
+            if label in _DROPPED_GENERAL_LABELS:
+                continue
             current_label = label
             rest = bare[len(label) :].lstrip(" .:–-")
             current_lines = [rest] if rest else []
@@ -304,9 +305,9 @@ def _parse_general_items(lines: list[str], period: str | None) -> list[tuple[str
             current_lines.append(raw)
     flush()
     if not items:
-        return default_general_items(period)
+        return default_general_items()
     have = {label.lower() for label, _ in items}
-    for label, value in default_general_items(period):
+    for label, value in default_general_items():
         if label.lower() not in have:
             items.append((label, value))
     return items
@@ -316,7 +317,6 @@ def fallback_from_hypotheses(
     hypotheses: list[dict[str, str]],
     *,
     leftover: str = "",
-    period: str | None = None,
     inspection_name: str | None = None,
 ) -> ConclusionDocument:
     observations: list[Observation] = []
@@ -376,7 +376,7 @@ def fallback_from_hypotheses(
             ReportSection(
                 roman="IV",
                 title=_SECTION_LAST.rstrip("."),
-                general_items=default_general_items(period),
+                general_items=default_general_items(),
                 kind="general",
             ),
         ]
@@ -387,7 +387,6 @@ def parse_conclusion_markdown(
     md: str,
     *,
     hypotheses: list[dict[str, str]] | None = None,
-    period: str | None = None,
     inspection_name: str | None = None,
 ) -> ConclusionDocument:
     hypotheses = hypotheses or []
@@ -466,7 +465,7 @@ def parse_conclusion_markdown(
                 current = ReportSection(
                     roman=code or "IV",
                     title=title or _SECTION_LAST.rstrip("."),
-                    general_items=_parse_general_items(body_lines, period),
+                    general_items=_parse_general_items(body_lines),
                     kind="general",
                 )
                 close_current()
@@ -500,12 +499,12 @@ def parse_conclusion_markdown(
     if not observation_sections:
         leftover_text = _clean_paragraphs("\n".join(leftovers))
         return fallback_from_hypotheses(
-            hypotheses, leftover=leftover_text, period=period, inspection_name=inspection_name
+            hypotheses, leftover=leftover_text, inspection_name=inspection_name
         )
 
     return ConclusionDocument(
         sections=_canonicalize_report(
-            sections, period=period, inspection_name=inspection_name
+            sections, inspection_name=inspection_name
         )
     )
 
@@ -523,7 +522,6 @@ def _roman_to_int(value: str) -> int:
 def _canonicalize_report(
     sections: list[ReportSection],
     *,
-    period: str | None = None,
     inspection_name: str | None = None,
 ) -> list[ReportSection]:
     observations: list[Observation] = []
@@ -543,7 +541,7 @@ def _canonicalize_report(
         general = ReportSection(
             roman="IV",
             title=_SECTION_LAST.rstrip("."),
-            general_items=default_general_items(period),
+            general_items=default_general_items(),
             kind="general",
         )
     else:
@@ -594,7 +592,6 @@ def ensure_all_hypotheses(
     report: ConclusionDocument,
     hypotheses: list[dict[str, str]],
     *,
-    period: str | None = None,
     inspection_name: str | None = None,
 ) -> ConclusionDocument:
     missing = missing_hypothesis_rows(report, hypotheses)
@@ -602,14 +599,14 @@ def ensure_all_hypotheses(
         if iter_observations(report):
             return ConclusionDocument(
                 sections=_canonicalize_report(
-                    report.sections, period=period, inspection_name=inspection_name
+                    report.sections, inspection_name=inspection_name
                 )
             )
         return fallback_from_hypotheses(
-            hypotheses, period=period, inspection_name=inspection_name
+            hypotheses, inspection_name=inspection_name
         )
     extra = fallback_from_hypotheses(
-        missing, period=period, inspection_name=inspection_name
+        missing, inspection_name=inspection_name
     )
     extra_obs = iter_observations(extra)
     sections = list(report.sections)
@@ -622,7 +619,7 @@ def ensure_all_hypotheses(
         obs_sec.observations.extend(extra_obs)
     return ConclusionDocument(
         sections=_canonicalize_report(
-            sections, period=period, inspection_name=inspection_name
+            sections, inspection_name=inspection_name
         )
     )
 
@@ -1043,10 +1040,7 @@ def _next_cover_drawing_id() -> int:
     return _COVER_DRAWING_ID
 
 
-def _cover_year(period: str | None) -> str:
-    years = re.findall(r"20\d{2}", period or "")
-    if years:
-        return years[-1]
+def _cover_year() -> str:
     return str(date.today().year)
 
 
@@ -1176,7 +1170,6 @@ def _write_title_page(
     doc: Document,
     *,
     inspection_name: str,
-    period: str | None,
     font: str,
 ) -> None:
     paragraph = doc.add_paragraph()
@@ -1217,7 +1210,7 @@ def _write_title_page(
     )
     _add_cover_textbox(
         paragraph,
-        f"Минск {_cover_year(period)}",
+        f"Минск {_cover_year()}",
         left_cm=3.0,
         top_cm=26.6,
         width_cm=5.8,
@@ -1366,7 +1359,6 @@ def write_conclusion_docx(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     case_id: str,
     opinion_body: str,
     report: ConclusionDocument,
@@ -1394,7 +1386,7 @@ def write_conclusion_docx(
     _add_page_field(footer, font=font, size=9)
 
     _enable_update_fields(doc)
-    _write_title_page(doc, inspection_name=inspection_name, period=period, font=font)
+    _write_title_page(doc, inspection_name=inspection_name, font=font)
     _write_toc(doc, report, font=font, opinion_body=opinion_body or "")
 
     _add_roman_heading(doc, "I", _SECTION_I, font=font, bookmark="sec_I")

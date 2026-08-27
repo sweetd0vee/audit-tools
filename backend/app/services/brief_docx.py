@@ -348,7 +348,6 @@ def _new_doc_with_title(
     footer_text: str,
     title_text: str,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     note_text: str,
 ) -> Document:
@@ -378,9 +377,8 @@ def _new_doc_with_title(
 
     meta = doc.add_paragraph()
     meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    period_s = period or "не указан"
     kws = ", ".join(keywords) if keywords else "—"
-    mr = meta.add_run(f"Период: {period_s}. Ключевые слова: {kws}")
+    mr = meta.add_run(f"Ключевые слова: {kws}")
     _set_run_font(mr, size=11, italic=True)
 
     note = doc.add_paragraph()
@@ -456,7 +454,6 @@ def write_program_docx(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     body: str,
@@ -489,10 +486,9 @@ def write_program_docx(
     info_widths = [_PROGRAM_LABEL_W, _PROGRAM_VALUE_W]
     q_widths = [_PROGRAM_NUM_W, _PROGRAM_Q_W]
 
-    info = _add_program_table(doc, 5, info_widths, bordered=True)
+    info = _add_program_table(doc, 4, info_widths, bordered=True)
     info_rows = [
         ("Название проверки", inspection_name or ""),
-        ("Аудируемый период", period or "уточняется"),
         ("Сроки проведения", ""),
         ("Руководитель проверки", ""),
         ("Члены рабочей группы", ""),
@@ -565,7 +561,6 @@ def write_total_docx(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     body: str,
@@ -580,7 +575,6 @@ def write_total_docx(
         ),
         title_text="Конспект по теме (знания модели)",
         inspection_name=inspection_name,
-        period=period,
         keywords=keywords,
         note_text=(
             "Краткий конспект самого важного по теме из знаний языковой модели, "
@@ -614,7 +608,6 @@ def write_brief_docx(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     overview: str,
@@ -628,7 +621,6 @@ def write_brief_docx(
         footer_text=f"Саммари НПА · {inspection_name} · кейс {case_id} · черновик",
         title_text="Саммари нормативной базы",
         inspection_name=inspection_name,
-        period=period,
         keywords=keywords,
         note_text=(
             "Карточка существенного по каждому акту: только нормы, которые важны "
@@ -795,7 +787,6 @@ def write_opinion_docx(
     path: Path,
     *,
     inspection_name: str,
-    period: str | None,
     keywords: list[str],
     case_id: str,
     body: str,
@@ -831,13 +822,6 @@ def write_opinion_docx(
         sub.paragraph_format.space_after = Pt(8)
         sr = sub.add_run(inspection_name.strip())
         _set_run_font(sr, size=_OPINION_FONT_SIZE, bold=True, font=font)
-
-    period_s = period or "уточняется"
-    meta = doc.add_paragraph()
-    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    meta.paragraph_format.space_after = Pt(10)
-    mr = meta.add_run(f"Аудируемый период: {period_s}")
-    _set_run_font(mr, size=12, italic=True, font=font)
 
     note = doc.add_paragraph()
     note.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY

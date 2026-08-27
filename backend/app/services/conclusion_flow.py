@@ -323,7 +323,7 @@ async def _compose_remaining_observations(
         if _has_general_section(body)
         else (
             " напиши раздел IV «Общая информация об аудиторской проверке» "
-            "с полями из канона (основание, срок, период, группа, вид, дата)."
+            "с полями из канона (основание, срок, группа, вид, дата)."
         )
     )
     program_md = _clip(read_truncated_md(resolve_program_file, state.case_id, limit=16000), 9000)
@@ -435,11 +435,9 @@ async def build_conclusion_events(
         raise ValueError("Модель вернула пустое аудиторское заключение.")
 
     name = (state.inspection_name or "").strip()
-    period = state.period
     report = parse_conclusion_markdown(
         body,
         hypotheses=hypotheses,
-        period=period,
         inspection_name=name,
     )
     missing = missing_hypothesis_rows(report, hypotheses)
@@ -466,7 +464,6 @@ async def build_conclusion_events(
             report = parse_conclusion_markdown(
                 body,
                 hypotheses=hypotheses,
-                period=period,
                 inspection_name=name,
             )
             missing = missing_hypothesis_rows(report, hypotheses)
@@ -476,7 +473,6 @@ async def build_conclusion_events(
     report = ensure_all_hypotheses(
         report,
         hypotheses,
-        period=period,
         inspection_name=name,
     )
     paths = artifact_paths(case_id, name, CONCLUSION_SPEC)
@@ -488,7 +484,6 @@ async def build_conclusion_events(
     _write_markdown(
         paths.md,
         inspection_name=name,
-        period=period,
         keywords=state.keywords,
         case_id=case_id,
         body=body,
@@ -498,7 +493,6 @@ async def build_conclusion_events(
     write_conclusion_docx(
         paths.primary,
         inspection_name=name,
-        period=period,
         case_id=case_id,
         opinion_body=opinion_body,
         report=report,

@@ -93,7 +93,6 @@ class TestHypothesesXlsx(unittest.TestCase):
             write_hypotheses_xlsx(
                 path,
                 inspection_name="Проверка аренды",
-                period="2025",
                 keywords=["аренда", "НДС"],
                 case_id="abc123",
                 rows=rows,
