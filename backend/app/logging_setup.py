@@ -14,7 +14,7 @@ request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] [%(request_id)s] %(message)s"
 _QUIET_LOGGERS = ("httpx", "httpcore", "httpcore.http11", "httpcore.connection")
-_NOISY_PATHS = {"/", "/api/v1/health", "/docs", "/openapi.json", "/redoc"}
+_NOISY_PATHS = {"/", "/health", "/api/v1/health", "/docs", "/openapi.json", "/redoc"}
 
 
 class RequestIdFilter(logging.Filter):

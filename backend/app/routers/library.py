@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from app.http import require_case, sse_response
+from app import __version__
+from app.http import locked_events, require_case, sse_response
 from app.models import (
     CaseStatus,
     CaseSummary,
@@ -18,19 +18,10 @@ from app.models import (
     SelectDocumentsResponse,
 )
 from app.services.library_flow import run_download, run_propose, run_propose_events, run_select
-from app.storage import store
+from app.storage import async_lock, store
 
 router = APIRouter(prefix="/api/v1", tags=["library"])
 logger = logging.getLogger(__name__)
-_CASE_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-def _case_lock(case_id: str) -> asyncio.Lock:
-    lock = _CASE_LOCKS.get(case_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _CASE_LOCKS[case_id] = lock
-    return lock
 
 
 @router.post("/cases", response_model=CreateCaseResponse)
@@ -78,7 +69,8 @@ def get_case(case_id: str):
 async def propose(case_id: str) -> ProposeResponse:
     require_case(case_id)
     try:
-        state = await run_propose(case_id)
+        async with async_lock(case_id):
+            state = await run_propose(case_id)
     except Exception as exc:  # noqa: BLE001
         logger.exception("propose failed case=%s", case_id)
         raise HTTPException(status_code=502, detail=f"Propose failed: {exc}") from exc
@@ -100,12 +92,12 @@ async def propose(case_id: str) -> ProposeResponse:
 async def propose_stream(case_id: str):
     """SSE stream: status / chat / token / result / saved / error."""
     require_case(case_id)
-    return sse_response(run_propose_events(case_id))
+    return sse_response(locked_events(case_id, run_propose_events(case_id)))
 
 
 @router.post("/cases/{case_id}/select", response_model=SelectDocumentsResponse)
 async def select(case_id: str, body: SelectDocumentsRequest) -> SelectDocumentsResponse:
-    async with _case_lock(case_id):
+    async with async_lock(case_id):
         try:
             state = run_select(
                 case_id,
@@ -129,7 +121,7 @@ async def select(case_id: str, body: SelectDocumentsRequest) -> SelectDocumentsR
 @router.post("/cases/{case_id}/download", response_model=DownloadResponse)
 async def download(case_id: str) -> DownloadResponse:
     require_case(case_id)
-    async with _case_lock(case_id):
+    async with async_lock(case_id):
         try:
             state = await run_download(case_id)
         except ValueError as exc:
@@ -212,4 +204,4 @@ def library_archive(case_id: str):
 
 @router.get("/health")
 def health():
-    return {"ok": True, "status": CaseStatus.created}
+    return {"status": "ok", "version": __version__}

@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.clock import utc_now
+
 
 def new_id() -> str:
     return uuid4().hex[:12]
@@ -121,8 +123,8 @@ class CaseState(BaseModel):
     inspection_name: str
     keywords: list[str] = Field(default_factory=list)
     notes: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     topics: list[str] = Field(default_factory=list)
     documents: list[ProposedDocument] = Field(default_factory=list)
     knowledge: list[KnowledgeItem] = Field(default_factory=list)

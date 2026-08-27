@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
+from app.clock import utc_now
 from app.config import settings
 from app.filenames import safe_stem
 from app.prompts import prompt
@@ -92,7 +92,7 @@ async def sync_openwebui(case_id: str, api_key: str | None = None) -> dict:
             case_id,
             "trail/openwebui.jsonl",
             {
-                "ts": datetime.utcnow().isoformat(),
+                "ts": utc_now().isoformat(),
                 "case_id": case_id,
                 "knowledge_id": kid,
                 "uploaded": uploaded,

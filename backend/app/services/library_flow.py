@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
 
+from app.clock import utc_now
 from app.models import CaseState, CaseStatus, ProposedDocument
 from app.services.downloader import NEWS_MARKERS, download_url, usable_url
 from app.services.extra_titles import (
@@ -38,7 +38,7 @@ def _persist_propose(state: CaseState, result: dict) -> CaseState:
     ]
     state.status = CaseStatus.proposed
     state.meta["propose_model"] = result["model"]
-    state.meta["proposed_at"] = datetime.utcnow().isoformat()
+    state.meta["proposed_at"] = utc_now().isoformat()
     state.meta["propose_raw"] = result.get("raw")
     state.meta["propose_elapsed_ms"] = result.get("elapsed_ms")
     state.meta["propose_system_prompt"] = result.get("system_prompt")
@@ -137,7 +137,7 @@ def run_select(
         doc.found_url = cleaned
 
     state.status = CaseStatus.selected
-    state.meta["selected_at"] = datetime.utcnow().isoformat()
+    state.meta["selected_at"] = utc_now().isoformat()
     if extras:
         state.meta["extra_titles"] = extras
     store.save(state)
@@ -228,7 +228,7 @@ def _record_download(
             "sha256": result["sha256"],
             "bytes": result["bytes"],
             "text_extract": result.get("text_extract"),
-            "downloaded_at": datetime.utcnow().isoformat(),
+            "downloaded_at": utc_now().isoformat(),
         }
     )
 
@@ -281,7 +281,7 @@ async def _download_selected(
                     "url": doc.found_url,
                     "source": "cached",
                     "local_path": doc.local_path,
-                    "downloaded_at": datetime.utcnow().isoformat(),
+                    "downloaded_at": utc_now().isoformat(),
                 }
             )
             continue
@@ -354,7 +354,7 @@ async def _download_selected(
 
     ok = sum(1 for d in selected if d.download_status == "ok")
     state.status = CaseStatus.ready if ok > 0 else CaseStatus.failed
-    state.meta["downloaded_at"] = datetime.utcnow().isoformat()
+    state.meta["downloaded_at"] = utc_now().isoformat()
     state.meta["library_dir"] = str(lib_dir)
 
     store.write_manifest(

@@ -1,13 +1,62 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import re
+import threading
 import zipfile
-from datetime import datetime
 from pathlib import Path
 
+from app.clock import utc_now
 from app.config import settings
 from app.filenames import slugify
 from app.models import CaseState, CaseStatus, new_id
+
+# Hex ids from new_id() plus the demo folder `c1`. Dots and slashes are out:
+# case_dir joins onto data_root, so `../` must not become a path.
+CASE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$")
+
+_THREAD_LOCKS: dict[str, threading.RLock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+_ASYNC_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+class InvalidCaseId(ValueError):
+    """case_id is not a safe directory name under data_root."""
+
+
+def validate_case_id(case_id: str) -> str:
+    text = (case_id or "").strip()
+    if not CASE_ID_RE.fullmatch(text) or ".." in text:
+        raise InvalidCaseId("Некорректный идентификатор кейса")
+    return text
+
+
+def thread_lock(case_id: str) -> threading.RLock:
+    key = validate_case_id(case_id)
+    with _THREAD_LOCKS_GUARD:
+        lock = _THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _THREAD_LOCKS[key] = lock
+        return lock
+
+
+def async_lock(case_id: str) -> asyncio.Lock:
+    key = validate_case_id(case_id)
+    lock = _ASYNC_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ASYNC_LOCKS[key] = lock
+    return _ASYNC_LOCKS[key]
+
+
+def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding=encoding)
+    os.replace(tmp, path)
 
 
 class CaseStore:
@@ -18,7 +67,7 @@ class CaseStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def case_dir(self, case_id: str) -> Path:
-        return self.root / case_id
+        return self.root / validate_case_id(case_id)
 
     def _state_path(self, case_id: str) -> Path:
         return self.case_dir(case_id) / "case.json"
@@ -77,10 +126,12 @@ class CaseStore:
         return state
 
     def save(self, state: CaseState) -> None:
-        state.updated_at = datetime.utcnow()
+        validate_case_id(state.case_id)
+        state.updated_at = utc_now()
         path = self._state_path(state.case_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+        payload = state.model_dump_json(indent=2)
+        with thread_lock(state.case_id):
+            atomic_write_text(path, payload)
 
     def get(self, case_id: str) -> CaseState:
         path = self._state_path(case_id)
@@ -91,6 +142,12 @@ class CaseStore:
     def list_cases(self) -> list[CaseState]:
         cases: list[CaseState] = []
         for child in sorted(self.root.iterdir(), reverse=True):
+            if not child.is_dir():
+                continue
+            try:
+                validate_case_id(child.name)
+            except InvalidCaseId:
+                continue
             state_path = child / "case.json"
             if state_path.exists():
                 cases.append(CaseState.model_validate_json(state_path.read_text(encoding="utf-8")))
@@ -99,13 +156,14 @@ class CaseStore:
     def append_jsonl(self, case_id: str, rel_path: str, payload: dict) -> Path:
         path = self.case_dir(case_id) / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        with thread_lock(case_id):
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return path
 
     def write_manifest(self, case_id: str, payload: dict) -> Path:
         path = self.case_dir(case_id) / "manifest.json"
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
         return path
 
 

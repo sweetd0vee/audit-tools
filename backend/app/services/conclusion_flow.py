@@ -22,22 +22,19 @@ from app.services.conclusion_docx import (
     write_conclusion_docx,
 )
 from app.services.document_artifact import (
+    ArtifactOutcome,
+    ArtifactPaths,
     ArtifactSpec,
-    ElapsedTimer,
+    ComposeNotice,
     artifact_download_name,
-    artifact_paths,
     artifact_stale,
     artifact_status,
     case_stale_extra,
     complete_llm,
     event_result,
     resolve_artifact_file,
-    reuse_artifact_events,
-    save_artifact_meta,
-    sse_result,
-    sse_status,
+    run_llm_artifact_events,
     upstream_built_at,
-    write_sources_json,
 )
 from app.services.hypotheses_flow import selected_hypothesis_rows
 from app.services.knowledge_ingest import ingest_library
@@ -147,37 +144,6 @@ def _write_markdown(
         "",
     ]
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-
-
-def _save_conclusion_meta(
-    state: CaseState,
-    *,
-    docx: Path,
-    md: Path,
-    body: str,
-    font: str,
-    hypotheses: list[dict[str, str]],
-    sources: list[dict],
-) -> dict:
-    selection = state.meta.get("hypotheses_selection") or {}
-    return save_artifact_meta(
-        state,
-        CONCLUSION_SPEC,
-        docx=docx,
-        md=md,
-        sources=sources,
-        body=body,
-        extra={
-            "schema": CONCLUSION_SCHEMA,
-            "font": font,
-            "keywords": list(state.keywords),
-            "selected_ns": [int(row["n"]) for row in hypotheses],
-            **upstream_built_at(
-                state, "hypotheses", "opinion", "program", "brief", "total"
-            ),
-            "selection_at": selection.get("selected_at"),
-        },
-    )
 
 
 def _clip(text: str, limit: int) -> str:
@@ -360,57 +326,93 @@ async def _compose_remaining_observations(
     )
 
 
-async def build_conclusion_events(
-    case_id: str,
-    force: bool = False,
-    font: str | None = None,
-) -> AsyncIterator[dict]:
-    timer = ElapsedTimer()
-    elapsed = timer.ms
-    resolved_font = parse_document_font(font) if font else DEFAULT_FONT
-
-    yield sse_status(elapsed(), "Собираю подтверждённые гипотезы, мнение и материалы проверки…")
-    state = ingest_library(case_id)
-    hypotheses = selected_hypothesis_rows(state)
-    if not hypotheses:
+def _require_conclusion_inputs(state: CaseState) -> None:
+    if not selected_hypothesis_rows(state):
         raise ValueError(
             "Сначала подтвердите гипотезы, которые войдут в заключение: "
             "`утверждаю гипотезы 1, 3, 5` или "
             "`утверждаю гипотезы все с приоритетом высокий`. "
             "Если чеклиста ещё нет — напишите `гипотезы`."
         )
-    opinion_body = load_opinion_body(case_id)
-    if not opinion_body:
+    if not load_opinion_body(state.case_id):
         raise ValueError(
             "Сначала соберите раздел I: `аудиторское мнение` "
             "(`-c` Calibri или `-t` Times New Roman). "
             "Текст мнения войдёт в заключение как есть."
         )
 
-    cached = reuse_artifact_events(
-        case_id,
-        CONCLUSION_SPEC,
-        force=force,
-        stale=_conclusion_stale(state, resolved_font),
-        already_message="Аудиторское заключение уже собрано — отдаю файл.",
-        elapsed_ms=elapsed(),
-    )
-    if cached:
-        for event in cached:
-            yield event
-        return
 
-    yield sse_status(elapsed(), "Отбираю фрагменты из приложенных документов…")
-    sources = collect_brief_sources(state)
-
-    yield sse_status(
-        elapsed(),
-        (
-            f"Пишу черновик аудиторского заключения ({resolved_font}): "
-            f"{len(hypotheses)} наблюдений по подтверждённым гипотезам. "
-            "Это может занять несколько минут…"
-        ),
+def _conclusion_prepare(
+    state: CaseState,
+) -> tuple[list[dict[str, str]], list[dict], str]:
+    return (
+        selected_hypothesis_rows(state),
+        collect_brief_sources(state),
+        load_opinion_body(state.case_id),
     )
+
+
+def _persist_conclusion(
+    state: CaseState,
+    paths: ArtifactPaths,
+    body: str,
+    ctx: tuple[list[dict[str, str]], list[dict], str],
+    *,
+    font: str,
+) -> ArtifactOutcome:
+    hypotheses, sources, opinion_body = ctx
+    name = (state.inspection_name or "").strip()
+    report = parse_conclusion_markdown(
+        body,
+        hypotheses=hypotheses,
+        inspection_name=name,
+    )
+    report = ensure_all_hypotheses(report, hypotheses, inspection_name=name)
+    _write_markdown(
+        paths.md,
+        inspection_name=name,
+        keywords=state.keywords,
+        case_id=state.case_id,
+        body=body,
+        font=font,
+        hypotheses=hypotheses,
+    )
+    write_conclusion_docx(
+        paths.primary,
+        inspection_name=name,
+        case_id=state.case_id,
+        opinion_body=opinion_body,
+        report=report,
+        font=font,
+    )
+    selection = state.meta.get("hypotheses_selection") or {}
+    return ArtifactOutcome(
+        body=body,
+        sources=sources,
+        extra={
+            "schema": CONCLUSION_SCHEMA,
+            "font": font,
+            "keywords": list(state.keywords),
+            "selected_ns": [int(row["n"]) for row in hypotheses],
+            **upstream_built_at(
+                state, "hypotheses", "opinion", "program", "brief", "total"
+            ),
+            "selection_at": selection.get("selected_at"),
+        },
+        digest=_digest(report),
+        sources_file={
+            "font": font,
+            "selected_ns": [int(row["n"]) for row in hypotheses],
+            "sources": sources,
+        },
+    )
+
+
+async def _compose_conclusion_stream(
+    state: CaseState,
+    ctx: tuple[list[dict[str, str]], list[dict], str],
+):
+    hypotheses, sources, opinion_body = ctx
     body = await complete_llm(
         _compose_conclusion(
             state,
@@ -421,7 +423,6 @@ async def build_conclusion_events(
         fail="Модель не собрала аудиторское заключение",
         empty="Модель вернула пустое аудиторское заключение.",
     )
-
     name = (state.inspection_name or "").strip()
     report = parse_conclusion_markdown(
         body,
@@ -432,7 +433,7 @@ async def build_conclusion_events(
     attempts = 0
     while missing and attempts < 2:
         ns = ", ".join(str(row.get("n")) for row in missing)
-        yield sse_status(elapsed(), f"Дописываю недостающие наблюдения по гипотезам {ns}…")
+        yield ComposeNotice(f"Дописываю недостающие наблюдения по гипотезам {ns}…")
         extra = await complete_llm(
             _compose_remaining_observations(
                 state,
@@ -454,48 +455,41 @@ async def build_conclusion_events(
         else:
             break
         attempts += 1
-    report = ensure_all_hypotheses(
-        report,
-        hypotheses,
-        inspection_name=name,
-    )
-    paths = artifact_paths(case_id, name, CONCLUSION_SPEC)
-    yield sse_status(elapsed(), "Собираю Word с аудиторским заключением…")
-    _write_markdown(
-        paths.md,
-        inspection_name=name,
-        keywords=state.keywords,
-        case_id=case_id,
-        body=body,
-        font=resolved_font,
-        hypotheses=hypotheses,
-    )
-    write_conclusion_docx(
-        paths.primary,
-        inspection_name=name,
-        case_id=case_id,
-        opinion_body=opinion_body,
-        report=report,
-        font=resolved_font,
-    )
-    write_sources_json(
-        paths.sources,
-        {
-            "font": resolved_font,
-            "selected_ns": [int(row["n"]) for row in hypotheses],
-            "sources": sources,
-        },
-    )
-    meta = _save_conclusion_meta(
-        state,
-        docx=paths.primary,
-        md=paths.md,
-        body=body,
-        font=resolved_font,
-        hypotheses=hypotheses,
-        sources=sources,
-    )
-    yield sse_result(elapsed(), meta, digest=_digest(report))
+    yield body
+
+
+async def build_conclusion_events(
+    case_id: str,
+    force: bool = False,
+    font: str | None = None,
+) -> AsyncIterator[dict]:
+    resolved_font = parse_document_font(font) if font else DEFAULT_FONT
+
+    async for event in run_llm_artifact_events(
+        case_id,
+        CONCLUSION_SPEC,
+        force=force,
+        start_message="Собираю подтверждённые гипотезы, мнение и материалы проверки…",
+        already_message="Аудиторское заключение уже собрано — отдаю файл.",
+        prepare_message="Отбираю фрагменты из приложенных документов…",
+        compose_message=lambda _state, ctx: (
+            f"Пишу черновик аудиторского заключения ({resolved_font}): "
+            f"{len(ctx[0])} наблюдений по подтверждённым гипотезам. "
+            "Это может занять несколько минут…"
+        ),
+        writing_message="Собираю Word с аудиторским заключением…",
+        load_state=ingest_library,
+        inspect=_require_conclusion_inputs,
+        is_stale=lambda state: _conclusion_stale(state, resolved_font),
+        prepare=_conclusion_prepare,
+        compose=_compose_conclusion_stream,
+        write=lambda state, paths, body, ctx: _persist_conclusion(
+            state, paths, body, ctx, font=resolved_font
+        ),
+        compose_fail="Модель не собрала аудиторское заключение",
+        empty_error="Модель вернула пустое аудиторское заключение.",
+    ):
+        yield event
 
 
 async def build_conclusion(

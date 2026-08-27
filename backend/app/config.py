@@ -98,5 +98,8 @@ class Settings(BaseSettings):
     # Observability
     log_level: str = "INFO"
 
+    # Upload into the case knowledge library (NPA text, not client Excel)
+    max_upload_bytes: int = 32 * 1024 * 1024
+
 
 settings = Settings()

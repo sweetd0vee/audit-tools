@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from app.clock import utc_now
 
 from app.config import settings
 from app.models import CaseState
@@ -258,7 +259,7 @@ def select_hypotheses(
     selected = [by_n[n] for n in selected_ns]
     payload = {
         "selected_ns": selected_ns,
-        "selected_at": datetime.utcnow().isoformat(),
+        "selected_at": utc_now().isoformat(),
         "hypotheses_built_at": (state.meta.get("hypotheses") or {}).get("built_at"),
         "count": len(selected_ns),
     }

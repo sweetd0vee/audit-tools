@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.models import CaseState
-from app.storage import store
+from app.storage import InvalidCaseId, async_lock, store
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,8 @@ SSE_HEADERS = {
 def require_case(case_id: str) -> CaseState:
     try:
         return store.get(case_id)
+    except InvalidCaseId as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -46,3 +48,9 @@ def sse_response(events: AsyncIterator[dict]) -> StreamingResponse:
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+async def locked_events(case_id: str, events: AsyncIterator[dict]) -> AsyncIterator[dict]:
+    async with async_lock(case_id):
+        async for event in events:
+            yield event

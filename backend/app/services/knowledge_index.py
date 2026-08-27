@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 
+from app.clock import utc_now
 from app.config import settings
 from app.models import CaseState, KnowledgeItem
 from app.services.chunker import chunk_text, keyword_score
@@ -11,7 +11,7 @@ from app.services.citations import extract_article_ref
 from app.services.knowledge_ingest import ingest_library, item_text
 from app.services.knowledge_retrieve import chunks_from_item
 from app.services.ollama_client import embed_texts
-from app.storage import store
+from app.storage import atomic_write_text, store
 
 
 def index_path(case_id: str) -> Path:
@@ -26,10 +26,7 @@ def load_index(case_id: str) -> dict:
 
 
 def save_index(case_id: str, payload: dict) -> None:
-    index_path(case_id).write_text(
-        json.dumps(payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_text(index_path(case_id), json.dumps(payload, ensure_ascii=False))
 
 
 def rebuild_index(case_id: str, state: CaseState | None = None) -> dict:
@@ -55,7 +52,7 @@ def rebuild_index(case_id: str, state: CaseState | None = None) -> dict:
             )
     payload = {
         "embed_model": settings.ollama_embed_model,
-        "built_at": datetime.utcnow().isoformat(),
+        "built_at": utc_now().isoformat(),
         "chunks": chunks_out,
     }
     save_index(case_id, payload)

@@ -8,8 +8,8 @@ re-exports the previous public names so callers and tests keep working.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime
 
+from app.clock import utc_now
 from app.services.document_artifact import ElapsedTimer, sse_status
 from app.services.knowledge_ask import ask
 from app.services.knowledge_index import embed_index, rebuild_index
@@ -75,7 +75,7 @@ async def build_knowledge_events(case_id: str) -> AsyncIterator[dict]:
         }
 
     state = store.get(case_id)
-    state.meta["knowledge_built_at"] = datetime.utcnow().isoformat()
+    state.meta["knowledge_built_at"] = utc_now().isoformat()
     store.save(state)
     yield {
         "type": "saved",

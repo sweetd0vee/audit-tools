@@ -4,13 +4,14 @@ import io
 import logging
 import traceback
 import zipfile
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.config import settings
-from app.http import require_case, sse_response
+from app.http import locked_events, require_case, sse_response
 from app.models import (
     AskRequest,
     AskResponse,
@@ -35,6 +36,7 @@ from app.services.conclusion_flow import (
     conclusion_status,
     resolve_conclusion_file,
 )
+from app.services.extract import TEXT_EXTS
 from app.services.hypotheses_flow import (
     build_hypotheses,
     build_hypotheses_events,
@@ -71,7 +73,7 @@ from app.services.total_flow import (
     total_download_name,
     total_status,
 )
-from app.storage import store
+from app.storage import async_lock, store
 
 router = APIRouter(prefix="/api/v1", tags=["knowledge"])
 logger = logging.getLogger(__name__)
@@ -92,7 +94,8 @@ async def _build_artifact(
     require_case(case_id)
     force = bool(body and body.force)
     try:
-        return await builder(case_id, force=force, **kwargs)
+        async with async_lock(case_id):
+            return await builder(case_id, force=force, **kwargs)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -102,7 +105,7 @@ async def _build_artifact(
 
 def _stream_artifact(case_id: str, events):
     require_case(case_id)
-    return sse_response(events)
+    return sse_response(locked_events(case_id, events))
 
 
 def _download_artifact(
@@ -127,10 +130,7 @@ def _download_artifact(
 
 @router.get("/cases/{case_id}/knowledge")
 def get_knowledge(case_id: str):
-    try:
-        state = ingest_library(case_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    state = require_case(case_id)
     return {
         "case_id": case_id,
         "status": state.status,
@@ -147,16 +147,34 @@ async def upload_knowledge(case_id: str, files: list[UploadFile] = File(...)):
     require_case(case_id)
     added = []
     errors = []
-    for f in files:
-        raw = await f.read()
-        if not raw:
-            errors.append({"filename": f.filename, "error": "empty file"})
-            continue
-        try:
-            item = add_uploaded_file(case_id, f.filename or "document.bin", raw)
-            added.append(item.model_dump())
-        except Exception as exc:  # noqa: BLE001
-            errors.append({"filename": f.filename, "error": str(exc)})
+    async with async_lock(case_id):
+        for f in files:
+            raw = await f.read()
+            if not raw:
+                errors.append({"filename": f.filename, "error": "empty file"})
+                continue
+            if len(raw) > settings.max_upload_bytes:
+                errors.append(
+                    {
+                        "filename": f.filename,
+                        "error": f"файл больше {settings.max_upload_bytes} байт",
+                    }
+                )
+                continue
+            suffix = Path(f.filename or "document.bin").suffix.lower() or ".bin"
+            if suffix not in TEXT_EXTS:
+                errors.append(
+                    {
+                        "filename": f.filename,
+                        "error": f"Неподдерживаемый тип файла: {suffix}",
+                    }
+                )
+                continue
+            try:
+                item = add_uploaded_file(case_id, f.filename or "document.bin", raw)
+                added.append(item.model_dump())
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"filename": f.filename, "error": str(exc)})
 
     state = store.get(case_id)
     return {
@@ -168,20 +186,23 @@ async def upload_knowledge(case_id: str, files: list[UploadFile] = File(...)):
 
 
 @router.post("/cases/{case_id}/knowledge/ingest")
-def ingest(case_id: str):
+async def ingest(case_id: str):
+    require_case(case_id)
     try:
-        state = ingest_library(case_id)
+        async with async_lock(case_id):
+            state = ingest_library(case_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"case_id": case_id, "items": [k.model_dump() for k in state.knowledge]}
 
 
 @router.post("/cases/{case_id}/knowledge/index")
-def index_knowledge(case_id: str):
+async def index_knowledge(case_id: str):
     """Collect chunks from downloaded txt without summaries or Open WebUI."""
     require_case(case_id)
-    payload = rebuild_index(case_id)
-    state = store.get(case_id)
+    async with async_lock(case_id):
+        payload = rebuild_index(case_id)
+        state = store.get(case_id)
     return {
         "case_id": case_id,
         "chunks": len(payload.get("chunks") or []),
@@ -198,7 +219,8 @@ async def build_stream(case_id: str):
 async def ask_knowledge(case_id: str, body: AskRequest) -> AskResponse:
     require_case(case_id)
     try:
-        result = await ask(case_id, body.question, body.top_k)
+        async with async_lock(case_id):
+            result = await ask(case_id, body.question, body.top_k)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -405,15 +427,16 @@ def download_hypotheses_md(case_id: str):
 
 
 @router.post("/cases/{case_id}/knowledge/hypotheses/select")
-def post_select_hypotheses(case_id: str, body: SelectHypothesesRequest):
+async def post_select_hypotheses(case_id: str, body: SelectHypothesesRequest):
     require_case(case_id)
     try:
-        return select_hypotheses(
-            case_id,
-            numbers=body.numbers,
-            all_high=body.all_high,
-            all_rows=body.all_rows,
-        )
+        async with async_lock(case_id):
+            return select_hypotheses(
+                case_id,
+                numbers=body.numbers,
+                all_high=body.all_high,
+                all_rows=body.all_rows,
+            )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

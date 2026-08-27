@@ -4,10 +4,11 @@ import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from inspect import isasyncgenfunction
 from pathlib import Path
 from typing import Any
 
+from app.clock import utc_now
 from app.config import settings
 from app.filenames import safe_stem
 from app.models import CaseState
@@ -163,7 +164,7 @@ def save_artifact_meta(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {
-        "built_at": datetime.utcnow().isoformat(),
+        "built_at": utc_now().isoformat(),
         "docx_path": str(docx),
         "md_path": str(md),
         "citations": len(sources),
@@ -268,6 +269,13 @@ class ArtifactOutcome:
     sources_file: Any = None
 
 
+@dataclass(frozen=True)
+class ComposeNotice:
+    """Extra SSE status from an async-generator `compose` (retry loops, etc.)."""
+
+    message: str
+
+
 async def run_llm_artifact_events(
     case_id: str,
     spec: ArtifactSpec,
@@ -293,6 +301,9 @@ async def run_llm_artifact_events(
     Domain code stays in the flow: `compose` talks to the model, `write`
     builds the document. Timeout, force, and meta persistence live here so
     a new artifact cannot drift from the others.
+
+    `compose` may be an async generator: yield `ComposeNotice` for extra
+    status lines, then yield the model result as the last non-notice value.
     """
     timer = ElapsedTimer()
     elapsed = timer.ms
@@ -324,7 +335,17 @@ async def run_llm_artifact_events(
     message = compose_message(state, ctx) if callable(compose_message) else compose_message
     yield sse_status(elapsed(), message)
     try:
-        result = await compose(state, ctx)
+        result = None
+        if isasyncgenfunction(compose):
+            async for item in compose(state, ctx):
+                if isinstance(item, ComposeNotice):
+                    yield sse_status(elapsed(), item.message)
+                else:
+                    result = item
+        else:
+            result = await compose(state, ctx)
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError(f"{compose_fail}: {exc}") from exc
     if empty_error is not None and isinstance(result, str) and not result.strip():

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
+from app.clock import utc_now
 from app.config import settings
 from app.prompts import prompt
 from app.services.citations import excerpt_for_cite, extract_article_ref, origin_url
@@ -47,7 +47,7 @@ def _append_ask_trail(
 ) -> None:
     sources = payload.get("sources") or []
     record = {
-        "ts": datetime.utcnow().isoformat(),
+        "ts": utc_now().isoformat(),
         "case_id": case_id,
         "question": question,
         "refused": bool(payload.get("refused")),
