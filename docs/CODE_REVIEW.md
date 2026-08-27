@@ -1,333 +1,107 @@
 # Code review: Audit Tools
 
-**Дата:** 27 августа 2026 (актуализация: `run_llm_artifact`, разрезан knowledge, атомарный store, ask-refuse, TestClient)  
-**Объект:** репозиторий `audit-tools`, ветка `main`, демо v0.0.1  
-**Объём своего кода:** ~12–14 тыс. строк Python (backend + Pipe + тесты), без форка Open WebUI  
-**Вердикт:** сильный доменный прототип с ясной архитектурой. Для демо СВА — готов. Для контура банка — нет: API без auth. Поиск по умолчанию локальный (SearXNG); DDG/Bing только по флагу. Пустая evidence → отказ, не преамбула кодекса.
+**Дата:** 27 августа 2026  
+**Объект:** `audit-tools`, `main`, демо v0.0.1  
+**Объём:** ~12–14 тыс. строк своего Python (backend + Pipe + тесты), без форка Open WebUI  
+**Вердикт:** сильный доменный прототип. Для демо СВА — готов. Для контура банка — нет: API без auth.
 
-Шкала: 1–10. Это оценка кода и инженерной гигиены, не качества юридической выдачи модели.
+Шкала 1–10 — код и инженерная гигиена, не качество юридической выдачи модели.
 
 | Измерение | Балл | Комментарий |
 |---|---|---|
-| Продуктовая архитектура | **8** | Сборка, не форк. HITL, норма ≠ факт, allowlist — закодированы, не только в README |
-| Доменный backend | **8** | Потоки документов читаются. Knowledge разрезан (ingest/index/summarize/ask). Артефакты — общий runner |
-| Pipe «Аудитор» | **7** | Тот же автомат, но маршрутизация в `intent.py` с тестами; HTTP-клей ~1.1k. Засев API, не ручной paste |
-| Retrieval / RAG | **7** | Hybrid + RRF + rerank + MMR — выше среднего для v0. Ask отказывает без evidence. Eval 20 вопросов есть |
-| Документы Word/Excel | **7** | Много тестов на парсер и docx. Генераторы тяжёлые, но изолированы |
-| Тесты | **7** | URL/docx + Pipe + retrieve/ask-refuse + 20 gold `eval_rag` + TestClient (health/case_id/upload) + concurrent save |
-| Безопасность контура | **6** | Loopback bind, CORS не `*`, DDG/Bing за флагом, hop редиректа в allowlist, `case_id` без `../`. Нет auth на API |
-| Операционка / DX | **10** | CI: ruff + mypy + pytest; логи с request id; версия API 0.0.1; PR режет `initial commit`. История main не схлопнута — это не дыра в tooling |
-| Документация | **8** | Редкость: видение, гайд, RAG, промпты — согласованы с кодом |
+| Продуктовая архитектура | **8** | Сборка, не форк. HITL, норма ≠ факт, allowlist — в коде |
+| Доменный backend | **8** | Knowledge разрезан. Артефакты — общий runner |
+| Pipe «Аудитор» | **7** | Маршрутизация в `intent.py` с тестами; HTTP-клей ~1.1k |
+| Retrieval / RAG | **7** | Hybrid + RRF + rerank + MMR. Ask отказывает без evidence. Eval 20 вопросов |
+| Документы Word/Excel | **7** | Тесты на парсер и docx. Генераторы тяжёлые, изолированы |
+| Тесты | **7** | URL/docx + Pipe + retrieve/ask-refuse + eval_rag + TestClient + concurrent save |
+| Безопасность контура | **6** | Loopback, CORS не `*`, DDG/Bing за флагом, hop в allowlist, `case_id` без `../`. Нет auth |
+| Операционка / DX | **10** | CI: ruff + mypy + pytest; request id; API 0.0.1 |
+| Документация | **8** | Видение, гайд, RAG, промпты согласованы с кодом |
 | **Итого как v0.0.1** | **8** | Демо выше среднего. Не «коробка в банк» |
-| **Итого как продукт банка** | **5** | Auth на API ещё нет. Локальность поиска — флаг `NPA_WEB_FALLBACK` (выкл. по умолчанию) |
+| **Итого как продукт банка** | **5** | Нет auth на API |
 
 ---
 
-## 1. Что здесь сделано хорошо
+## Что сделано правильно
 
-Не начинать ревью с «переписать». Каркас правильный.
-
-1. **Граница своего кода.** FastAPI — система записи проверки. Open WebUI — витрина. Ollama / SearXNG — инфраструктура. Pipe вызывает API и не дублирует download/RAG. Это редкая дисциплина для LLM-демо.
-2. **HITL в коде, не в промпте.** Скачивание только после `/select`. Мнение только после `утверждаю гипотезы`. Это инварианты продукта, и они соблюдены в `library_flow.run_select` и Pipe.
-3. **Allowlist на двух уровнях** — `domains.host_allowed` + фильтр SearXNG. `usable_url` отсекает плейсхолдеры `https://pravo.by/...`, голые хосты, чужие домены. На это есть тесты.
-4. **Curated `known_sources`.** Закон о валюте, ГК, инструкции НБРБ — не надеются на удачный сниппет поисковика. Это правильный ответ на хрупкий веб.
-5. **Retrieval не «top-k cosine».** `knowledge_retrieve.py`: multi-query, BM25 + keyword + dense, RRF, heading boost для «Статья N», rerank через Qwen3-Reranker (logprob yes/no), MMR, соседние чанки, merge статей. Для юридического RAG это осмысленный пайплайн.
-6. **Промпты вынесены** в `docs/prompts/*.txt` (~31 файл), подставляются без рекурсивного `{placeholder}`. Методолог может править текст, не трогая Python.
-7. **Артефакты унифицированы** через `document_artifact.ArtifactSpec` и `run_llm_artifact_events` (total / программа / гипотезы / мнение / заключение). Саммари по актам остаётся своим циклом карточек — это не один LLM-вызов.
-8. **Тесты на реальные боли.** `test_download_urls` ловит мусорные URL. `test_brief` / `test_conclusion` проверяют гиперссылки, закладки, гипотезы в заключении. `test_pipe_commands` бьёт по фразам из GUIDE (`вопрос`, `утверждаю гипотезы`, ложный новый кейс, `не утверждаю`). Это не «assert True».
-9. **Compose продуман под Windows + Ollama на хосте.** RAG-числа и шаблон едут из env, `ENABLE_PERSISTENT_CONFIG=false` — чтобы старый volume не держал MiniLM. `pipe-seed` склеивает `intent.py` + Pipe и ставит функцию через API, если есть `OPENWEBUI_API_KEY`. Это знание из поля, не из туториала.
+1. **Граница кода.** FastAPI — система записи. Open WebUI — витрина. Pipe вызывает API, не дублирует download/RAG.
+2. **HITL в коде.** Скачивание только после `/select`. Мнение только после `утверждаю гипотезы`.
+3. **Allowlist на hop редиректа** + curated `known_sources`. Поиск по умолчанию SearXNG; DDG/Bing за `NPA_WEB_FALLBACK`.
+4. **RAG не top-k cosine:** multi-query, BM25 + dense, RRF, rerank, MMR. Пустая evidence → отказ, не преамбула кодекса.
+5. **Промпты снаружи** (`docs/prompts`, ~31 файл). Артефакты через `run_llm_artifact_events`.
+6. **Тесты на боли продукта**, не `assert True`. CI живой.
 
 ---
 
-## 2. Находки
+## Что ещё открыто
 
-Северность: **P0** — ломает обещание продукта или контур банка; **P1** — будет больно при следующем аудиторе / следующем месяце кода; **P2** — гигиена.
+### P0 — без этого в банк нельзя
 
-### P0 — чинить до показа банку как «коробку»
+**CR-02. API без аутентификации.** CORS и loopback-порты уже сузили. Open WebUI свой auth **не** защищает backend: с машины аудитора любой процесс бьёт в `:8100`. Нужен shared secret из env.
 
-#### CR-01. Поиск НПА ходит в DuckDuckGo и Bing напрямую — **закрыто 27.08** (флаг)
-
-Файл: `backend/app/services/npa_search.py`, `_search_engines`.
-
-Было: параллельно `html.duckduckgo.com` и `www.bing.com` с названием акта.
-
-Сейчас: `NPA_WEB_FALLBACK` по умолчанию **выкл.** Остаются SearXNG + формы `pravo.by` / `etalonline.by` / `nbrb.by` + `known_sources`. Вкл. fallback — WARNING в лог, название акта уходит к Microsoft/DDG. Compose: `NPA_WEB_FALLBACK=${NPA_WEB_FALLBACK:-false}`.
-
-Recall без внешних поисковиков может быть ниже — это принятый обмен на закрытый контур по умолчанию.
-
-#### CR-02. API без аутентификации, CORS `*`, порты наружу — **закрыто частично 27.08**
-
-- CORS: `settings.cors_origins` (loopback Open WebUI / lab), `allow_credentials=False`. Не `*`.
-- Compose: `127.0.0.1:8100:8100`, `127.0.0.1:3000:8080`; SearXNG **без** `ports`.
-- **Не закрыто:** API без shared secret. Open WebUI свой auth не защищает backend; с loopback это один аудитор на машине.
-
-#### CR-03. Редирект обходит allowlist — **закрыто 27.08**
-
-`allowlisted_get`: каждый hop — `host_allowed`, иначе `DisallowedHost`. Download и официальный поиск сайтов не следуют на чужой хост. Тесты: `backend/tests/test_contour.py`.
-
-#### CR-04. RAG не умеет отказать — **закрыто 27.08**
-
-`knowledge_ask.ask`: пустая evidence → фиксированный отказ из `ask_refuse`, `sources=[]`, `refused=true`, HTTP 200. Саммари карточек в ask-контекст не кладутся (`used_summaries=false`). Trail: `trail/ask.jsonl`. Тесты: `test_ask.py`, 20 gold в `eval_rag.py`.
-
-Раньше: `if not evidence: evidence = chunks[:top_k]` — модель «цитировала» преамбулу кодекса.
-
----
-
-### P1 — будет стоить недель, если не резать сейчас
-
-Закрыто 27.08: **CR-05** (intent + тесты фраз), **CR-06** (тела knowledge_*), **CR-07** (runner артефактов), **CR-08** (атомарный save + case_id + lock), **CR-12** (засев Pipe, нужен API key), **CR-13** (utc_now). Открыты: дыра retrieval-eval как гейт CI live, логи/метрики, версии git history.
-
-#### CR-05. Pipe — бог-объект на regex — **закрыто 27.08** (остаток: сам regex)
-
-Было: `audit_agent.py` ~1458 строк, ноль тестов, Pipe нельзя импортировать вне Open WebUI.
-
-Сейчас:
-
-- чистые функции (`classify`, `_is_*`, `_parse_*`, `_resolve_approval`) в `seed/openwebui/functions/intent.py` (~530 строк, без httpx);
-- HTTP-клей и `class Pipe` в `audit_agent.py` (~1070 строк);
-- `backend/tests/test_pipe_commands.py` — фразы из `GUIDE.md` плюс негативы (`какие сроки?`, «проверк» в чате, `не утверждаю`, `скачай` без кейса);
-- `seed_pipe.py` склеивает intent в один paste (Open WebUI по-прежнему один файл).
-
-Сузили ложные срабатывания: `скачай` только при живом кейсе и без другой команды; новый кейс только с `Проверка …` / `Новая проверка …`, не «любая фраза с аренда».
-
-Остаток (не P1): это всё ещё NLP на regex. Новый тип проверки не требует расширять `_parse_new_case`, но синонимы команд — да. Не ждать LangGraph.
-
-#### CR-06. `knowledge_flow.py` — 660+ строк, фасады пустые — **закрыто 27.08**
-
-Тела в `knowledge_ingest` / `knowledge_index` / `knowledge_summarize` / `knowledge_ask` / `knowledge_owui`. `knowledge_flow` (~85 строк) — SSE-оркестратор `build_knowledge_events` и реэкспорт имён. Тест `TestKnowledgeSplit` ловит возврат к stub-реэкспорту.
-
-#### CR-07. Почти одинаковые `*_flow.py` — **закрыто 27.08** (остаток: саммари)
-
-`run_llm_artifact_events` в `document_artifact.py`: stale → SSE → compose → files → meta. На нём: total, program, hypotheses, opinion, conclusion. Conclusion даёт доп. статус через `ComposeNotice` (дописка наблюдений) — та же доменная петля, без копипасты таймера.
-
-Остаток: `brief_flow` сам ведёт цикл карточек по актам (ingest → embed → `summarize_item` со стримом статуса). Это не один LLM-вызов, в runner не влезает без потери прогресса. Специфика гипотез JSON / шрифта мнения / разделов заключения осталась в маленьких модулях.
-
-#### CR-08. Файловый store без атомарности и без валидации `case_id` — **закрыто 27.08** (остаток: JSON-эмбеддинги)
-
-- `atomic_write_text`: `case.json.tmp` + `os.replace`. На Windows — retry при `PermissionError`.
-- `validate_case_id`: `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$`, без `../` и точек. Hex из `new_id()` и демо-папка `c1` проходят; `has.dot` → HTTP 400. Hex-only `{8,12}` не взяли: сломал бы кейс `c1`.
-- `async_lock` на мутации (propose/select/download, ingest/index/ask/upload, сборка артефактов). `thread_lock` на get/save `case.json`.
-- Тесты: `test_store.py` (concurrent save), `test_api.py` (400/404).
-
-Остаток: эмбеддинги всё ещё в `knowledge_index.json`. Для одного аудитора живёт.
-
-#### CR-09. Тестовая дыра в ядре — **закрыто частично 27.08**
-
-Есть: extra_titles, download URLs, brief/opinion/conclusion docx, hypotheses, case_context, openwebui payload, **фразы Pipe**, `select_evidence` / `gate_ask_evidence`, `chunker` на статьях, **ask refuse**, **TestClient** (health, create, case_id, GET knowledge без ingest, upload `.bin`), concurrent `store.save`, runner артефактов, 20 gold `eval_rag`.
-
-Нет: полный HTTP-проход create → select без Ollama (mock propose на TestClient); live eval как обязательный CI-гейт.
-
-#### CR-10. Нет наблюдаемости — **закрыто частично 27.08**
-
-Было: `logging` один раз. Стало: `app.logging_setup` (request id, `X-Request-Id`, ASGI-middleware без буфера SSE), `LOG_LEVEL`, логи propose/download/search/rerank/ask. Trail `/ask` пишется в `trail/ask.jsonl` через `store.append_jsonl`.
-
-Не закрыто: метрики времени как отдельный экспорт; request id не прокинут в Ollama payload.
-
-#### CR-11. Версии и git — **закрыто 27.08** (история main не трогали)
-
-API `version` = `app.__version__` = **0.0.1**. `GET /` отдаёт `version`, не `step: 2`. CI на PR режет subject `initial commit` / короче 10 символов.
-
-84 старых коммита в `main` остаются как есть: squash + force-push только по явной команде.
-
-#### CR-12. Засев Pipe руками — **закрыто 27.08** (оговорка: ключ)
-
-Сервис `pipe-seed` при `compose up` склеивает `intent.py` + `audit_agent.py` и POST в `/api/v1/functions` (id `auditor`), включает функцию, пишет Valves. Вручную: `python seed/openwebui/seed_pipe.py --print`.
-
-Оговорка: нужен админский `OPENWEBUI_API_KEY` в корневом `.env`. Первый вход без ключа — Pipe не появится, контейнер выйдет 0 и не будет крутиться вечно. После ключа: `docker compose up -d pipe-seed`.
-
-Расхождение `docs/prompts/pipe_help.txt` и константы `HELP` в Pipe — не закрыто (процесс в `PROMPTS.md` тот же).
-
----
-
-### P2 — гигиена, не стоппер демо
+### P1 — будет стоить недель
 
 | ID | Суть |
 |---|---|
-| CR-13 | ~~`datetime.utcnow()` deprecated~~ — закрыто: `app.clock.utc_now()` (naive UTC, тот же ISO) |
-| CR-14 | ~~`GET /knowledge` вызывает `ingest_library`~~ — GET только читает; ingest/index — POST |
-| CR-15 | `GET /` светит `data_root`, `searxng_url`, имена моделей |
-| CR-16 | ~~`GET /health` возвращает `status: created`~~ — `{"status":"ok","version"}` на `/health` и `/api/v1/health` |
-| CR-17 | Upload: лимит `max_upload_bytes` (32 МиБ), расширение не из `TEXT_EXTS` (в т.ч. `.bin`) — в `errors`, не в KB |
-| CR-18 | `searxng/settings.yml`: `secret_key: "audit-tools-local-change-me-32chars"`, `limiter: false`; порт 8080 больше не публикуется |
-| CR-19 | Spoof `X-Forwarded-For: 127.0.0.1` к SearXNG — обход бот-детекта; ок для compose, запах |
-| CR-20 | ~~`embed_texts` на 404 `/api/embed` эмбеддит только `texts[0]`~~ — fallback `/api/embeddings` по каждому тексту |
-| CR-21 | `searxng_client.find_best_url` дублирует логику `npa_search.build_search_queries` |
-| CR-22 | ~~Нет ruff / mypy / pytest.ini / GitHub Actions~~ — закрыто 27.08: `pyproject.toml`, `.github/workflows/ci.yml` |
-| CR-23 | `frontend/` в README, в git файлов нет — мёртвая ссылка |
-| CR-24 | Широкий `except Exception` + `# noqa: BLE001` почти в каждом роутере — 502 глотает баги программиста |
-| CR-25 | ~~`httpx.AsyncClient` кэш по timeout, не закрывается на shutdown~~ — `close_clients()` в FastAPI lifespan |
-| CR-26 | Word-генераторы `conclusion_docx.py` (1255) и `brief_docx.py` (741) — неизбежный ад OOXML, но смешаны вёрстка и домен (toc, гипотезы) |
+| CR-09 | Нет полного TestClient create → select с mock propose. Live eval не гейт CI |
+| CR-10 | Нет экспорта метрик времени; request id не в Ollama payload |
+| CR-12 | Pipe сеется только с `OPENWEBUI_API_KEY`. Расхождение `pipe_help.txt` и `HELP` в Pipe |
+| — | Эмбеддинги всё ещё в `knowledge_index.json` |
 
----
+Pipe по-прежнему NLP на regex — это не P1. Новый тип проверки не требует трогать парсер фраз; синонимы команд — да. Не ждать LangGraph.
 
-## 3. Архитектура: совпадает ли код с `ARCHITECTURE.md`
+### P2 — гигиена
 
-В целом **да**. Это сильная сторона репозитория.
-
-Сбылось:
-
-- нет своего SPA как продукта;
-- кейс на диске, без Postgres;
-- Pipe = фазы в коде, не свободный ReAct;
-- `вопрос …` → `/knowledge/ask`, иначе `/chat`;
-- промпты снаружи кода;
-- Pipe сеется при `up` (если задан `OPENWEBUI_API_KEY`).
-
-Разъехалось:
-
-| Документ обещает | Код делает |
+| ID | Суть |
 |---|---|
-| Поиск только SearXNG | По умолчанию да; DDG/Bing за `NPA_WEB_FALLBACK` |
-| Trail file/chunk/url | Только `manifest.json` при download; ask пишет `trail/ask.jsonl` |
-| DuckDB / evidence | Нет (и не должно в 0.0.1) — ок |
-| Нормализация `## Статья N` перед sync | `chunker.normalize_npa_text` на ingest |
-| Коробка: Pipe при `up` | `pipe-seed` при наличии `OPENWEBUI_API_KEY`; без ключа — руками |
-| Defense in depth на download | Allowlist на исходный URL и каждый hop редиректа |
+| CR-15 | `GET /` светит `data_root`, SearXNG, имена моделей |
+| CR-18 | SearXNG `secret_key` из репо, `limiter: false` |
+| CR-19 | Spoof `X-Forwarded-For: 127.0.0.1` к SearXNG |
+| CR-21 | Дубль `find_best_url` / `build_search_queries` |
+| CR-23 | `frontend/` в README, в git файлов нет |
+| CR-24 | Широкий `except Exception` → 502 глотает баги |
+| CR-26 | `conclusion_docx` / `brief_docx` — OOXML + домен в одном файле |
 
 ---
 
-## 4. Разбор по слоям
+## Архитектура vs `ARCHITECTURE.md`
 
-### 4.1 Audit Tool Server
+Совпадает: нет SPA, кейс на диске, Pipe = фазы, `вопрос` → `/ask`, промпты снаружи.
 
-**Структура.** `routers/` тонкие, логика в `services/` — нормально. `models.py` — понятный state machine кейса. `config.py` — все RAG-числа в одном месте, хорошо для тюнинга.
-
-**Слабое место — knowledge.** Индекс JSON с векторами внутри. Ask отказывает без evidence; GET knowledge больше не пишет на диск.
-
-**Слабое место — документы.** Шесть flow-модулей + два огромных docx; оркестрация в `run_llm_artifact_events` (кроме саммари-карточек). Качество выхода зависит от парсера markdown модели. Тесты это частично ловят (`ensure_all_hypotheses`, toc). Нет золотого «эталонный md → эталонный docx» фикстуры на диске (кроме inline SAMPLE_MD).
-
-**Ollama-клиент.** Нормальный: stream propose, `format=json`, `think: False`, strip `<think>`, rerank через generate+logprobs — инженерно аккуратно. Кэш клиентов и молчаливый fallback rerank (`_rerank_unavailable = True`) надо логировать один раз WARNING.
-
-### 4.2 Pipe
-
-Правильная идея: **не ReAct**. Аудитор пишет естественные фразы, код решает фазу.
-
-Маршрутизация вынесена в `intent.py` и покрыта тестами. Regex остался, но уже: `скачай` не ловится в любом предложении; новый кейс — только явный старт (`Проверка …` / `Новая проверка …`). Синонимы команд (`саммари` / `сводка` / `бриф`) по-прежнему список в коде.
-
-HTTP-клей (`class Pipe`, Valves, вызовы API) — `audit_agent.py` ~1070 строк. Open WebUI принимает один файл: `seed_pipe.py` склеивает paste при засеве.
-
-Кейс живёт в HTML-комментарии `<!--audit-case:hex-->`. Умно и хрупко: новый чат = нет кейса (это честно написано в PLAN). Нет `открой кейс X`.
-
-Valves (`AUDIT_API`, timeout 600/1800) — правильный рычаг админа. Засев их проставляет.
-
-### 4.3 Добыча НПА
-
-Лучший «грязный» модуль репозитория: known_sources → expand official URLs → score (штраф новостям, штраф чужому кодексу по коду документа) → download → reject коротких заглушек.
-
-Тесты покрывают именно это. Сохранить. Внешние поисковики за флагом (CR-01), редирект закрыт (CR-03).
-
-### 4.4 Compose / коробка
-
-Плюс: RAG-шаблон и числа в compose, Ollama на хосте, profile `lab` для мёртвого фронта, `pipe-seed` ставит функцию «Аудитор» через API.
-
-Минус: засев молчит без `OPENWEBUI_API_KEY` (первый админ ещё не создал ключ). `latest` образы (`searxng:latest`, `open-webui:main`) — невоспроизводимая коробка. Для банка пинить digest. Нет корневого `.env.example` (он только в `backend/`). Нет healthcheck у сервисов. `--reload` в prod-команде backend (volume `./backend/app`) — удобно для разработки, опасно как «поставка». Порты 3000/8100 на `127.0.0.1`, SearXNG без publish.
-
-### 4.5 Документация vs код
-
-Документации **много и она живая** — GUIDE, AUDITOR, RAG, PROMPTS. Риск: GUIDE ~1000 строк, дублирует AUDITOR. Для аудитора ок, для ревьюера кода — источник расхождения (версия 0.0.1 vs 0.2.0).
+Расхождение, которое ещё важно: без ключа Pipe при `up` не появится; trail полный (file/chunk/url) есть только у download-manifest и `trail/ask.jsonl`.
 
 ---
 
-## 5. Качество кода (стиль, не архитектура)
+## Дальше, по порядку
 
-Хорошо:
+Не делать микросервисы, React, Postgres «на вырост».
 
-- `from __future__ import annotations`, pydantic v2, pathlib;
-- говорящие имена (`usable_url`, `is_usable_npa_page`, `artifact_stale`);
-- мало магии в зависимостях (`requirements.txt` короткий и по делу).
+1. Auth на API (секрет из env).
+2. Засев Pipe без ручного ключа при первом `up`.
+3. Пинить digest образов (`searxng:latest`, `open-webui:main`).
+4. TestClient create → select без Ollama.
+5. SQLite — когда появится второй пользователь или «открой кейс».
+6. Клиентские данные / DuckDB — как в PLAN v0.4, не раньше стабильной цитаты.
 
-Плохо:
-
-- нет единого слоя ошибок (ValueError → 400, всё остальное → 502);
-- метрики времени не экспортируются отдельно; request id не в Ollama payload;
-- дубли `find_best_url`;
-- эмбеддинги в одном JSON с чанками;
-- Pipe и backend не разделяют типы кейса (Pipe работает с `dict`).
-
-Это не «Junior dump». Это прототип, который вырос быстрее, чем его резали.
+**Не делать:** форк Open WebUI, второй агент (LangGraph), Excel клиента в Knowledge, новая vector DB «вместо eval», развитие `frontend/`.
 
 ---
 
-## 6. Рекомендации: что делать по порядку
+## Тепловая карта
 
-Не делать микросервисы, не писать React, не заводить Postgres «на вырост». Совпадает с `START.md`. Ниже — порядок, который реально поднимает оценку.
+| Модуль | Здоровье |
+|---|---|
+| `domains` / `known_sources` / промпты / CI | отлично |
+| retrieve, ask, ingest/index, `document_artifact`, storage, `intent.py` | хорошо |
+| `npa_search`, Pipe HTTP-клей, `brief_docx` + `conclusion_docx` | средне |
 
-### Неделя 1 — не нарушать обещания (P0)
-
-1. ~~Выключить DDG/Bing по умолчанию.~~ `NPA_WEB_FALLBACK=false`.
-2. ~~После redirect — `host_allowed(final_url)`.~~ `allowlisted_get`.
-3. ~~`ask`: пустая evidence → отказ, без `chunks[:top_k]`. Саммари не в ask-контексте.~~
-4. ~~Compose: `127.0.0.1:8100`, SearXNG без publish. CORS только localhost.~~
-5. ~~Валидация `case_id`.~~ Path-safe id; демо `c1` сохранён.
-
-### Неделя 2 — доверие к цитате (это и есть v0.1)
-
-6. ~~`eval_rag.py`: 20 вопросов~~ — unit без живой Ollama; live — отдельно.
-7. ~~Тесты на `select_evidence` / gate.~~
-8. ~~Trail: `trail/ask.jsonl`.~~
-9. ~~Нормализация `## Статья N`~~ — на ingest (`normalize_npa_text`).
-
-### Неделя 3 — не развалиться
-
-10. ~~30 тестов на фразы Pipe~~ — сделано (`test_pipe_commands.py`).
-11. TestClient: health, create, case_id, GET knowledge, upload. Нет полного create → select с mock propose.
-12. ~~Атомарный `store.save`, lock на brief/ask/download.~~
-13. ~~ruff + pytest в GitHub Actions~~ — `.github/workflows/ci.yml`.
-14. Версия API 0.0.1. Коммиты с смыслом — CI на PR; история main не схлопнута.
-
-### Потом, не раньше
-
-- Auth на API (секрет из env).
-- Дожать засев: ключ/админ при первом `up`, чтобы Pipe был без ручного шага.
-- Пинить digest образов.
-- SQLite — когда появится второй пользователь или «открой кейс».
-- Данные клиента / DuckDB — как в PLAN v0.4, не раньше стабильной цитаты.
+Слабые места, которые ещё живы: JSON с векторами; два огромных docx; Pipe ~1.1k HTTP-клея.
 
 ---
 
-## 7. Чего не делать
+## Итог
 
-- Не форкать Open WebUI из-за боли с paste Pipe — `seed_pipe.py` уже склеивает и сеет через API.
-- Не заменять файловый store на Postgres в этом квартале.
-- Не писать второго агента (LangGraph / native tools как primary).
-- Не класть клиентский Excel в Knowledge.
-- Не «улучшать» RAG новой vector DB, пока нет eval.
-- Не развивать `frontend/`.
+Проект не свалка скриптов. Есть продукт, инварианты, HITL, локальная модель, RAG с отказом и документация, с которой можно садиться к аудитору.
 
----
-
-## 8. Оценка модулей (тепловая карта)
-
-| Модуль | Строк (порядка) | Здоровье | Комментарий |
-|---|---|---|---|
-| `domains` / `downloader.usable_url` | мало | отлично | Тесты есть, инвариант ясен |
-| `known_sources` / `extra_titles` | ~280 | отлично | Доменный кэш, так и надо |
-| `npa_search` | ~350 | средне | Скоринг на месте; DDG/Bing за флагом |
-| `knowledge_retrieve` | ~400 | хорошо | Алгоритм зрелый, gate + eval 20 вопросов |
-| `knowledge_flow` | ~85 | хорошо | Оркестратор SSE; тела в ingest/index/summarize/ask |
-| `knowledge_ask` | ~160 | хорошо | Refuse + trail; саммари не в контексте |
-| `ollama_client` | ~380 | хорошо | Rerank hack оправдан; клиенты закрываются на shutdown |
-| `document_artifact` | ~370 | отлично | Spec + `run_llm_artifact_events` + ComposeNotice |
-| `*_flow.py` × 6 | ~2.3k | хорошо | Runner общий; brief сам ведёт карточки актов |
-| `brief_docx` + `conclusion_docx` | ~2k | средне | Тесты спасают |
-| `storage` / `http` | мало | хорошо | Atomic save, case_id, lock на мутации |
-| `intent.py` | ~530 | хорошо | Чистый classify, тесты фраз из GUIDE |
-| `audit_agent.py` | ~1.1k | средне | HTTP-клей; paste склеивает `seed_pipe.py` |
-| `seed_pipe.py` | ~260 | хорошо | Засев OWUI API; без ключа — no-op |
-| `docs/prompts` | 31 файл | отлично | Держать source of truth |
-| тесты | ~3k | хорошо | Docx + Pipe + retrieve/ask + TestClient + store |
-| git / CI | — | отлично | Actions: ruff + mypy + pytest; PR режет `initial commit` |
-
----
-
-## 9. Итог для Coleus
-
-Проект **не выглядит как свалка Jupyter-скриптов**. Есть продукт, инварианты, HITL, локальная модель, осмысленный RAG и документация, с которой можно садиться к аудитору.
-
-Главный риск не «кривой Python», а **разрыв обещания банка**: auth на API. Отказ без цитаты, hop редиректа, локальность поиска, атомарный store и валидный `case_id` закрыты (CR-01…04, CR-08).
-
-Второй риск — **энтропия в генераторах docx** и JSON-эмбеддинги. Knowledge нарезан; flow-артефакты на общем runner; Intent Pipe и retrieval/ask покрыты тестами.
-
-Практичная планка «можно показывать СВА»: P0 закрыты, 20 золотых вопросов гоняются, Pipe сеется ключом (`pipe-seed`), не из головы каждый раз.
-
-Планка «можно ставить в банк»: P0 + auth на loopback/internal + пины образов. CI, trail ask и одна версия API уже есть.
+Планка СВА: закрыта. Планка банка: auth + пины образов.
