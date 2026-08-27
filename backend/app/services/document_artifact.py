@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -189,3 +190,160 @@ async def event_result(events: AsyncIterator[dict], error_message: str) -> dict:
     if not result:
         raise ValueError(error_message)
     return result
+
+
+def sse_status(elapsed_ms: int, message: str) -> dict[str, Any]:
+    return {"type": "status", "message": message, "elapsed_ms": elapsed_ms}
+
+
+def sse_result(
+    elapsed_ms: int,
+    meta: Mapping[str, Any],
+    *,
+    digest: list[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"type": "result", **dict(meta), "elapsed_ms": elapsed_ms}
+    if digest is not None:
+        payload["digest"] = digest
+    return payload
+
+
+def reuse_artifact_events(
+    case_id: str,
+    spec: ArtifactSpec,
+    *,
+    force: bool,
+    stale: bool,
+    already_message: str,
+    elapsed_ms: int,
+) -> list[dict[str, Any]] | None:
+    if force or stale:
+        return None
+    meta = artifact_status(case_id, spec)
+    return [
+        sse_status(elapsed_ms, already_message),
+        sse_result(elapsed_ms, meta, digest=[]),
+    ]
+
+
+async def complete_llm(
+    coro: Awaitable[str],
+    *,
+    fail: str,
+    empty: str | None = None,
+) -> str:
+    try:
+        raw = await coro
+    except Exception as exc:
+        raise ValueError(f"{fail}: {exc}") from exc
+    if empty is not None and not (raw or "").strip():
+        raise ValueError(empty)
+    return raw
+
+
+def write_sources_json(path: Path, payload: Any) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def case_stale_extra(state: CaseState, **extra: Any) -> dict[str, Any]:
+    return {
+        "keywords": list(state.keywords),
+        "inspection_name": state.inspection_name,
+        **extra,
+    }
+
+
+def upstream_built_at(state: CaseState, *keys: str) -> dict[str, Any]:
+    return {f"{key}_built_at": (state.meta.get(key) or {}).get("built_at") for key in keys}
+
+
+@dataclass
+class ArtifactOutcome:
+    """Files already written; runner persists sources JSON + meta."""
+
+    body: str
+    sources: list[dict]
+    extra: dict[str, Any] = field(default_factory=dict)
+    digest: list[str] = field(default_factory=list)
+    sources_file: Any = None
+
+
+async def run_llm_artifact_events(
+    case_id: str,
+    spec: ArtifactSpec,
+    *,
+    force: bool,
+    start_message: str,
+    already_message: str,
+    writing_message: str,
+    load_state: Callable[[str], CaseState],
+    is_stale: Callable[[CaseState], bool],
+    compose: Callable[[CaseState, Any], Awaitable[Any]],
+    write: Callable[[CaseState, ArtifactPaths, Any, Any], ArtifactOutcome],
+    compose_fail: str,
+    compose_message: str | Callable[[CaseState, Any], str],
+    empty_error: str | None = None,
+    inspect: Callable[[CaseState], None] | None = None,
+    prepare_message: str | None = None,
+    prepare: Callable[[CaseState], Any] | None = None,
+    postprocess: Callable[[Any], Any] | None = None,
+) -> AsyncIterator[dict]:
+    """Shared stale → SSE → LLM → files → meta loop for Word/Excel artifacts.
+
+    Domain code stays in the flow: `compose` talks to the model, `write`
+    builds the document. Timeout, force, and meta persistence live here so
+    a new artifact cannot drift from the others.
+    """
+    timer = ElapsedTimer()
+    elapsed = timer.ms
+
+    yield sse_status(elapsed(), start_message)
+    state = load_state(case_id)
+    if inspect is not None:
+        inspect(state)
+
+    cached = reuse_artifact_events(
+        case_id,
+        spec,
+        force=force,
+        stale=is_stale(state),
+        already_message=already_message,
+        elapsed_ms=elapsed(),
+    )
+    if cached:
+        for event in cached:
+            yield event
+        return
+
+    ctx: Any = None
+    if prepare is not None:
+        if prepare_message:
+            yield sse_status(elapsed(), prepare_message)
+        ctx = prepare(state)
+
+    message = compose_message(state, ctx) if callable(compose_message) else compose_message
+    yield sse_status(elapsed(), message)
+    try:
+        result = await compose(state, ctx)
+    except Exception as exc:
+        raise ValueError(f"{compose_fail}: {exc}") from exc
+    if empty_error is not None and isinstance(result, str) and not result.strip():
+        raise ValueError(empty_error)
+    if postprocess is not None:
+        result = postprocess(result)
+
+    paths = artifact_paths(case_id, state.inspection_name, spec)
+    yield sse_status(elapsed(), writing_message)
+    outcome = write(state, paths, result, ctx)
+    sources_payload = outcome.sources if outcome.sources_file is None else outcome.sources_file
+    write_sources_json(paths.sources, sources_payload)
+    meta = save_artifact_meta(
+        state,
+        spec,
+        docx=paths.primary,
+        md=paths.md,
+        sources=outcome.sources,
+        body=outcome.body,
+        extra=outcome.extra,
+    )
+    yield sse_result(elapsed(), meta, digest=outcome.digest)

@@ -12,7 +12,8 @@ from app.storage import CaseStore
 
 class TestAskRefuse(unittest.IsolatedAsyncioTestCase):
     async def test_empty_evidence_refuses_without_llm(self):
-        from app.services import knowledge_flow as kf
+        from app.services import knowledge_ask as kf
+        from app.services import knowledge_index as ki
 
         with tempfile.TemporaryDirectory() as tmp:
             store = CaseStore(root=Path(tmp))
@@ -47,6 +48,7 @@ class TestAskRefuse(unittest.IsolatedAsyncioTestCase):
             chat = AsyncMock(return_value="не должен вызываться")
             with (
                 patch.object(kf, "store", store),
+                patch.object(ki, "store", store),
                 patch.object(kf, "retrieve_for_ask", AsyncMock(return_value=[])),
                 patch.object(kf, "embed_texts", AsyncMock(return_value=[[0.0, 1.0]])),
                 patch.object(kf, "chat_complete", chat),
@@ -66,7 +68,8 @@ class TestAskRefuse(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(line["question"], "статья 999 ГК")
 
     async def test_hits_do_not_inject_summaries(self):
-        from app.services import knowledge_flow as kf
+        from app.services import knowledge_ask as kf
+        from app.services import knowledge_index as ki
 
         with tempfile.TemporaryDirectory() as tmp:
             store = CaseStore(root=Path(tmp))
@@ -110,6 +113,7 @@ class TestAskRefuse(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(kf, "store", store),
+                patch.object(ki, "store", store),
                 patch.object(kf, "retrieve_for_ask", AsyncMock(return_value=evidence)),
                 patch.object(kf, "chat_complete", fake_chat),
             ):

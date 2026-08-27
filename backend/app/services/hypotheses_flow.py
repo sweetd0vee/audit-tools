@@ -18,16 +18,19 @@ from app.services.case_context import (
     read_truncated_md,
 )
 from app.services.document_artifact import (
+    ArtifactOutcome,
+    ArtifactPaths,
     ArtifactSpec,
-    ElapsedTimer,
     artifact_dir,
     artifact_download_name,
-    artifact_paths,
     artifact_stale,
     artifact_status,
+    case_stale_extra,
     event_result,
+    knowledge_ok_count,
     resolve_artifact_file,
-    save_artifact_meta,
+    run_llm_artifact_events,
+    upstream_built_at,
 )
 from app.services.hypotheses_xlsx import write_hypotheses_xlsx
 from app.services.knowledge_ingest import ingest_library
@@ -105,13 +108,10 @@ def _hypotheses_stale(state: CaseState) -> bool:
         HYPOTHESES_SPEC,
         schema=HYPOTHESES_SCHEMA,
         check_items=True,
-        extra={
-            "keywords": list(state.keywords),
-            "inspection_name": state.inspection_name,
-            "brief_built_at": (state.meta.get("brief") or {}).get("built_at"),
-            "total_built_at": (state.meta.get("total") or {}).get("built_at"),
-            "program_built_at": (state.meta.get("program") or {}).get("built_at"),
-        },
+        extra=case_stale_extra(
+            state,
+            **upstream_built_at(state, "brief", "total", "program"),
+        ),
     )
 
 
@@ -337,35 +337,80 @@ def _write_markdown(
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
-def _save_meta(
+def _parse_composed_hypotheses(raw: str) -> tuple[list[dict[str, str]], str]:
+    try:
+        return parse_hypotheses_payload(raw)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Не удалось разобрать гипотезы модели: {exc}") from exc
+
+
+def _persist_hypotheses(
     state: CaseState,
-    *,
-    xlsx: Path,
-    md: Path,
+    paths: ArtifactPaths,
+    parsed: tuple[list[dict[str, str]], str],
     sources: list[dict],
-    rows: list[dict[str, str]],
-) -> dict:
+) -> ArtifactOutcome:
+    rows, notes = parsed
     state.meta.pop("hypotheses_selection", None)
-    body = "\n".join(r["hypothesis"] for r in rows)
-    return save_artifact_meta(
-        state,
-        HYPOTHESES_SPEC,
-        docx=xlsx,
-        md=md,
+    _write_markdown(
+        paths.md,
+        inspection_name=state.inspection_name,
+        keywords=state.keywords,
+        case_id=state.case_id,
+        rows=rows,
+        notes=notes,
         sources=sources,
+    )
+    write_hypotheses_xlsx(
+        paths.primary,
+        inspection_name=state.inspection_name,
+        keywords=state.keywords,
+        case_id=state.case_id,
+        rows=rows,
+        notes=notes,
+    )
+    _json_path(state.case_id).write_text(
+        json.dumps({"notes": notes, "hypotheses": rows}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    body = "\n".join(r["hypothesis"] for r in rows)
+    return ArtifactOutcome(
         body=body,
+        sources=sources,
         extra={
             "schema": HYPOTHESES_SCHEMA,
-            "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
+            "items": knowledge_ok_count(state),
             "keywords": list(state.keywords),
             "count": len(rows),
-            "xlsx_path": str(xlsx),
-            "brief_built_at": (state.meta.get("brief") or {}).get("built_at"),
-            "total_built_at": (state.meta.get("total") or {}).get("built_at"),
-            "program_built_at": (state.meta.get("program") or {}).get("built_at"),
+            "xlsx_path": str(paths.primary),
+            **upstream_built_at(state, "brief", "total", "program"),
             "download": HYPOTHESES_SPEC.docx_endpoint.format(case_id=state.case_id),
         },
+        digest=[f"- {r['hypothesis']}" for r in rows[:8]],
     )
+
+
+async def build_hypotheses_events(
+    case_id: str, force: bool = False
+) -> AsyncIterator[dict]:
+    async for event in run_llm_artifact_events(
+        case_id,
+        HYPOTHESES_SPEC,
+        force=force,
+        start_message="Собираю саммари, программу, total и фрагменты НПА…",
+        already_message="Чеклист гипотез уже собран — отдаю Excel.",
+        prepare_message="Отбираю фрагменты из приложенных документов…",
+        compose_message="Формулирую 8–10 гипотез проверки. Это может занять несколько минут…",
+        writing_message="Собираю Excel-чеклист гипотез…",
+        load_state=ingest_library,
+        is_stale=_hypotheses_stale,
+        prepare=collect_brief_sources,
+        compose=_compose_hypotheses,
+        postprocess=_parse_composed_hypotheses,
+        write=_persist_hypotheses,
+        compose_fail="Модель не собрала гипотезы",
+    ):
+        yield event
 
 
 async def _compose_hypotheses(state: CaseState, sources: list[dict]) -> str:
@@ -423,88 +468,6 @@ async def _compose_hypotheses(state: CaseState, sources: list[dict]) -> str:
         num_predict=8192,
         temperature=0.2,
     )
-
-
-async def build_hypotheses_events(
-    case_id: str, force: bool = False
-) -> AsyncIterator[dict]:
-    timer = ElapsedTimer()
-    elapsed = timer.ms
-
-    yield {
-        "type": "status",
-        "message": "Собираю саммари, программу, total и фрагменты НПА…",
-        "elapsed_ms": elapsed(),
-    }
-    state = ingest_library(case_id)
-
-    if not force and not _hypotheses_stale(state):
-        meta = hypotheses_status(case_id)
-        yield {
-            "type": "status",
-            "message": "Чеклист гипотез уже собран — отдаю Excel.",
-            "elapsed_ms": elapsed(),
-        }
-        yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
-        return
-
-    yield {
-        "type": "status",
-        "message": "Отбираю фрагменты из приложенных документов…",
-        "elapsed_ms": elapsed(),
-    }
-    sources = collect_brief_sources(state)
-
-    yield {
-        "type": "status",
-        "message": "Формулирую 8–10 гипотез проверки. Это может занять несколько минут…",
-        "elapsed_ms": elapsed(),
-    }
-    try:
-        raw = await _compose_hypotheses(state, sources)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Модель не собрала гипотезы: {exc}") from exc
-
-    try:
-        rows, notes = parse_hypotheses_payload(raw)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Не удалось разобрать гипотезы модели: {exc}") from exc
-
-    paths = artifact_paths(case_id, state.inspection_name, HYPOTHESES_SPEC)
-    yield {
-        "type": "status",
-        "message": "Собираю Excel-чеклист гипотез…",
-        "elapsed_ms": elapsed(),
-    }
-    _write_markdown(
-        paths.md,
-        inspection_name=state.inspection_name,
-        keywords=state.keywords,
-        case_id=case_id,
-        rows=rows,
-        notes=notes,
-        sources=sources,
-    )
-    write_hypotheses_xlsx(
-        paths.primary,
-        inspection_name=state.inspection_name,
-        keywords=state.keywords,
-        case_id=case_id,
-        rows=rows,
-        notes=notes,
-    )
-    payload = {"notes": notes, "hypotheses": rows}
-    _json_path(case_id).write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    paths.sources.write_text(
-        json.dumps(sources, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    meta = _save_meta(state, xlsx=paths.primary, md=paths.md, sources=sources, rows=rows)
-    meta["digest"] = [f"- {r['hypothesis']}" for r in rows[:8]]
-    yield {"type": "result", **meta, "elapsed_ms": elapsed()}
 
 
 async def build_hypotheses(case_id: str, force: bool = False) -> dict:

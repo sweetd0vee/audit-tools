@@ -43,7 +43,8 @@ from app.services.hypotheses_flow import (
     resolve_hypotheses_file,
     select_hypotheses,
 )
-from app.services.knowledge_flow import ask, build_knowledge_events
+from app.services.knowledge_ask import ask
+from app.services.knowledge_flow import build_knowledge_events
 from app.services.knowledge_index import rebuild_index
 from app.services.knowledge_ingest import add_uploaded_file, ingest_library
 from app.services.knowledge_owui import export_pack_files, openwebui_status, sync_openwebui

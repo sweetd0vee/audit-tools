@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -29,9 +28,16 @@ from app.services.document_artifact import (
     artifact_paths,
     artifact_stale,
     artifact_status,
+    case_stale_extra,
+    complete_llm,
     event_result,
     resolve_artifact_file,
+    reuse_artifact_events,
     save_artifact_meta,
+    sse_result,
+    sse_status,
+    upstream_built_at,
+    write_sources_json,
 )
 from app.services.hypotheses_flow import selected_hypothesis_rows
 from app.services.knowledge_ingest import ingest_library
@@ -105,17 +111,14 @@ def _conclusion_stale(state: CaseState, font: str) -> bool:
         state,
         CONCLUSION_SPEC,
         schema=CONCLUSION_SCHEMA,
-        extra={
-            "keywords": list(state.keywords),
-            "inspection_name": state.inspection_name,
-            "font": font,
-            "selected_ns": list(selection.get("selected_ns") or []),
-            "hypotheses_built_at": (state.meta.get("hypotheses") or {}).get("built_at"),
-            "opinion_built_at": (state.meta.get("opinion") or {}).get("built_at"),
-            "program_built_at": (state.meta.get("program") or {}).get("built_at"),
-            "brief_built_at": (state.meta.get("brief") or {}).get("built_at"),
-            "total_built_at": (state.meta.get("total") or {}).get("built_at"),
-        },
+        extra=case_stale_extra(
+            state,
+            font=font,
+            selected_ns=list(selection.get("selected_ns") or []),
+            **upstream_built_at(
+                state, "hypotheses", "opinion", "program", "brief", "total"
+            ),
+        ),
     )
 
 
@@ -169,11 +172,9 @@ def _save_conclusion_meta(
             "font": font,
             "keywords": list(state.keywords),
             "selected_ns": [int(row["n"]) for row in hypotheses],
-            "hypotheses_built_at": (state.meta.get("hypotheses") or {}).get("built_at"),
-            "opinion_built_at": (state.meta.get("opinion") or {}).get("built_at"),
-            "program_built_at": (state.meta.get("program") or {}).get("built_at"),
-            "brief_built_at": (state.meta.get("brief") or {}).get("built_at"),
-            "total_built_at": (state.meta.get("total") or {}).get("built_at"),
+            **upstream_built_at(
+                state, "hypotheses", "opinion", "program", "brief", "total"
+            ),
             "selection_at": selection.get("selected_at"),
         },
     )
@@ -368,11 +369,7 @@ async def build_conclusion_events(
     elapsed = timer.ms
     resolved_font = parse_document_font(font) if font else DEFAULT_FONT
 
-    yield {
-        "type": "status",
-        "message": "Собираю подтверждённые гипотезы, мнение и материалы проверки…",
-        "elapsed_ms": elapsed(),
-    }
+    yield sse_status(elapsed(), "Собираю подтверждённые гипотезы, мнение и материалы проверки…")
     state = ingest_library(case_id)
     hypotheses = selected_hypothesis_rows(state)
     if not hypotheses:
@@ -390,43 +387,40 @@ async def build_conclusion_events(
             "Текст мнения войдёт в заключение как есть."
         )
 
-    if not force and not _conclusion_stale(state, resolved_font):
-        meta = conclusion_status(case_id)
-        yield {
-            "type": "status",
-            "message": "Аудиторское заключение уже собрано — отдаю файл.",
-            "elapsed_ms": elapsed(),
-        }
-        yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
+    cached = reuse_artifact_events(
+        case_id,
+        CONCLUSION_SPEC,
+        force=force,
+        stale=_conclusion_stale(state, resolved_font),
+        already_message="Аудиторское заключение уже собрано — отдаю файл.",
+        elapsed_ms=elapsed(),
+    )
+    if cached:
+        for event in cached:
+            yield event
         return
 
-    yield {
-        "type": "status",
-        "message": "Отбираю фрагменты из приложенных документов…",
-        "elapsed_ms": elapsed(),
-    }
+    yield sse_status(elapsed(), "Отбираю фрагменты из приложенных документов…")
     sources = collect_brief_sources(state)
 
-    yield {
-        "type": "status",
-        "message": (
+    yield sse_status(
+        elapsed(),
+        (
             f"Пишу черновик аудиторского заключения ({resolved_font}): "
             f"{len(hypotheses)} наблюдений по подтверждённым гипотезам. "
             "Это может занять несколько минут…"
         ),
-        "elapsed_ms": elapsed(),
-    }
-    try:
-        body = await _compose_conclusion(
+    )
+    body = await complete_llm(
+        _compose_conclusion(
             state,
             hypotheses=hypotheses,
             sources=sources,
             opinion_body=opinion_body,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Модель не собрала аудиторское заключение: {exc}") from exc
-    if not (body or "").strip():
-        raise ValueError("Модель вернула пустое аудиторское заключение.")
+        ),
+        fail="Модель не собрала аудиторское заключение",
+        empty="Модель вернула пустое аудиторское заключение.",
+    )
 
     name = (state.inspection_name or "").strip()
     report = parse_conclusion_markdown(
@@ -438,21 +432,17 @@ async def build_conclusion_events(
     attempts = 0
     while missing and attempts < 2:
         ns = ", ".join(str(row.get("n")) for row in missing)
-        yield {
-            "type": "status",
-            "message": f"Дописываю недостающие наблюдения по гипотезам {ns}…",
-            "elapsed_ms": elapsed(),
-        }
-        try:
-            extra = await _compose_remaining_observations(
+        yield sse_status(elapsed(), f"Дописываю недостающие наблюдения по гипотезам {ns}…")
+        extra = await complete_llm(
+            _compose_remaining_observations(
                 state,
                 hypotheses=hypotheses,
                 missing=missing,
                 sources=sources,
                 body=body,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"Модель не дописала наблюдения заключения: {exc}") from exc
+            ),
+            fail="Модель не дописала наблюдения заключения",
+        )
         if (extra or "").strip():
             body = (body or "").rstrip() + "\n\n" + extra.strip()
             report = parse_conclusion_markdown(
@@ -470,11 +460,7 @@ async def build_conclusion_events(
         inspection_name=name,
     )
     paths = artifact_paths(case_id, name, CONCLUSION_SPEC)
-    yield {
-        "type": "status",
-        "message": "Собираю Word с аудиторским заключением…",
-        "elapsed_ms": elapsed(),
-    }
+    yield sse_status(elapsed(), "Собираю Word с аудиторским заключением…")
     _write_markdown(
         paths.md,
         inspection_name=name,
@@ -492,17 +478,13 @@ async def build_conclusion_events(
         report=report,
         font=resolved_font,
     )
-    paths.sources.write_text(
-        json.dumps(
-            {
-                "font": resolved_font,
-                "selected_ns": [int(row["n"]) for row in hypotheses],
-                "sources": sources,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_sources_json(
+        paths.sources,
+        {
+            "font": resolved_font,
+            "selected_ns": [int(row["n"]) for row in hypotheses],
+            "sources": sources,
+        },
     )
     meta = _save_conclusion_meta(
         state,
@@ -513,8 +495,7 @@ async def build_conclusion_events(
         hypotheses=hypotheses,
         sources=sources,
     )
-    meta["digest"] = _digest(report)
-    yield {"type": "result", **meta, "elapsed_ms": elapsed()}
+    yield sse_result(elapsed(), meta, digest=_digest(report))
 
 
 async def build_conclusion(

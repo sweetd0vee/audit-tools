@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -10,15 +9,16 @@ from app.models import CaseState
 from app.prompts import prompt
 from app.services.brief_docx import write_total_docx
 from app.services.document_artifact import (
+    ArtifactOutcome,
+    ArtifactPaths,
     ArtifactSpec,
-    ElapsedTimer,
     artifact_download_name,
-    artifact_paths,
     artifact_stale,
     artifact_status,
+    case_stale_extra,
     event_result,
     resolve_artifact_file,
-    save_artifact_meta,
+    run_llm_artifact_events,
 )
 from app.services.ollama_client import chat_complete
 from app.storage import store
@@ -60,10 +60,7 @@ def _total_stale(state: CaseState) -> bool:
         state,
         TOTAL_SPEC,
         schema=TOTAL_SCHEMA,
-        extra={
-            "keywords": list(state.keywords),
-            "inspection_name": state.inspection_name,
-        },
+        extra=case_stale_extra(state),
     )
 
 
@@ -132,29 +129,6 @@ def _digest(body: str, limit: int = 8) -> list[str]:
     return out
 
 
-def _save_total_meta(
-    state: CaseState,
-    *,
-    docx: Path,
-    md: Path,
-    sources: list[dict],
-    body: str,
-) -> dict:
-    return save_artifact_meta(
-        state,
-        TOTAL_SPEC,
-        docx=docx,
-        md=md,
-        sources=sources,
-        body=body,
-        extra={
-            "keywords": list(state.keywords),
-            "schema": TOTAL_SCHEMA,
-            "source": "model_knowledge",
-        },
-    )
-
-
 def _write_markdown(
     path: Path,
     *,
@@ -205,54 +179,17 @@ async def _compose_total(state: CaseState) -> str:
     )
 
 
-async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator[dict]:
-    timer = ElapsedTimer()
-    elapsed = timer.ms
-
-    yield {
-        "type": "status",
-        "message": "Готовлю конспект по знаниям модели…",
-        "elapsed_ms": elapsed(),
-    }
-    state = store.get(case_id)
-
-    if not force and not _total_stale(state):
-        meta = total_status(case_id)
-        yield {
-            "type": "status",
-            "message": "Саммари total уже собран — отдаю файл.",
-            "elapsed_ms": elapsed(),
-        }
-        yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
-        return
-
-    yield {
-        "type": "status",
-        "message": "Модель пишет конспект по теме из своих знаний. Это может занять несколько минут…",
-        "elapsed_ms": elapsed(),
-    }
-    try:
-        raw = await _compose_total(state)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Модель не собрала саммари total: {exc}") from exc
-    if not (raw or "").strip():
-        raise ValueError("Модель вернула пустой саммари total.")
-
+def _persist_total(
+    state: CaseState, paths: ArtifactPaths, raw: str, _ctx: None
+) -> ArtifactOutcome:
     body, sources = parse_total_sources(raw)
     if not body.strip():
         body = raw.strip()
-
-    paths = artifact_paths(case_id, state.inspection_name, TOTAL_SPEC)
-    yield {
-        "type": "status",
-        "message": "Собираю Word с саммари total…",
-        "elapsed_ms": elapsed(),
-    }
     _write_markdown(
         paths.md,
         inspection_name=state.inspection_name,
         keywords=state.keywords,
-        case_id=case_id,
+        case_id=state.case_id,
         body=body,
         sources=sources,
     )
@@ -260,19 +197,41 @@ async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator
         paths.primary,
         inspection_name=state.inspection_name,
         keywords=state.keywords,
-        case_id=case_id,
+        case_id=state.case_id,
         body=body,
         sources=sources,
     )
-    paths.sources.write_text(
-        json.dumps(sources, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    return ArtifactOutcome(
+        body=body,
+        sources=sources,
+        extra={
+            "keywords": list(state.keywords),
+            "schema": TOTAL_SCHEMA,
+            "source": "model_knowledge",
+        },
+        digest=_digest(body),
     )
-    meta = _save_total_meta(
-        state, docx=paths.primary, md=paths.md, sources=sources, body=body
-    )
-    meta["digest"] = _digest(body)
-    yield {"type": "result", **meta, "elapsed_ms": elapsed()}
+
+
+async def build_total_events(case_id: str, force: bool = False) -> AsyncIterator[dict]:
+    async for event in run_llm_artifact_events(
+        case_id,
+        TOTAL_SPEC,
+        force=force,
+        start_message="Готовлю конспект по знаниям модели…",
+        already_message="Саммари total уже собран — отдаю файл.",
+        compose_message=(
+            "Модель пишет конспект по теме из своих знаний. Это может занять несколько минут…"
+        ),
+        writing_message="Собираю Word с саммари total…",
+        load_state=store.get,
+        is_stale=_total_stale,
+        compose=lambda state, _ctx: _compose_total(state),
+        write=_persist_total,
+        compose_fail="Модель не собрала саммари total",
+        empty_error="Модель вернула пустой саммари total.",
+    ):
+        yield event
 
 
 async def build_total(case_id: str, force: bool = False) -> dict:

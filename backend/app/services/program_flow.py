@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -17,15 +16,17 @@ from app.services.case_context import (
     format_npa_sources,
 )
 from app.services.document_artifact import (
+    ArtifactOutcome,
+    ArtifactPaths,
     ArtifactSpec,
-    ElapsedTimer,
     artifact_download_name,
-    artifact_paths,
     artifact_stale,
     artifact_status,
+    case_stale_extra,
     event_result,
+    knowledge_ok_count,
     resolve_artifact_file,
-    save_artifact_meta,
+    run_llm_artifact_events,
 )
 from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete
@@ -191,10 +192,7 @@ def _program_stale(
     items_min: int | None = None,
     items_max: int | None = None,
 ) -> bool:
-    extra: dict = {
-        "keywords": list(state.keywords),
-        "inspection_name": state.inspection_name,
-    }
+    extra = case_stale_extra(state)
     if items_min is not None:
         extra["items_min"] = items_min
     if items_max is not None:
@@ -219,35 +217,6 @@ def _digest(questions: list[str], limit: int = 8) -> list[str]:
         if len(out) >= limit:
             return out
     return out
-
-
-def _save_program_meta(
-    state: CaseState,
-    *,
-    docx: Path,
-    md: Path,
-    sources: list[dict],
-    body: str,
-    items_min: int,
-    items_max: int,
-    questions: list[str],
-) -> dict:
-    return save_artifact_meta(
-        state,
-        PROGRAM_SPEC,
-        docx=docx,
-        md=md,
-        sources=sources,
-        body=body,
-        extra={
-            "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
-            "keywords": list(state.keywords),
-            "schema": PROGRAM_SCHEMA,
-            "items_min": items_min,
-            "items_max": items_max,
-            "question_count": len(questions),
-        },
-    )
 
 
 def _write_markdown(
@@ -333,80 +302,27 @@ async def _compose_program(
     )
 
 
-async def build_program_events(
-    case_id: str,
-    force: bool = False,
-    items_min: int | None = None,
-    items_max: int | None = None,
-    items: str | None = None,
-) -> AsyncIterator[dict]:
-    timer = ElapsedTimer()
-    elapsed = timer.ms
-    requested_min, requested_max = items_min, items_max
-    if items:
-        spec_min, spec_max = parse_program_items_spec(items)
-        if spec_min is not None:
-            requested_min = spec_min if requested_min is None else requested_min
-            requested_max = spec_max if requested_max is None else requested_max
-    specified = requested_min is not None or requested_max is not None
-    lo, hi = normalize_program_item_range(requested_min, requested_max)
-
-    yield {"type": "status", "message": "Собираю материалы проверки…", "elapsed_ms": elapsed()}
-    state = ingest_library(case_id)
-
-    if not force and not _program_stale(
-        state,
-        items_min=lo if specified else None,
-        items_max=hi if specified else None,
-    ):
-        meta = program_status(case_id)
-        yield {
-            "type": "status",
-            "message": "Программа проверки уже собрана — отдаю файл.",
-            "elapsed_ms": elapsed(),
-        }
-        yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
-        return
-
-    yield {
-        "type": "status",
-        "message": "Отбираю фрагменты из приложенных документов…",
-        "elapsed_ms": elapsed(),
-    }
-    sources = collect_brief_sources(state)
-
-    hint = program_items_hint(lo, hi)
-    yield {
-        "type": "status",
-        "message": f"Пишу программу аудиторской проверки банка РБ ({hint} пунктов). Это может занять несколько минут…",
-        "elapsed_ms": elapsed(),
-    }
-    try:
-        body = await _compose_program(state, sources, items_min=lo, items_max=hi)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Модель не собрала программу проверки: {exc}") from exc
-    if not (body or "").strip():
-        raise ValueError("Модель вернула пустую программу проверки.")
-
+def _persist_program(
+    state: CaseState,
+    paths: ArtifactPaths,
+    body: str,
+    sources: list[dict],
+    *,
+    items_min: int,
+    items_max: int,
+) -> ArtifactOutcome:
     questions = parse_program_questions(body)
     if not questions:
         questions = parse_program_questions(
             "## Вопросы, подлежащие аудиту\n\n" + (body or "")
         )
-    questions = fit_program_questions(questions, hi)
+    questions = fit_program_questions(questions, items_max)
     name = parse_program_heading(body, "Название проверки") or state.inspection_name
-
-    paths = artifact_paths(case_id, state.inspection_name, PROGRAM_SPEC)
-    yield {
-        "type": "status",
-        "message": "Собираю Word с программой проверки…",
-        "elapsed_ms": elapsed(),
-    }
     _write_markdown(
         paths.md,
         inspection_name=name,
         keywords=state.keywords,
-        case_id=case_id,
+        case_id=state.case_id,
         body=body,
         sources=sources,
         questions=questions,
@@ -415,27 +331,72 @@ async def build_program_events(
         paths.primary,
         inspection_name=name,
         keywords=state.keywords,
-        case_id=case_id,
+        case_id=state.case_id,
         body=body,
         sources=sources,
         questions=questions,
     )
-    paths.sources.write_text(
-        json.dumps(sources, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    meta = _save_program_meta(
-        state,
-        docx=paths.primary,
-        md=paths.md,
-        sources=sources,
+    return ArtifactOutcome(
         body=body,
-        items_min=lo,
-        items_max=hi,
-        questions=questions,
+        sources=sources,
+        extra={
+            "items": knowledge_ok_count(state),
+            "keywords": list(state.keywords),
+            "schema": PROGRAM_SCHEMA,
+            "items_min": items_min,
+            "items_max": items_max,
+            "question_count": len(questions),
+        },
+        digest=_digest(questions),
     )
-    meta["digest"] = _digest(questions)
-    yield {"type": "result", **meta, "elapsed_ms": elapsed()}
+
+
+async def build_program_events(
+    case_id: str,
+    force: bool = False,
+    items_min: int | None = None,
+    items_max: int | None = None,
+    items: str | None = None,
+) -> AsyncIterator[dict]:
+    requested_min, requested_max = items_min, items_max
+    if items:
+        spec_min, spec_max = parse_program_items_spec(items)
+        if spec_min is not None:
+            requested_min = spec_min if requested_min is None else requested_min
+            requested_max = spec_max if requested_max is None else requested_max
+    specified = requested_min is not None or requested_max is not None
+    lo, hi = normalize_program_item_range(requested_min, requested_max)
+    hint = program_items_hint(lo, hi)
+
+    async for event in run_llm_artifact_events(
+        case_id,
+        PROGRAM_SPEC,
+        force=force,
+        start_message="Собираю материалы проверки…",
+        already_message="Программа проверки уже собрана — отдаю файл.",
+        prepare_message="Отбираю фрагменты из приложенных документов…",
+        compose_message=(
+            f"Пишу программу аудиторской проверки банка РБ ({hint} пунктов). "
+            "Это может занять несколько минут…"
+        ),
+        writing_message="Собираю Word с программой проверки…",
+        load_state=ingest_library,
+        is_stale=lambda state: _program_stale(
+            state,
+            items_min=lo if specified else None,
+            items_max=hi if specified else None,
+        ),
+        prepare=collect_brief_sources,
+        compose=lambda state, sources: _compose_program(
+            state, sources, items_min=lo, items_max=hi
+        ),
+        write=lambda state, paths, body, sources: _persist_program(
+            state, paths, body, sources, items_min=lo, items_max=hi
+        ),
+        compose_fail="Модель не собрала программу проверки",
+        empty_error="Модель вернула пустую программу проверки.",
+    ):
+        yield event
 
 
 async def build_program(

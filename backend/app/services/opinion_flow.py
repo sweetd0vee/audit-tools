@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -18,15 +17,17 @@ from app.services.case_context import (
     read_truncated_md,
 )
 from app.services.document_artifact import (
+    ArtifactOutcome,
+    ArtifactPaths,
     ArtifactSpec,
-    ElapsedTimer,
     artifact_download_name,
-    artifact_paths,
     artifact_stale,
     artifact_status,
+    case_stale_extra,
     event_result,
     resolve_artifact_file,
-    save_artifact_meta,
+    run_llm_artifact_events,
+    upstream_built_at,
 )
 from app.services.hypotheses_flow import selected_hypothesis_rows
 from app.services.knowledge_ingest import ingest_library
@@ -151,16 +152,12 @@ def _opinion_stale(state: CaseState, font: str) -> bool:
         state,
         OPINION_SPEC,
         schema=OPINION_SCHEMA,
-        extra={
-            "keywords": list(state.keywords),
-            "inspection_name": state.inspection_name,
-            "font": font,
-            "selected_ns": list(selection.get("selected_ns") or []),
-            "hypotheses_built_at": (state.meta.get("hypotheses") or {}).get("built_at"),
-            "program_built_at": (state.meta.get("program") or {}).get("built_at"),
-            "brief_built_at": (state.meta.get("brief") or {}).get("built_at"),
-            "total_built_at": (state.meta.get("total") or {}).get("built_at"),
-        },
+        extra=case_stale_extra(
+            state,
+            font=font,
+            selected_ns=list(selection.get("selected_ns") or []),
+            **upstream_built_at(state, "hypotheses", "program", "brief", "total"),
+        ),
     )
 
 
@@ -191,36 +188,104 @@ def _write_markdown(
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
-def _save_opinion_meta(
+def _require_selected_hypotheses(state: CaseState) -> None:
+    if selected_hypothesis_rows(state):
+        return
+    raise ValueError(
+        "Сначала подтвердите гипотезы, которые войдут в мнение: "
+        "`утверждаю гипотезы 1, 3, 5` или "
+        "`утверждаю гипотезы все с приоритетом высокий`. "
+        "Если чеклиста ещё нет — напишите `гипотезы`."
+    )
+
+
+def _opinion_prepare(state: CaseState) -> tuple[list[dict[str, str]], list[dict]]:
+    return selected_hypothesis_rows(state), collect_brief_sources(state)
+
+
+def _persist_opinion(
     state: CaseState,
-    *,
-    docx: Path,
-    md: Path,
+    paths: ArtifactPaths,
     body: str,
+    ctx: tuple[list[dict[str, str]], list[dict]],
+    *,
     font: str,
-    hypotheses: list[dict[str, str]],
-    sources: list[dict],
-) -> dict:
-    selection = state.meta.get("hypotheses_selection") or {}
-    return save_artifact_meta(
-        state,
-        OPINION_SPEC,
-        docx=docx,
-        md=md,
-        sources=sources,
+) -> ArtifactOutcome:
+    hypotheses, sources = ctx
+    name = (state.inspection_name or "").strip()
+    _write_markdown(
+        paths.md,
+        inspection_name=name,
+        keywords=state.keywords,
+        case_id=state.case_id,
         body=body,
+        font=font,
+        hypotheses=hypotheses,
+    )
+    write_opinion_docx(
+        paths.primary,
+        inspection_name=name,
+        keywords=state.keywords,
+        case_id=state.case_id,
+        body=body,
+        font=font,
+    )
+    selection = state.meta.get("hypotheses_selection") or {}
+    return ArtifactOutcome(
+        body=body,
+        sources=sources,
         extra={
             "schema": OPINION_SCHEMA,
             "font": font,
             "keywords": list(state.keywords),
             "selected_ns": [int(row["n"]) for row in hypotheses],
-            "hypotheses_built_at": (state.meta.get("hypotheses") or {}).get("built_at"),
-            "program_built_at": (state.meta.get("program") or {}).get("built_at"),
-            "brief_built_at": (state.meta.get("brief") or {}).get("built_at"),
-            "total_built_at": (state.meta.get("total") or {}).get("built_at"),
+            **upstream_built_at(state, "hypotheses", "program", "brief", "total"),
             "selection_at": selection.get("selected_at"),
         },
+        digest=_digest(body),
+        sources_file={
+            "font": font,
+            "selected_ns": [int(row["n"]) for row in hypotheses],
+            "sources": sources,
+        },
     )
+
+
+async def build_opinion_events(
+    case_id: str,
+    force: bool = False,
+    font: str | None = None,
+) -> AsyncIterator[dict]:
+    resolved_font = parse_document_font(font)
+
+    async def compose(state: CaseState, ctx: tuple[list[dict[str, str]], list[dict]]) -> str:
+        hypotheses, sources = ctx
+        return await _compose_opinion(state, hypotheses=hypotheses, sources=sources)
+
+    async for event in run_llm_artifact_events(
+        case_id,
+        OPINION_SPEC,
+        force=force,
+        start_message="Собираю подтверждённые гипотезы и материалы проверки…",
+        already_message="Аудиторское мнение уже собрано — отдаю файл.",
+        prepare_message="Отбираю фрагменты из приложенных документов…",
+        compose_message=(
+            f"Пишу раздел I аудиторского заключения ({resolved_font}). "
+            "Это может занять несколько минут…"
+        ),
+        writing_message="Собираю Word с аудиторским мнением…",
+        load_state=ingest_library,
+        inspect=_require_selected_hypotheses,
+        is_stale=lambda state: _opinion_stale(state, resolved_font),
+        prepare=_opinion_prepare,
+        compose=compose,
+        write=lambda state, paths, body, ctx: _persist_opinion(
+            state, paths, body, ctx, font=resolved_font
+        ),
+        compose_fail="Модель не собрала аудиторское мнение",
+        empty_error="Модель вернула пустое аудиторское мнение.",
+    ):
+        yield event
 
 
 async def _compose_opinion(
@@ -272,111 +337,6 @@ async def _compose_opinion(
         num_predict=4096,
         temperature=0.2,
     )
-
-
-async def build_opinion_events(
-    case_id: str,
-    force: bool = False,
-    font: str | None = None,
-) -> AsyncIterator[dict]:
-    timer = ElapsedTimer()
-    elapsed = timer.ms
-    resolved_font = parse_document_font(font)
-
-    yield {
-        "type": "status",
-        "message": "Собираю подтверждённые гипотезы и материалы проверки…",
-        "elapsed_ms": elapsed(),
-    }
-    state = ingest_library(case_id)
-    hypotheses = selected_hypothesis_rows(state)
-    if not hypotheses:
-        raise ValueError(
-            "Сначала подтвердите гипотезы, которые войдут в мнение: "
-            "`утверждаю гипотезы 1, 3, 5` или "
-            "`утверждаю гипотезы все с приоритетом высокий`. "
-            "Если чеклиста ещё нет — напишите `гипотезы`."
-        )
-
-    if not force and not _opinion_stale(state, resolved_font):
-        meta = opinion_status(case_id)
-        yield {
-            "type": "status",
-            "message": "Аудиторское мнение уже собрано — отдаю файл.",
-            "elapsed_ms": elapsed(),
-        }
-        yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
-        return
-
-    yield {
-        "type": "status",
-        "message": "Отбираю фрагменты из приложенных документов…",
-        "elapsed_ms": elapsed(),
-    }
-    sources = collect_brief_sources(state)
-
-    yield {
-        "type": "status",
-        "message": (
-            f"Пишу раздел I аудиторского заключения ({resolved_font}). "
-            "Это может занять несколько минут…"
-        ),
-        "elapsed_ms": elapsed(),
-    }
-    try:
-        body = await _compose_opinion(state, hypotheses=hypotheses, sources=sources)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Модель не собрала аудиторское мнение: {exc}") from exc
-    if not (body or "").strip():
-        raise ValueError("Модель вернула пустое аудиторское мнение.")
-
-    name = (state.inspection_name or "").strip()
-    paths = artifact_paths(case_id, name, OPINION_SPEC)
-    yield {
-        "type": "status",
-        "message": "Собираю Word с аудиторским мнением…",
-        "elapsed_ms": elapsed(),
-    }
-    _write_markdown(
-        paths.md,
-        inspection_name=name,
-        keywords=state.keywords,
-        case_id=case_id,
-        body=body,
-        font=resolved_font,
-        hypotheses=hypotheses,
-    )
-    write_opinion_docx(
-        paths.primary,
-        inspection_name=name,
-        keywords=state.keywords,
-        case_id=case_id,
-        body=body,
-        font=resolved_font,
-    )
-    paths.sources.write_text(
-        json.dumps(
-            {
-                "font": resolved_font,
-                "selected_ns": [int(row["n"]) for row in hypotheses],
-                "sources": sources,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    meta = _save_opinion_meta(
-        state,
-        docx=paths.primary,
-        md=paths.md,
-        body=body,
-        font=resolved_font,
-        hypotheses=hypotheses,
-        sources=sources,
-    )
-    meta["digest"] = _digest(body)
-    yield {"type": "result", **meta, "elapsed_ms": elapsed()}
 
 
 async def build_opinion(

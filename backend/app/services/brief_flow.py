@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -19,8 +18,13 @@ from app.services.document_artifact import (
     artifact_stale,
     artifact_status,
     event_result,
+    knowledge_ok_count,
     resolve_artifact_file,
+    reuse_artifact_events,
     save_artifact_meta,
+    sse_result,
+    sse_status,
+    write_sources_json,
 )
 from app.services.knowledge_index import embed_index, rebuild_index
 from app.services.knowledge_ingest import ingest_library
@@ -237,7 +241,7 @@ def _save_brief_meta(state, *, docx: Path, md: Path, sources: list[dict], body: 
         sources=sources,
         body=body,
         extra={
-            "items": sum(1 for i in state.knowledge if i.extract_status == "ok"),
+            "items": knowledge_ok_count(state),
             "schema": BRIEF_SCHEMA,
         },
     )
@@ -247,32 +251,38 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
     timer = ElapsedTimer()
     elapsed = timer.ms
 
-    yield {"type": "status", "message": "Собираю тексты библиотеки…", "elapsed_ms": elapsed()}
+    yield sse_status(elapsed(), "Собираю тексты библиотеки…")
     state = ingest_library(case_id)
     ok_items = [i for i in state.knowledge if i.extract_status == "ok"]
     if not ok_items:
         raise ValueError("База знаний пуста. Сначала утвердите акты и дождитесь скачивания.")
 
-    if not force and not _brief_stale(state):
-        meta = brief_status(case_id)
-        yield {"type": "status", "message": "Саммари уже собрано — отдаю файл.", "elapsed_ms": elapsed()}
-        yield {"type": "result", **meta, "digest": [], "elapsed_ms": elapsed()}
+    cached = reuse_artifact_events(
+        case_id,
+        BRIEF_SPEC,
+        force=force,
+        stale=_brief_stale(state),
+        already_message="Саммари уже собрано — отдаю файл.",
+        elapsed_ms=elapsed(),
+    )
+    if cached:
+        for event in cached:
+            yield event
         return
 
-    yield {"type": "status", "message": "Нарезаю акты на чанки для RAG…", "elapsed_ms": elapsed()}
+    yield sse_status(elapsed(), "Нарезаю акты на чанки для RAG…")
     rebuild_index(case_id, state=state)
     try:
         kws = list(state.keywords) + list(state.topics) + [state.inspection_name]
-        yield {"type": "status", "message": "Эмбеддинги для саммари…", "elapsed_ms": elapsed()}
+        yield sse_status(elapsed(), "Эмбеддинги для саммари…")
         await embed_index(case_id, kws)
     except Exception as exc:  # noqa: BLE001
-        yield {
-            "type": "status",
-            "message": f"Эмбеддинги частично недоступны ({exc}) — BM25 всё равно отработает.",
-            "elapsed_ms": elapsed(),
-        }
+        yield sse_status(
+            elapsed(),
+            f"Эмбеддинги частично недоступны ({exc}) — BM25 всё равно отработает.",
+        )
 
-    yield {"type": "status", "message": "Готовлю карточки существенного по актам…", "elapsed_ms": elapsed()}
+    yield sse_status(elapsed(), "Готовлю карточки существенного по актам…")
 
     total = len(ok_items)
     for idx, item in enumerate(ok_items, start=1):
@@ -281,18 +291,14 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         async def on_status(msg: str, q: asyncio.Queue[str] = status_q) -> None:
             await q.put(msg)
 
-        yield {
-            "type": "status",
-            "message": f"Саммари акта {idx} из {total}: {item.title}",
-            "elapsed_ms": elapsed(),
-        }
+        yield sse_status(elapsed(), f"Саммари акта {idx} из {total}: {item.title}")
         task = asyncio.create_task(summarize_item(state, item, on_status=on_status))
         while True:
             if task.done() and status_q.empty():
                 break
             try:
                 msg = await asyncio.wait_for(status_q.get(), timeout=0.5)
-                yield {"type": "status", "message": msg, "elapsed_ms": elapsed()}
+                yield sse_status(elapsed(), msg)
             except asyncio.TimeoutError:
                 if task.done():
                     break
@@ -314,12 +320,12 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
             )
         chapters.append({"title": item.title, "body": body, "item_id": item.id})
 
-    yield {"type": "status", "message": "Собираю обзор проверки по карточкам актов…", "elapsed_ms": elapsed()}
+    yield sse_status(elapsed(), "Собираю обзор проверки по карточкам актов…")
     overview = await _synthesize_overview(state, chapters)
 
     body_for_pages = overview + "\n\n" + "\n\n".join(ch["body"] for ch in chapters)
     paths = artifact_paths(case_id, state.inspection_name, BRIEF_SPEC)
-    yield {"type": "status", "message": "Собираю Word с карточками актов…", "elapsed_ms": elapsed()}
+    yield sse_status(elapsed(), "Собираю Word с карточками актов…")
     _write_markdown(
         paths.md,
         inspection_name=state.inspection_name,
@@ -338,15 +344,11 @@ async def build_brief_events(case_id: str, force: bool = False) -> AsyncIterator
         chapters=chapters,
         sources=sources,
     )
-    paths.sources.write_text(
-        json.dumps(sources, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_sources_json(paths.sources, sources)
     meta = _save_brief_meta(
         state, docx=paths.primary, md=paths.md, sources=sources, body=body_for_pages
     )
-    meta["digest"] = _digest(chapters)
-    yield {"type": "result", **meta, "elapsed_ms": elapsed()}
+    yield sse_result(elapsed(), meta, digest=_digest(chapters))
 
 
 async def build_brief(case_id: str, force: bool = False) -> dict:

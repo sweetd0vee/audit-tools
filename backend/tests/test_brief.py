@@ -521,7 +521,7 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
                     "- ст. 1 — аренда\n- ст. 12 — расчёты\n- ст. 40 — неустойка"
                 )
 
-            with patch("app.services.knowledge_flow.chat_complete", fake_chat):
+            with patch("app.services.knowledge_summarize.chat_complete", fake_chat):
                 result = await summarize_item(state, item)
 
             self.assertEqual(result.summary_status, "ok")
@@ -579,10 +579,10 @@ class TestSummarizeFullDocument(unittest.IsolatedAsyncioTestCase):
                 return out
 
             with (
-                patch("app.services.knowledge_flow.chat_complete", fake_chat),
-                patch("app.services.knowledge_flow.embed_texts", fake_embed),
-                patch("app.services.knowledge_flow._load_index", return_value={"chunks": []}),
-                patch("app.services.knowledge_flow._persist_item_embeddings"),
+                patch("app.services.knowledge_summarize.chat_complete", fake_chat),
+                patch("app.services.knowledge_summarize.embed_texts", fake_embed),
+                patch("app.services.knowledge_index.load_index", return_value={"chunks": []}),
+                patch("app.services.knowledge_summarize.persist_item_embeddings"),
             ):
                 result = await summarize_item(state, item)
 
