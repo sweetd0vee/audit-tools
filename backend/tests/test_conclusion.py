@@ -5,6 +5,8 @@ import zipfile
 from datetime import date
 from pathlib import Path
 
+from docx.enum.text import WD_LINE_SPACING
+
 from app.prompts import prompt
 from app.services.conclusion_docx import (
     _COVER_IMAGE,
@@ -16,6 +18,24 @@ from app.services.conclusion_docx import (
     write_conclusion_docx,
 )
 from app.services.opinion_flow import FONT_CALIBRI, FONT_TIMES, parse_opinion_font_flag
+
+
+def _assert_tight_spacing(test: unittest.TestCase, doc, xml: str, styles: str) -> None:
+    paragraphs = list(doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                paragraphs.extend(cell.paragraphs)
+    for paragraph in paragraphs:
+        fmt = paragraph.paragraph_format
+        if fmt.space_before is not None:
+            test.assertEqual(fmt.space_before.pt, 0.0, paragraph.text[:80])
+        if fmt.space_after is not None:
+            test.assertEqual(fmt.space_after.pt, 0.0, paragraph.text[:80])
+        if fmt.line_spacing_rule is not None:
+            test.assertEqual(fmt.line_spacing_rule, WD_LINE_SPACING.SINGLE, paragraph.text[:80])
+    test.assertNotIn('w:line="360"', xml)
+    test.assertIn("contextualSpacing", styles)
 
 
 def _row(n: int, priority: str = "средний") -> dict:
@@ -258,7 +278,9 @@ class TestConclusionDocx(unittest.TestCase):
             texts = "\n".join(p.text for p in doc.paragraphs)
             with zipfile.ZipFile(path) as zf:
                 xml = zf.read("word/document.xml").decode("utf-8")
+                styles = zf.read("word/styles.xml").decode("utf-8")
                 media = [n for n in zf.namelist() if n.startswith("word/media/")]
+            _assert_tight_spacing(self, doc, xml, styles)
             self.assertIn("Аудиторское заключение", xml)
             self.assertIn("Проверка аренды коммерческой недвижимости", xml)
             self.assertIn(f"Минск {date.today().year}", xml)

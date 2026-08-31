@@ -8,14 +8,15 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT, WD_TAB_LEADER
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt
+from docx.shared import Cm
 
 from app.services.brief_docx import (
     _add_opinion_paragraph,
     _add_program_table,
+    _apply_tight_spacing,
     _set_cell_borders,
     _set_cell_width,
     _set_document_base_font,
@@ -712,15 +713,13 @@ def _add_styled_paragraph(
     font: str,
     align: str = "justify",
     space_before: int = 0,
-    space_after: int = 8,
+    space_after: int = 0,
     first_line: bool = False,
 ) -> object:
     _ = font
     paragraph = doc.add_paragraph()
     fmt = paragraph.paragraph_format
-    fmt.space_before = Pt(space_before)
-    fmt.space_after = Pt(space_after)
-    fmt.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+    _apply_tight_spacing(paragraph, space_before=space_before, space_after=space_after)
     if align == "center":
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         fmt.first_line_indent = Cm(0)
@@ -770,7 +769,7 @@ def _add_body_markdown(doc: Document, md: str, *, font: str) -> None:
         if low.startswith("схема:") or low.startswith("**схема"):
             caption = _strip_md(stripped)
             _add_opinion_paragraph(
-                doc, caption, font=font, size=_FONT_SIZE, italic=True, first_line=False, space_after=4
+                doc, caption, font=font, size=_FONT_SIZE, italic=True, first_line=False
             )
             i += 1
             continue
@@ -782,8 +781,6 @@ def _add_body_markdown(doc: Document, md: str, *, font: str) -> None:
                 size=_FONT_SIZE,
                 bold=True,
                 first_line=False,
-                space_before=8,
-                space_after=6,
             )
             i += 1
             continue
@@ -795,7 +792,6 @@ def _add_body_markdown(doc: Document, md: str, *, font: str) -> None:
                 size=_FONT_SIZE,
                 first_line=False,
                 bullet=True,
-                space_after=4,
             )
             i += 1
             continue
@@ -807,7 +803,6 @@ def _add_body_markdown(doc: Document, md: str, *, font: str) -> None:
                 size=_FONT_SIZE,
                 first_line=False,
                 bullet=True,
-                space_after=4,
             )
             i += 1
             continue
@@ -843,22 +838,21 @@ def _add_markdown_table(doc: Document, lines: list[str], *, font: str) -> None:
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             paragraph = cell.paragraphs[0]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            paragraph.paragraph_format.space_after = Pt(2)
-            paragraph.paragraph_format.space_before = Pt(2)
+            _apply_tight_spacing(paragraph)
             run = paragraph.add_run(value)
             _set_run_font(run, size=12, bold=(r == 0), font=font)
-    _blank(doc, font=font, after=6)
+    _blank(doc, font=font)
 
 
 def _add_scheme_block(doc: Document, lines: list[str], *, font: str) -> None:
     _add_opinion_paragraph(
-        doc, "Схема", font=font, size=_FONT_SIZE, italic=True, first_line=False, space_after=4
+        doc, "Схема", font=font, size=_FONT_SIZE, italic=True, first_line=False
     )
     for line in lines:
         _add_opinion_paragraph(
-            doc, line, font=font, size=_FONT_SIZE, first_line=False, space_after=2
+            doc, line, font=font, size=_FONT_SIZE, first_line=False
         )
-    _blank(doc, font=font, after=6)
+    _blank(doc, font=font)
 
 
 def _set_row_height(row, twips: int) -> None:
@@ -905,17 +899,13 @@ def _add_boxed_paragraph(
     *,
     font: str,
     first_line: bool = False,
-    space_before: int = 0,
 ):
     paragraph = _add_styled_paragraph(
         doc,
         font=font,
         align="justify",
-        space_before=space_before,
-        space_after=0,
         first_line=first_line,
     )
-    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
     _set_paragraph_borders(paragraph)
     return paragraph
 
@@ -937,23 +927,21 @@ def _add_observation_header(doc: Document, observation: Observation, *, font: st
 
     lp = left.paragraphs[0]
     lp.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    lp.paragraph_format.space_after = Pt(0)
-    lp.paragraph_format.space_before = Pt(0)
+    _apply_tight_spacing(lp)
     run = lp.add_run(f"Наблюдение {observation.number}. ")
     _set_run_font(run, size=_FONT_SIZE, font=font)
     add_bookmark(lp, f"obs_{observation.number.replace('.', '_')}")
 
     rp = right.paragraphs[0]
     rp.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    rp.paragraph_format.space_after = Pt(0)
-    rp.paragraph_format.space_before = Pt(0)
+    _apply_tight_spacing(rp)
     title_run = rp.add_run(observation.title or "Название наблюдения")
     _set_run_font(title_run, size=_FONT_SIZE, italic=True, font=font)
     title_run.underline = True
 
 
 def _add_observation_summary(doc: Document, observation: Observation, *, font: str) -> None:
-    materiality = _add_boxed_paragraph(doc, font=font, first_line=True, space_before=6)
+    materiality = _add_boxed_paragraph(doc, font=font, first_line=True)
     _add_runs(
         materiality,
         [
@@ -998,7 +986,7 @@ def _add_roman_heading(
     doc: Document, roman: str, title: str, *, font: str, bookmark: str = ""
 ) -> object:
     p = _add_styled_paragraph(
-        doc, font=font, align="left", space_before=12, space_after=10, first_line=False
+        doc, font=font, align="left", first_line=False
     )
     heading = _dot_title(title)
     _add_runs(
@@ -1164,10 +1152,7 @@ def _write_title_page(
     font: str,
 ) -> None:
     paragraph = doc.add_paragraph()
-    fmt = paragraph.paragraph_format
-    fmt.space_before = Pt(0)
-    fmt.space_after = Pt(0)
-    fmt.line_spacing = 1.0
+    _apply_tight_spacing(paragraph)
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     if not _COVER_IMAGE.exists():
@@ -1268,10 +1253,8 @@ def _write_toc_line(
     bold_label: bool = True,
 ) -> None:
     paragraph = _add_styled_paragraph(
-        doc, font=font, align="left", space_after=2, first_line=False
+        doc, font=font, align="left", first_line=False
     )
-    paragraph.paragraph_format.space_before = Pt(2)
-    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
     paragraph.paragraph_format.left_indent = Cm(indent_cm)
     paragraph.paragraph_format.tab_stops.add_tab_stop(
         Cm(16.0), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS
@@ -1299,7 +1282,7 @@ def _write_toc(
     opinion_body: str = "",
 ) -> None:
     heading = _add_styled_paragraph(
-        doc, font=font, align="left", space_after=14, first_line=False
+        doc, font=font, align="left", first_line=False
     )
     _add_runs(heading, [(_TOC_HEADING, {"bold": True, "size": 16})], font=font)
     iii_title = _SECTION_III
@@ -1333,7 +1316,7 @@ def _write_general_section(doc: Document, section: ReportSection, *, font: str) 
     _add_roman_heading(doc, section.roman, _SECTION_LAST, font=font, bookmark="sec_IV")
     for label, value in section.general_items:
         lab = _add_styled_paragraph(
-            doc, font=font, align="justify", space_before=8, space_after=2, first_line=False
+            doc, font=font, align="justify", first_line=False
         )
         _add_runs(lab, [(label, {"bold": True})], font=font)
         _add_opinion_paragraph(
@@ -1342,7 +1325,6 @@ def _write_general_section(doc: Document, section: ReportSection, *, font: str) 
             font=font,
             size=_FONT_SIZE,
             first_line=False,
-            space_after=8,
         )
 
 

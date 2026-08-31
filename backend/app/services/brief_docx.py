@@ -659,6 +659,34 @@ def write_brief_docx(
 _OPINION_FONT_SIZE = 14
 _OPINION_TITLE = "I. Аудиторское мнение по итогам проверки"
 _NUMBERED_LINE_RE = re.compile(r"^(\d{1,2})[.)]\s+(.*)$")
+_TIGHT_STYLES = ("Normal", "List Bullet", "Heading 1", "Heading 2")
+
+
+def _apply_tight_spacing(paragraph, *, space_before: int = 0, space_after: int = 0) -> None:
+    """Word: before/after 0 pt, single line, no extra gap between same-style paragraphs."""
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(space_before)
+    fmt.space_after = Pt(space_after)
+    fmt.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    p_pr = paragraph._p.get_or_add_pPr()
+    if p_pr.find(qn("w:contextualSpacing")) is None:
+        p_pr.append(OxmlElement("w:contextualSpacing"))
+
+
+def _set_style_tight_spacing(style) -> None:
+    try:
+        pf = style.paragraph_format
+    except ValueError:
+        return
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(0)
+    pf.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    p_pr = style.element.find(qn("w:pPr"))
+    if p_pr is None:
+        p_pr = OxmlElement("w:pPr")
+        style.element.append(p_pr)
+    if p_pr.find(qn("w:contextualSpacing")) is None:
+        p_pr.append(OxmlElement("w:contextualSpacing"))
 
 
 def _set_document_base_font(doc: Document, font: str, size: int) -> None:
@@ -674,6 +702,11 @@ def _set_document_base_font(doc: Document, font: str, size: int) -> None:
     r_fonts.set(qn("w:hAnsi"), font)
     r_fonts.set(qn("w:eastAsia"), font)
     r_fonts.set(qn("w:cs"), font)
+    for name in _TIGHT_STYLES:
+        try:
+            _set_style_tight_spacing(doc.styles[name])
+        except KeyError:
+            continue
 
 
 def _add_opinion_paragraph(
@@ -687,14 +720,12 @@ def _add_opinion_paragraph(
     align: str = "justify",
     first_line: bool = True,
     space_before: int = 0,
-    space_after: int = 8,
+    space_after: int = 0,
     bullet: bool = False,
 ) -> None:
     paragraph = doc.add_paragraph(style="List Bullet" if bullet else "Normal")
     fmt = paragraph.paragraph_format
-    fmt.space_before = Pt(space_before)
-    fmt.space_after = Pt(space_after)
-    fmt.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+    _apply_tight_spacing(paragraph, space_before=space_before, space_after=space_after)
     if align == "center":
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         fmt.first_line_indent = Cm(0)
@@ -723,9 +754,7 @@ def _add_opinion_heading(doc: Document, text: str, *, font: str, level: int) -> 
     size = 16 if level <= 1 else 14
     for run in paragraph.runs:
         _set_run_font(run, size=size, bold=True, font=font)
-    fmt = paragraph.paragraph_format
-    fmt.space_before = Pt(12 if level <= 1 else 10)
-    fmt.space_after = Pt(6)
+    _apply_tight_spacing(paragraph)
 
 
 def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
@@ -763,7 +792,6 @@ def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
                 size=size,
                 first_line=False,
                 bullet=True,
-                space_after=4,
             )
             continue
         numbered = _NUMBERED_LINE_RE.match(stripped)
@@ -775,7 +803,6 @@ def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
                 size=size,
                 first_line=False,
                 bullet=True,
-                space_after=4,
             )
             continue
         _add_opinion_paragraph(doc, stripped, font=font, size=size)
@@ -810,20 +837,20 @@ def write_opinion_docx(
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.paragraph_format.space_after = Pt(6)
+    _apply_tight_spacing(title)
     tr = title.add_run(_OPINION_TITLE)
     _set_run_font(tr, size=16, bold=True, font=font)
 
     if (inspection_name or "").strip():
         sub = doc.add_paragraph()
         sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        sub.paragraph_format.space_after = Pt(8)
+        _apply_tight_spacing(sub)
         sr = sub.add_run(inspection_name.strip())
         _set_run_font(sr, size=_OPINION_FONT_SIZE, bold=True, font=font)
 
     note = doc.add_paragraph()
     note.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    note.paragraph_format.space_after = Pt(12)
+    _apply_tight_spacing(note)
     nr = note.add_run(
         "Черновик раздела I аудиторского заключения для руководства банка. "
         "Не утверждённый акт службы внутреннего аудита и не подпись руководителя СВА."
