@@ -86,6 +86,17 @@ class TestPipeClassify(unittest.TestCase):
             self.cmd("утверждаю гипотезы 1, 2, 3, 4 добавить"),
             self.Cmd.SELECT_HYPOTHESES,
         )
+        self.assertEqual(
+            self.cmd("утверждаю гипотезы 1, 2, 3, 4, 5, 6, 7, 8, 9 -t"),
+            self.Cmd.SELECT_HYPOTHESES,
+        )
+        self.assertEqual(
+            self.cmd(
+                "утверждаю гипотезы 1,2 ,3,4,5,6,7,8,9 -t плюс "
+                "Курсовые разницы не пересчитываются ежемесячно"
+            ),
+            self.Cmd.SELECT_HYPOTHESES,
+        )
         self.assertEqual(self.cmd("гипотезы"), self.Cmd.HYPOTHESES)
         self.assertEqual(self.cmd("чеклист гипотез"), self.Cmd.HYPOTHESES)
 
@@ -212,6 +223,47 @@ class TestPipeClassify(unittest.TestCase):
             self.intent._wants_extra_hypotheses("утверждаю гипотезы 1, 2, 3, 4 добавить")
         )
         self.assertFalse(self.intent._wants_extra_hypotheses("утверждаю гипотезы 1, 3"))
+        compact = picks(
+            "утверждаю гипотезы 1,2 ,3,4,5,6,7,8,9 -t плюс "
+            "Курсовые разницы не пересчитываются ежемесячно"
+        )
+        self.assertEqual(compact["numbers"], [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        self.assertEqual(
+            [row["hypothesis"] for row in compact["extra_hypotheses"]],
+            ["Курсовые разницы не пересчитываются ежемесячно"],
+        )
+        leaked = picks(
+            "утверждаю гипотезы 1, 2, 3 плюс Нарушение п. 12 Инструкции № 38"
+        )
+        self.assertEqual(leaked["numbers"], [1, 2, 3])
+        self.assertEqual(
+            leaked["extra_hypotheses"][0]["hypothesis"],
+            "Нарушение п. 12 Инструкции № 38",
+        )
+        two = picks(
+            "утверждаю гипотезы 1, 2 плюс Аренда без регистрации договора; "
+            "НДС принят к вычету без счёта-фактуры"
+        )
+        self.assertEqual(
+            [row["hypothesis"] for row in two["extra_hypotheses"]],
+            [
+                "Аренда без регистрации договора",
+                "НДС принят к вычету без счёта-фактуры",
+            ],
+        )
+        self.assertTrue(
+            self.intent._wants_opinion_after_select(
+                "утверждаю гипотезы 1, 2, 3, 4, 5, 6, 7, 8, 9 -t"
+            )
+        )
+        self.assertFalse(
+            self.intent._wants_opinion_after_select("утверждаю гипотезы 1, 3, 5")
+        )
+        self.assertTrue(
+            self.intent._wants_opinion_after_select(
+                "утверждаю гипотезы 1 и аудиторское мнение"
+            )
+        )
 
     def test_resolve_approval_numbers(self):
         docs = [
@@ -246,7 +298,7 @@ class TestPipePaste(unittest.TestCase):
         self.assertEqual(seed.PIPE_NAME, "Аудитор")
         self.assertEqual(seed.target_function_ids(set()), ["auditor"])
         self.assertEqual(seed.target_function_ids({"npa"}), ["npa"])
-        self.assertEqual(seed.target_function_ids({"auditor", "npa"}), ["auditor"])
+        self.assertEqual(seed.target_function_ids({"auditor", "npa"}), ["auditor", "npa"])
 
 
 class TestPipeElapsed(unittest.TestCase):
@@ -278,6 +330,95 @@ class TestPipeElapsed(unittest.TestCase):
             "Файл уже был готов. В прошлый раз генерация заняла 2 мин 5 с.",
         )
         self.assertEqual(footer({"reused": True, "elapsed_ms": 9}), "Файл уже был готов.")
+
+    def test_xlsx_name_and_mime(self):
+        mime = self.agent._xlsx_mime
+        name = self.agent._file_name
+        self.assertTrue(
+            mime(
+                {
+                    "file": {
+                        "id": "abc",
+                        "meta": {
+                            "content_type": (
+                                "application/vnd.openxmlformats-officedocument"
+                                ".spreadsheetml.sheet"
+                            )
+                        },
+                    }
+                }
+            )
+        )
+        self.assertFalse(mime({"type": "file", "id": "abc"}))
+        self.assertEqual(
+            name({"file": {"filename": "", "meta": {"name": "mine.xlsx"}}}),
+            "mine.xlsx",
+        )
+
+    def test_pipe_signature_receives_owui_files(self):
+        import inspect
+
+        params = inspect.signature(self.agent.Pipe.pipe).parameters
+        self.assertIn("__files__", params)
+        self.assertIn("__metadata__", params)
+
+    def test_iter_attached_files_from_owui_payload(self):
+        item = {
+            "type": "file",
+            "file": {
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "filename": "hypotheses_report.xlsx",
+                "path": (
+                    "/app/backend/data/uploads/"
+                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee_hypotheses_report.xlsx"
+                ),
+            },
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "name": "hypotheses_report.xlsx",
+            "url": "/api/v1/files/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        }
+        found = self.agent._iter_attached_files({}, None, {"files": [item]})
+        self.assertEqual(len(found), 1)
+        self.assertEqual(self.agent._file_name(found[0]), "hypotheses_report.xlsx")
+        self.assertIn(item["file"]["path"], self.agent._file_paths(found[0]))
+        self.assertEqual(
+            self.agent._iter_attached_files({"files": [item]}, None),
+            found,
+        )
+
+    def test_xlsx_attachments_reads_local_path(self):
+        import asyncio
+        import tempfile
+
+        from openpyxl import Workbook
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hypotheses_report.xlsx"
+            workbook = Workbook()
+            workbook.active["A1"] = "Гипотеза"
+            workbook.active["A2"] = "Своя гипотеза аудитора из Excel"
+            workbook.save(path)
+            item = {
+                "type": "file",
+                "file": {
+                    "id": "file-1",
+                    "filename": "hypotheses_report.xlsx",
+                    "path": str(path),
+                },
+                "name": "hypotheses_report.xlsx",
+            }
+            found = asyncio.run(
+                self.agent._xlsx_attachments(
+                    {},
+                    [item],
+                    None,
+                    "",
+                    5.0,
+                    allow_unknown=True,
+                )
+            )
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][1][:2], b"PK")
 
 
 if __name__ == "__main__":

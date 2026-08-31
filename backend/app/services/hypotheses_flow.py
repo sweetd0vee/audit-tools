@@ -42,7 +42,7 @@ from app.storage import store
 HYPOTHESES_SCHEMA = 2
 EXTRA_HYPOTHESES_MAX = 20
 AUDITOR_ORIGIN = "auditor"
-AUDITOR_BASIS = "гипотеза аудитора — из приложенного Excel"
+AUDITOR_BASIS = "гипотеза аудитора"
 HYPOTHESES_SPEC = ArtifactSpec(
     meta_key="hypotheses",
     directory="hypotheses",
@@ -420,6 +420,7 @@ def select_hypotheses(
     if not selected_ns and not extras:
         raise ValueError(
             "Укажите номера гипотез, например: `утверждаю гипотезы 1, 3, 5`, "
+            "свои — после `плюс` (`утверждаю гипотезы 1, 2 плюс формулировка`) "
             "или приложите Excel со своими гипотезами."
         )
 

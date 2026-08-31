@@ -31,9 +31,9 @@ Pipe: `seed/openwebui/functions/audit_agent.py`, `version: 0.0.1`.
   → список НПА (модель предлагает)
   → утверждаю 1, 2, 4          ← HITL, без этого ничего не качается
   → скачивание + индекс
-  → саммари / саммари total / программа проверки   (Word, в любом порядке)
+  → саммари / саммари total / программа проверки   (Word; программу — таблица вопросов, можно `программа проверки 8`)
   → гипотезы                   → Excel
-  → утверждаю гипотезы 1, 3, 5 ← HITL, в мнение идут только они
+  → утверждаю гипотезы 1, 3, 5 ← HITL; свои — `плюс …` или .xlsx
   → аудиторское мнение         → Word, раздел I
   → аудиторское заключение     → Word, полный черновик
   → вопрос …                   → цитата из базы
@@ -43,20 +43,18 @@ Pipe: `seed/openwebui/functions/audit_agent.py`, `version: 0.0.1`.
 **В коде**
 
 - FastAPI: кейс (`created → proposed → selected → downloading → ready / failed`), propose / select / download, extra_titles, manual URL, known_sources, SearXNG по allowlist, extract, индекс, ask, sync Open WebUI, обычный чат.
-- Word: обзор актов (`саммари`), конспект из знаний модели (`саммари total`), программа проверки, раздел I (`аудиторское мнение`), полное заключение (`аудиторское заключение`). Excel: чеклист гипотез. Стримы SSE, повтор `… заново`. Шрифт мнения/заключения: `-c` Calibri, `-t` Times New Roman.
-- Pipe: фазы **кодом**, не свободный ReAct. Download только после «утверждаю». Гипотезы в мнение — только после `утверждаю гипотезы …`. Вопрос к базе — только с префиксом `вопрос …`. Иначе `POST /api/v1/chat`. Подсказки следующих шагов — фразы в ответе, не отдельный UI.
+- Word: обзор актов (`саммари`), конспект из знаний модели (`саммари total`), программа проверки (таблица «вопросы, подлежащие аудиту»), раздел I (`аудиторское мнение`), полное заключение (`аудиторское заключение`). Excel: чеклист гипотез. Стримы SSE, повтор `… заново`. Шрифт мнения/заключения: `-c` Calibri, `-t` Times New Roman. Свои гипотезы: `плюс …` в чате или .xlsx.
+- Pipe: фазы **кодом**, не свободный ReAct. Download только после «утверждаю». Гипотезы в мнение — только после `утверждаю гипотезы …`. Вопрос к базе — только с префиксом `вопрос …`. Иначе `POST /api/v1/chat`. Подсказки следующих шагов — фразы в ответе, не отдельный UI. Засев Pipe при `compose up`, если в `.env` есть `OPENWEBUI_API_KEY` (`pipe-seed`).
 - `GET /cases`, в чате `кейсы` / `статус`. Файловый store, без БД.
 - `docker-compose.yml`: SearXNG + Open WebUI + backend; frontend только `--profile lab`.
 - Промпты в `docs/prompts/`. Сводка для правки: [PROMPTS.md](PROMPTS.md), рабочий Word: [Промпты агента.docx](Промпты агента.docx).
-- Тесты backend: extra_titles, download URLs, brief, hypotheses, opinion, conclusion, case_context.
+- Тесты backend: extra_titles, extra_hypotheses, download URLs, brief, hypotheses, opinion, conclusion, case_context, Pipe classify.
 
-**Ещё руками / нет в 0.0.1**
+**Ещё нет**
 
-- Засев Pipe при `compose up` — Admin вставляет функцию вручную ([AGENT.md](../seed/openwebui/AGENT.md)).
-- Нормализация `.txt` → markdown `## Статья N` перед sync — нет (чанкер по «Статья N» на сервере уже есть).
-- Eval RAG (золотые вопросы) и неизменяемый trail — нет.
-- Данных клиента, тестов проверки, WP, rules — нет.
-- «Открой кейс X» в новом чате — нет.
+- Данных клиента, тестов проверки, WP, rules.
+- «Открой кейс X» в новом чате.
+- Корневой `.env.example` и one-pager установки без репозитория (остаток v0.2). Без `OPENWEBUI_API_KEY` Pipe всё ещё вставляют руками ([AGENT.md](../seed/openwebui/AGENT.md)).
 
 Гипотеза «фронт не нужен для HITL» **подтверждена**. `frontend/` заморожен.
 
@@ -83,7 +81,7 @@ Pipe: `seed/openwebui/functions/audit_agent.py`, `version: 0.0.1`.
 
 Цель: `compose up` → открыл URL → чат с уже вставленным Pipe. Человек без репозитория ставит стенд.
 
-- [ ] Засев Pipe при `compose up` без ручной вставки в Admin.
+- [x] Засев Pipe при `compose up` при `OPENWEBUI_API_KEY` (`pipe-seed`). Без ключа — ручная вставка в Admin.
 - [ ] `.env.example` на **корне** compose (порты, модели) — дубль для человека без захода в `backend/`.
 - [ ] Документ «поставил → работает» на одну страницу (образы, pull моделей, офлайн-бандл для банка).
 - [ ] Скрипт: проверка GPU/RAM, pull моделей, healthcheck контейнеров, сообщение «откройте http://…».

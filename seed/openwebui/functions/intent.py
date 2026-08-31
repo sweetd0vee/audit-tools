@@ -25,6 +25,25 @@ EXTRA_MARK_RE = re.compile(
     r"(?:\bплюс\b|\bдобавь(?:те)?\b|\bдополнительно\b|\bи\s+ещ[её]\b|\bещ[её]\s*:|\s\+\s)\s*[:\-–+]?\s*",
     re.I,
 )
+HYPOTHESIS_EXTRA_MARK_RE = re.compile(
+    r"(?:"
+    r"\bплюс\b|"
+    r"\bдобав(?:ь(?:те)?|ить)\b|"
+    r"\bсвои?\s+гипотез\w*|"
+    r"\bдополнительн\w*(?:\s+гипотез\w*)?|"
+    r"\s\+\s"
+    r")\s*[:\-–+]?\s*",
+    re.I,
+)
+FONT_FLAG_RE = re.compile(r"(?:^|\s)-[ct](?:\s|$)", re.I)
+HYPOTHESIS_NOISE_RE = re.compile(
+    r"(?:^|\s)-[ct](?:\s|$)|"
+    r"\b(?:calibri|калибри|times(?:\s+new\s+roman)?|таймс)\b|"
+    r"аудиторск\w*\s+мнен\w*|"
+    r"мнен\w*\s+аудитор\w*|"
+    r"/opinion|/мнение",
+    re.I,
+)
 KB_ASK_RE = re.compile(
     r"^\s*(?:"
     r"вопрос(?:\s+по\s+(?:базе(?:\s+знаний)?|нпа|документам?))?"
@@ -229,26 +248,90 @@ def _is_opinion(text: str) -> bool:
     )
 
 
+def _split_hypothesis_extra_section(text: str) -> tuple[str, str]:
+    match = HYPOTHESIS_EXTRA_MARK_RE.search(text or "")
+    if not match:
+        return (text or "").strip(), ""
+    return text[: match.start()].strip(), text[match.end() :].strip()
+
+
+def _strip_hypothesis_noise(text: str) -> str:
+    cleaned = HYPOTHESIS_NOISE_RE.sub(" ", text or "")
+    return re.sub(r"\s+", " ", cleaned).strip(" .,:;")
+
+
+def _parse_extra_hypotheses(blob: str) -> list[dict[str, str]]:
+    raw = _strip_hypothesis_noise(blob)
+    if not raw:
+        return []
+    parts = re.split(r"\s*[;\n]\s*|\s+\+\s+", raw)
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for part in parts:
+        title = re.sub(r"^[\d]+[.)]\s*", "", part).strip(" .,:;")
+        title = re.sub(
+            r"^(?:и|ещ[её]|также|плюс|добавь(?:те)?|добавить|гипотез\w*|"
+            r"свои?\s+гипотез\w*)\s+",
+            "",
+            title,
+            flags=re.I,
+        ).strip(" .,:;")
+        key = re.sub(r"\s+", " ", title.lower())
+        if len(key) < 12 or key in seen:
+            continue
+        if re.search(r"(audit-case|<!--|https?://)", title, re.I):
+            continue
+        seen.add(key)
+        out.append({"hypothesis": title})
+    return out
+
+
 def _parse_hypothesis_picks(text: str) -> dict[str, Any]:
-    t = text.strip().lower()
+    main, extras_blob = _split_hypothesis_extra_section(text.strip())
+    extra_hypotheses = _parse_extra_hypotheses(extras_blob)
+    t = _strip_hypothesis_noise(main).lower()
     if re.search(r"все\s+(с\s+приоритетом\s+)?высок", t):
-        return {"all_high": True, "numbers": [], "all_rows": False}
+        return {
+            "all_high": True,
+            "numbers": [],
+            "all_rows": False,
+            "extra_hypotheses": extra_hypotheses,
+        }
     if re.search(r"все\s+гипотез|утверждаю\s+все(?!\s+обязательн)|подтверждаю\s+все", t):
-        return {"all_rows": True, "numbers": [], "all_high": False}
+        return {
+            "all_rows": True,
+            "numbers": [],
+            "all_high": False,
+            "extra_hypotheses": extra_hypotheses,
+        }
     numbers = [int(n) for n in re.findall(r"\b(\d{1,2})\b", t)]
     numbers = [n for n in numbers if 1 <= n <= 20]
-    return {"numbers": numbers, "all_high": False, "all_rows": False}
+    return {
+        "numbers": numbers,
+        "all_high": False,
+        "all_rows": False,
+        "extra_hypotheses": extra_hypotheses,
+    }
 
 
 def _wants_extra_hypotheses(text: str) -> bool:
     t = text.strip().lower()
+    if _parse_extra_hypotheses(_split_hypothesis_extra_section(text)[1]):
+        return True
     return bool(
         re.search(
-            r"добав\w*|прикреп\w*|свои\s+гипотез|(?:^|\s)\+?\s*плюс\s+|"
+            r"добав\w*|прикреп\w*|свои\s+гипотез|(?:^|\s)\+?\s*плюс(?:\s+|$)|"
             r"дополнительн\w*\s+гипотез",
             t,
         )
     )
+
+
+def _wants_opinion_after_select(text: str) -> bool:
+    if _is_opinion(text):
+        return True
+    main, _ = _split_hypothesis_extra_section(text or "")
+    return bool(FONT_FLAG_RE.search(main))
 
 
 def _parse_opinion_font(text: str) -> str:

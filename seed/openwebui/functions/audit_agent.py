@@ -32,7 +32,6 @@ from intent import (  # noqa: E402
     URL_ATTACH_RE,
     classify,
     _has_explicit_picks,
-    _is_opinion,
     _is_retry,
     _parse_hypothesis_picks,
     _parse_kb_question,
@@ -41,6 +40,7 @@ from intent import (  # noqa: E402
     _parse_program_items_spec,
     _resolve_approval,
     _wants_extra_hypotheses,
+    _wants_opinion_after_select,
 )
 # INTENT_INLINE_END
 
@@ -53,7 +53,7 @@ NEXT_STEPS = (
     "— `саммари` — основная информация по теме из базы знаний в Word;\n"
     "— `саммари total` — основная информация по теме из знаний модели;\n"
     "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
-    "— `аудиторское мнение` — черновик раздела I в Word после `утверждаю гипотезы …` (`-c` Calibri, `-t` Times New Roman). Свои гипотезы — приложите .xlsx к утверждению;\n"
+    "— `аудиторское мнение` — черновик раздела I в Word после `утверждаю гипотезы …` (`-c` Calibri, `-t` Times New Roman). Свои гипотезы: `утверждаю гипотезы 1, 2 плюс формулировка` или .xlsx;\n"
     "— `аудиторское заключение` — черновик заключения в Word после `аудиторское мнение` (`-c` Calibri, `-t` Times New Roman);\n"
     "— `вопрос` — вопрос по базе знаний;\n"
     "— `документы` — посмотреть список документов в базе знаний;\n"
@@ -131,7 +131,7 @@ _FONT_ARTIFACTS = {
         "error_label": "аудиторское мнение",
         "retry_hint": (
             "Сначала `гипотезы`, затем `утверждаю гипотезы 1, 3, 5`. "
-            "Свои гипотезы можно дописать в Excel и приложить к этой команде. "
+            "Свои: `утверждаю гипотезы 1, 2 плюс формулировка` или приложите .xlsx. "
             "Шрифт: `аудиторское мнение -c` (Calibri) или `-t` (Times New Roman)."
         ),
         "empty_message": "Аудиторское мнение не получилось. Напишите ещё раз: `аудиторское мнение`.",
@@ -146,7 +146,8 @@ _FONT_ARTIFACTS = {
         "fallback_status": "Готовлю аудиторское заключение…",
         "error_label": "аудиторское заключение",
         "retry_hint": (
-            "Сначала `гипотезы`, `утверждаю гипотезы 1, 3, 5` (свои — приложите .xlsx), "
+            "Сначала `гипотезы`, `утверждаю гипотезы 1, 3, 5` "
+            "(свои — `плюс формулировка` или .xlsx), "
             "затем `аудиторское мнение`. "
             "Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman)."
         ),
@@ -189,6 +190,8 @@ class Pipe:
         __user__: Optional[dict] = None,
         __request__: Any = None,
         __event_emitter__: Emitter = None,
+        __files__: Optional[list] = None,
+        __metadata__: Optional[dict] = None,
         **kwargs,
     ) -> str:
         text = _last_user_text(body)
@@ -199,6 +202,8 @@ class Pipe:
         owui_key = (self.valves.OPENWEBUI_API_KEY or "").strip() or _session_token(
             __user__, __request__
         )
+        files_kw = __files__ if __files__ is not None else kwargs.get("__files__")
+        metadata = __metadata__ if __metadata__ is not None else kwargs.get("__metadata__")
 
         command = classify(text, has_case=bool(case_id))
         if command == Cmd.HELP:
@@ -232,9 +237,17 @@ class Pipe:
                     return missing
                 assert case_id is not None
                 selected, confirmed = await self._select_hypotheses(
-                    api, timeout, case_id, text, body, __request__, owui_key, kwargs
+                    api,
+                    timeout,
+                    case_id,
+                    text,
+                    body,
+                    __request__,
+                    owui_key,
+                    files_kw,
+                    metadata,
                 )
-                if _is_opinion(text) and confirmed:
+                if _wants_opinion_after_select(text) and confirmed:
                     opinion = await self._opinion(
                         api,
                         public,
@@ -787,7 +800,8 @@ class Pipe:
         body: dict,
         request: Any,
         token: str,
-        kwargs: dict,
+        files_kw: Any = None,
+        metadata: Any = None,
     ) -> tuple[str, bool]:
         try:
             status = await _req(
@@ -805,50 +819,88 @@ class Pipe:
             return (
                 "Чеклиста гипотез ещё нет. Сначала напишите `гипотезы`, "
                 "затем: `утверждаю гипотезы 1, 3, 5`.\n"
-                "Свои гипотезы — допишите в Excel и приложите к утверждению.\n"
+                "Свои гипотезы — после `плюс` в том же сообщении или .xlsx.\n"
                 f"<!--audit-case:{case_id}-->"
             ), False
         picks = _parse_hypothesis_picks(text)
+        extra_rows = [
+            row
+            for row in (picks.get("extra_hypotheses") or [])
+            if isinstance(row, dict) and (row.get("hypothesis") or "").strip()
+        ]
         has_picks = bool(
             picks.get("numbers") or picks.get("all_high") or picks.get("all_rows")
         )
+        wants_extra = _wants_extra_hypotheses(text) or bool(extra_rows)
+        listed = _iter_attached_files(body, files_kw, metadata)
         attachments = await _xlsx_attachments(
-            body, kwargs.get("__files__"), request, token, timeout
+            body,
+            files_kw,
+            request,
+            token,
+            timeout,
+            metadata=metadata,
+            allow_unknown=True,
         )
-        wants_extra = _wants_extra_hypotheses(text)
-        if wants_extra and not attachments and not has_picks:
-            return (
-                "Приложите Excel со своими гипотезами к сообщению "
-                "`утверждаю гипотезы 1, 2, 3, 4` "
-                "или отдельно: `добавить гипотезы` + файл.\n"
-                f"<!--audit-case:{case_id}-->"
-            ), False
-        if not has_picks and not attachments:
+        if wants_extra and not attachments and not extra_rows:
+            names = [
+                _file_name(item) or _file_id(item) or "файл" for item in listed
+            ]
+            if listed:
+                hint = (
+                    f"Вижу вложение ({', '.join(names)}), но не смог прочитать Excel. "
+                    "Нужен исходный .xlsx с колонкой «Гипотеза», не преобразованный отчёт. "
+                    "Либо допишите формулировку после `плюс`.\n"
+                )
+            else:
+                hint = (
+                    "Свои гипотезы: допишите формулировку после `плюс` "
+                    "(несколько — через `;`) или приложите .xlsx.\n"
+                    "Пример: `утверждаю гипотезы 1, 2, 3 плюс "
+                    "Курсовые разницы не пересчитываются ежемесячно`.\n"
+                )
+            if not has_picks and not listed:
+                hint = (
+                    "Приложите Excel со своими гипотезами к сообщению "
+                    "`утверждаю гипотезы 1, 2, 3, 4` "
+                    "или напишите: `добавить гипотезы плюс …формулировка…`.\n"
+                )
+            return (f"{hint}<!--audit-case:{case_id}-->"), False
+        if not has_picks and not attachments and not extra_rows:
             return (
                 "Укажите номера гипотез, которые подтвердились на проверке, например:\n"
                 "`утверждаю гипотезы 1, 3, 5`\n"
                 "или: `утверждаю гипотезы все с приоритетом высокий`\n"
                 "или: `утверждаю все гипотезы`.\n"
-                "Свои гипотезы — приложите .xlsx к этой же команде "
-                "(колонка «Гипотеза»; можно дописать строки в скачанный чеклист).\n"
+                "Свои: `утверждаю гипотезы 1, 2 плюс формулировка` "
+                "или приложите .xlsx (колонка «Гипотеза»).\n"
                 f"<!--audit-case:{case_id}-->"
             ), False
-        payload = dict(picks)
+        payload = {
+            "numbers": picks.get("numbers") or [],
+            "all_high": bool(picks.get("all_high")),
+            "all_rows": bool(picks.get("all_rows")),
+        }
         if not has_picks:
             payload["keep_numbers"] = True
+        if extra_rows:
+            payload["extra_hypotheses"] = extra_rows
         try:
             if attachments:
                 name, raw = attachments[0]
+                form = {
+                    "numbers": json.dumps(payload.get("numbers") or []),
+                    "all_high": str(bool(payload.get("all_high"))).lower(),
+                    "all_rows": str(bool(payload.get("all_rows"))).lower(),
+                    "keep_numbers": str(bool(payload.get("keep_numbers"))).lower(),
+                }
+                if extra_rows:
+                    form["extra_hypotheses"] = json.dumps(extra_rows, ensure_ascii=False)
                 data = await _req(
                     "POST",
                     f"{api}/api/v1/cases/{case_id}/knowledge/hypotheses/select",
                     timeout,
-                    data={
-                        "numbers": json.dumps(payload.get("numbers") or []),
-                        "all_high": str(bool(payload.get("all_high"))).lower(),
-                        "all_rows": str(bool(payload.get("all_rows"))).lower(),
-                        "keep_numbers": str(bool(payload.get("keep_numbers"))).lower(),
-                    },
+                    data=form,
                     files={
                         "extra": (
                             name,
@@ -875,7 +927,7 @@ class Pipe:
         if extra_count:
             head = (
                 f"Подтвердил гипотезы: {generated} из чеклиста, "
-                f"плюс {extra_count} ваших из Excel."
+                f"плюс {extra_count} ваших."
             )
         else:
             head = f"Подтвердил гипотезы: {data.get('count') or len(rows)}."
@@ -892,7 +944,8 @@ class Pipe:
         lines.append("")
         if extra_count == 0:
             lines.append(
-                "Свои гипотезы можно добавить: `добавить гипотезы` и приложить .xlsx."
+                "Свои гипотезы: `утверждаю гипотезы 1, 2 плюс формулировка` "
+                "или `добавить гипотезы` и .xlsx."
             )
         lines.append(
             "Дальше: `аудиторское мнение`, затем `аудиторское заключение` "
@@ -1217,13 +1270,38 @@ def _file_name(item: Any) -> str:
     if not isinstance(item, dict):
         return ""
     nested = item.get("file") if isinstance(item.get("file"), dict) else {}
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    nested_meta = nested.get("meta") if isinstance(nested.get("meta"), dict) else {}
     return str(
         item.get("filename")
         or item.get("name")
         or nested.get("filename")
         or nested.get("name")
+        or meta.get("name")
+        or nested_meta.get("name")
         or ""
     )
+
+
+def _xlsx_mime(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    nested = item.get("file") if isinstance(item.get("file"), dict) else {}
+    blobs: list[str] = []
+    for src in (
+        item,
+        nested,
+        item.get("meta") if isinstance(item.get("meta"), dict) else {},
+        nested.get("meta") if isinstance(nested.get("meta"), dict) else {},
+    ):
+        if not isinstance(src, dict):
+            continue
+        for key in ("content_type", "mime_type", "mime", "type"):
+            value = src.get(key)
+            if isinstance(value, str) and value.strip():
+                blobs.append(value.lower())
+    joined = " ".join(blobs)
+    return "spreadsheet" in joined or "excel" in joined or "xlsx" in joined
 
 
 def _inline_xlsx_bytes(item: Any) -> Optional[bytes]:
@@ -1265,13 +1343,53 @@ def _file_id(item: Any) -> str:
     if not isinstance(item, dict):
         return ""
     nested = item.get("file") if isinstance(item.get("file"), dict) else {}
-    for key in ("id", "file_id"):
-        value = item.get(key) or nested.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    for src in (item, nested):
+        for key in ("id", "file_id"):
+            value = src.get(key)
+            if isinstance(value, str) and value.strip() and value.strip().lower() != "file":
+                return value.strip()
     url = str(item.get("url") or nested.get("url") or "")
     match = re.search(r"/files/([^/?#]+)", url)
     return match.group(1) if match else ""
+
+
+def _file_paths(item: Any) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    nested = item.get("file") if isinstance(item.get("file"), dict) else {}
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    nested_meta = nested.get("meta") if isinstance(nested.get("meta"), dict) else {}
+    found: list[str] = []
+    seen: set[str] = set()
+    for src in (item, nested, meta, nested_meta):
+        if not isinstance(src, dict):
+            continue
+        for key in ("path", "local_path"):
+            value = src.get(key)
+            if isinstance(value, str) and value.strip() and value.strip() not in seen:
+                seen.add(value.strip())
+                found.append(value.strip())
+    file_id = _file_id(item)
+    name = _file_name(item)
+    if file_id and name:
+        for root in (
+            "/app/backend/data/uploads",
+            "/app/backend/data/cache/uploads",
+        ):
+            candidate = f"{root}/{file_id}_{name}"
+            if candidate not in seen:
+                seen.add(candidate)
+                found.append(candidate)
+    return found
+
+
+def _read_path_bytes(path: str) -> Optional[bytes]:
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    return raw if raw[:2] == b"PK" else None
 
 
 def _owui_bases(request: Any) -> list[str]:
@@ -1296,19 +1414,40 @@ def _owui_bases(request: Any) -> list[str]:
     return out
 
 
-def _iter_attached_files(body: dict, files_kw: Any) -> list[dict]:
+def _iter_attached_files(
+    body: dict,
+    files_kw: Any,
+    metadata: Any = None,
+) -> list[dict]:
     items: list[dict] = []
-    for blob in (files_kw, body.get("files") if isinstance(body, dict) else None):
-        if isinstance(blob, list):
-            items.extend(x for x in blob if isinstance(x, dict))
+    blobs: list[Any] = [files_kw]
+    if isinstance(body, dict):
+        blobs.append(body.get("files"))
+        nested_meta = body.get("metadata")
+        if isinstance(nested_meta, dict):
+            blobs.append(nested_meta.get("files"))
+    if isinstance(metadata, dict):
+        blobs.append(metadata.get("files"))
     messages = (body or {}).get("messages") or []
     for message in reversed(messages):
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         attached = message.get("files")
         if isinstance(attached, list):
-            items.extend(x for x in attached if isinstance(x, dict))
+            blobs.insert(0, attached)
         break
+    seen: set[str] = set()
+    for blob in blobs:
+        if not isinstance(blob, list):
+            continue
+        for item in blob:
+            if not isinstance(item, dict):
+                continue
+            key = _file_id(item) or _file_name(item) or str(id(item))
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
     return items
 
 
@@ -1318,23 +1457,27 @@ async def _xlsx_attachments(
     request: Any,
     token: str,
     timeout: float,
+    *,
+    metadata: Any = None,
+    allow_unknown: bool = False,
 ) -> list[tuple[str, bytes]]:
     found: list[tuple[str, bytes]] = []
-    for item in _iter_attached_files(body, files_kw):
+    for item in _iter_attached_files(body, files_kw, metadata):
         name = _file_name(item) or "auditor.xlsx"
-        if not _is_xlsx_name(name) and not _inline_xlsx_bytes(item):
+        looks = (
+            _is_xlsx_name(name)
+            or any(_is_xlsx_name(path) for path in _file_paths(item))
+            or _inline_xlsx_bytes(item)
+            or _xlsx_mime(item)
+        )
+        if not looks and not allow_unknown:
             continue
         raw = _inline_xlsx_bytes(item)
         if raw is None:
-            path = item.get("path") or item.get("local_path")
-            nested = item.get("file") if isinstance(item.get("file"), dict) else {}
-            path = path or nested.get("path") or nested.get("local_path")
-            if isinstance(path, str):
-                try:
-                    with open(path, "rb") as handle:
-                        raw = handle.read()
-                except OSError:
-                    raw = None
+            for path in _file_paths(item):
+                raw = _read_path_bytes(path)
+                if raw:
+                    break
         if raw is None:
             file_id = _file_id(item)
             if file_id:
@@ -1353,11 +1496,30 @@ async def _download_owui_file(
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    cookies = getattr(request, "cookies", None)
+    cookie_header = ""
+    if cookies:
+        if hasattr(cookies, "items"):
+            cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        elif isinstance(cookies, dict):
+            cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        if cookie_header:
+            headers["Cookie"] = cookie_header
     for base in _owui_bases(request):
-        url = f"{base}/api/v1/files/{file_id}/content"
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(url, headers=headers)
+                meta = await client.get(f"{base}/api/v1/files/{file_id}", headers=headers)
+                if meta.status_code < 400:
+                    payload = meta.json()
+                    if isinstance(payload, dict):
+                        for path in _file_paths(payload):
+                            raw = _read_path_bytes(path)
+                            if raw:
+                                return raw
+                response = await client.get(
+                    f"{base}/api/v1/files/{file_id}/content",
+                    headers=headers,
+                )
             if response.status_code < 400 and response.content[:2] == b"PK":
                 return response.content
         except Exception:

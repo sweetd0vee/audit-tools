@@ -119,13 +119,48 @@ def _function_rows(listing: object) -> list[dict]:
 
 
 def target_function_ids(existing_ids: set[str]) -> list[str]:
-    """Канонический id, иначе уже существующий legacy (`npa`) — без второй копии."""
+    """Обновить все уже существующие Pipe (`auditor` и legacy `npa`), иначе создать `auditor`.
+
+    Старые чаты часто привязаны к id `npa`. Если трогать только `auditor`,
+    в открытом чате модель пропадает («Model not selected»).
+    """
+    ids: list[str] = []
     if PIPE_ID in existing_ids:
-        return [PIPE_ID]
+        ids.append(PIPE_ID)
     for legacy in LEGACY_PIPE_IDS:
-        if legacy in existing_ids:
-            return [legacy]
-    return [PIPE_ID]
+        if legacy in existing_ids and legacy not in ids:
+            ids.append(legacy)
+    return ids or [PIPE_ID]
+
+
+def _listed_functions(listing: object) -> tuple[set[str], dict[str, bool]]:
+    existing_ids: set[str] = set()
+    active_by_id: dict[str, bool] = {}
+    for row in _function_rows(listing):
+        if not row.get("id"):
+            continue
+        fid = str(row["id"])
+        existing_ids.add(fid)
+        active_by_id[fid] = bool(row.get("is_active"))
+    return existing_ids, active_by_id
+
+
+def _ensure_active(root: str, token: str, function_id: str) -> None:
+    status, listing = _json_request("GET", f"{root}/api/v1/functions/", token)
+    if status >= 400:
+        print(f"Не проверил Pipe `{function_id}` ({status}): {listing}")
+        return
+    _, active_by_id = _listed_functions(listing)
+    if active_by_id.get(function_id):
+        return
+    tog_status, tog_body = _json_request(
+        "POST", f"{root}/api/v1/functions/id/{function_id}/toggle", token
+    )
+    if tog_status >= 400:
+        raise SystemExit(
+            f"Включить Pipe `{function_id}` не удалось ({tog_status}): {tog_body}"
+        )
+    print(f"Pipe `{function_id}` включён.")
 
 
 def _pipe_form(function_id: str, content: str) -> dict:
@@ -150,7 +185,6 @@ def _upsert_function(
     function_id: str,
     content: str,
     existing_ids: set[str],
-    listed_active: bool,
     create: bool,
 ) -> None:
     form = _pipe_form(function_id, content)
@@ -163,8 +197,6 @@ def _upsert_function(
                 f"Обновление Pipe `{function_id}` не удалось ({up_status}): {up_body}"
             )
         print(f"Pipe `{function_id}` обновлён, имя «{PIPE_NAME}».")
-        info = up_body if isinstance(up_body, dict) else {}
-        is_active = info["is_active"] if "is_active" in info else listed_active
     elif create:
         cr_status, cr_body = _json_request(
             "POST", f"{root}/api/v1/functions/create", token, form
@@ -172,20 +204,10 @@ def _upsert_function(
         if cr_status >= 400:
             raise SystemExit(f"Создание Pipe не удалось ({cr_status}): {cr_body}")
         print(f"Pipe `{function_id}` создан.")
-        info = cr_body if isinstance(cr_body, dict) else {}
-        is_active = bool(info.get("is_active"))
     else:
         return
-
-    if not is_active:
-        tog_status, tog_body = _json_request(
-            "POST", f"{root}/api/v1/functions/id/{function_id}/toggle", token
-        )
-        if tog_status >= 400:
-            raise SystemExit(
-                f"Включить Pipe `{function_id}` не удалось ({tog_status}): {tog_body}"
-            )
-        print(f"Pipe `{function_id}` включён.")
+    time.sleep(1)
+    _ensure_active(root, token, function_id)
 
 
 def _rename_workspace_models(root: str, token: str) -> None:
@@ -238,14 +260,7 @@ def upsert_pipe(
     if list_status >= 400:
         raise SystemExit(f"GET /functions → {list_status}: {listing}")
 
-    existing_ids: set[str] = set()
-    active_by_id: dict[str, bool] = {}
-    for row in _function_rows(listing):
-        if not row.get("id"):
-            continue
-        fid = str(row["id"])
-        existing_ids.add(fid)
-        active_by_id[fid] = bool(row.get("is_active"))
+    existing_ids, _active_by_id = _listed_functions(listing)
 
     for function_id in target_function_ids(existing_ids):
         _upsert_function(
@@ -254,7 +269,6 @@ def upsert_pipe(
             function_id=function_id,
             content=content,
             existing_ids=existing_ids,
-            listed_active=active_by_id.get(function_id, False),
             create=True,
         )
 
@@ -278,6 +292,8 @@ def upsert_pipe(
                 f"Valves Pipe `{function_id}` не записались ({v_status}): {v_body}"
             )
     print(f"Valves: AUDIT_API={audit_api} PUBLIC_API={public_api}")
+    for function_id in target_function_ids(existing_ids):
+        _ensure_active(root, token, function_id)
     _rename_workspace_models(root, token)
 
 
