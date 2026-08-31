@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from time import time
 
 from app.config import settings
 from app.models import CaseState
@@ -66,8 +67,12 @@ CONCLUSION_DOC_TITLE = "Аудиторское заключение (черно�
 
 
 def conclusion_download_name(inspection_name: str, case_id: str = "", ext: str = "docx") -> str:
-    _ = case_id
-    return artifact_download_name(inspection_name, CONCLUSION_SPEC, ext=ext)
+    from app.filenames import safe_stem
+
+    stem = safe_stem(inspection_name or "proverka")
+    suffix = (ext or "docx").lstrip(".")
+    cid = (case_id or "case")[:12]
+    return f"{stem}_zakluchenie_{cid}_{int(time())}.{suffix}"
 
 
 def resolve_conclusion_file(case_id: str, kind: str) -> Path | None:

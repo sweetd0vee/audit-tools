@@ -292,9 +292,9 @@ class TestConclusionDocx(unittest.TestCase):
             with zipfile.ZipFile(path) as zf:
                 xml = zf.read("word/document.xml").decode("utf-8")
                 styles = zf.read("word/styles.xml").decode("utf-8")
-                effects = zf.read("word/stylesWithEffects.xml").decode("utf-8")
+                self.assertNotIn("word/stylesWithEffects.xml", zf.namelist())
                 media = [n for n in zf.namelist() if n.startswith("word/media/")]
-            _assert_tight_spacing(self, doc, xml, styles, effects)
+            _assert_tight_spacing(self, doc, xml, styles)
             self.assertIn("Аудиторское заключение", xml)
             self.assertIn("Проверка аренды коммерческой недвижимости", xml)
             self.assertIn(f"Минск {date.today().year}", xml)

@@ -774,21 +774,50 @@ def _tighten_document(doc: Document) -> None:
         _apply_tight_spacing(paragraph)
 
 
-def _sync_word_styles_with_effects(path: Path) -> None:
-    """Word 2010+ reads stylesWithEffects.xml; python-docx only patches styles.xml.
+_TIGHT_SPACING = (
+    '<w:spacing w:before="0" w:after="0" w:beforeLines="0" w:afterLines="0"'
+    ' w:beforeAutospacing="0" w:afterAutospacing="0" w:line="240" w:lineRule="auto"/>'
+)
+_SKIP_PACKAGE_PARTS = {"word/stylesWithEffects.xml"}
 
-    The default template keeps after=10pt and line=1.15 in stylesWithEffects, and
-    that is what the Paragraph dialog shows for аудиторское заключение.
-    """
+
+def _tighten_package_xml(name: str, data: bytes) -> bytes:
+    if not name.endswith(".xml") and not name.endswith(".rels"):
+        return data
+    text = data.decode("utf-8")
+    if name == "[Content_Types].xml":
+        text = re.sub(r"<Override[^>]*stylesWithEffects[^>]*/>", "", text)
+    elif name.endswith(".rels"):
+        text = re.sub(r"<Relationship[^>]*stylesWithEffects[^>]*/>", "", text)
+    elif name.startswith("word/") and name.endswith(".xml"):
+        text = re.sub(r"<w:docGrid\b[^/]*/>", "", text)
+        text = re.sub(r"<w:spacing\b[^/]*/>", _TIGHT_SPACING, text)
+        if name == "word/settings.xml":
+            text = re.sub(
+                r'(w:name="compatibilityMode"[^>]*w:val=")14(")',
+                r'\g<1>15\2',
+                text,
+                count=1,
+            )
+            if "doNotUseHTMLParagraphAutoSpacing" not in text:
+                text = text.replace(
+                    "<w:compat>",
+                    "<w:doNotUseHTMLParagraphAutoSpacing/><w:compat>",
+                    1,
+                )
+    return text.encode("utf-8")
+
+
+def _finalize_docx_package(path: Path) -> None:
+    """Drop Word 2010 stylesWithEffects (keeps 1.15 / 10pt from the template)."""
     original = path.read_bytes()
     buf = BytesIO()
     with zipfile.ZipFile(BytesIO(original), "r") as zin:
-        styles = zin.read("word/styles.xml")
         with zipfile.ZipFile(buf, "w") as zout:
             for item in zin.infolist():
-                data = zin.read(item.filename)
-                if item.filename == "word/stylesWithEffects.xml":
-                    data = styles
+                if item.filename in _SKIP_PACKAGE_PARTS:
+                    continue
+                data = _tighten_package_xml(item.filename, zin.read(item.filename))
                 info = zipfile.ZipInfo(filename=item.filename, date_time=item.date_time)
                 info.compress_type = item.compress_type
                 zout.writestr(info, data)
@@ -799,7 +828,7 @@ def _save_tight_docx(doc: Document, path: Path) -> None:
     _tighten_document(doc)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
-    _sync_word_styles_with_effects(path)
+    _finalize_docx_package(path)
 
 
 def _set_document_base_font(doc: Document, font: str, size: int) -> None:

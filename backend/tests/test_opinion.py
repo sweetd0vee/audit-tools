@@ -153,10 +153,10 @@ class TestOpinionDocx(unittest.TestCase):
             with zipfile.ZipFile(path) as zf:
                 xml = zf.read("word/document.xml").decode("utf-8")
                 styles = zf.read("word/styles.xml").decode("utf-8")
-                effects = zf.read("word/stylesWithEffects.xml").decode("utf-8")
+                self.assertNotIn("word/stylesWithEffects.xml", zf.namelist())
             self.assertIn("Calibri", xml)
             self.assertNotIn("w:tbl", xml)
-            _assert_tight_spacing(self, doc, xml, styles, effects)
+            _assert_tight_spacing(self, doc, xml, styles)
 
     def test_keeps_case_title_and_drops_model_title_section(self):
         body = """
