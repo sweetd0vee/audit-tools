@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 
 from app.clock import utc_now
@@ -11,11 +10,11 @@ from app.services.extra_titles import (
     expand_extra_titles,
     guess_doc_type,
     is_plausible_npa_title,
-    norm_title,
     search_queries_for_title,
 )
 from app.services.knowledge_index import rebuild_index
-from app.services.known_sources import lookup_known_url
+from app.services.known_sources import lookup_known_url, url_code_conflicts_title
+from app.services.npa_identity import page_matches_title, same_npa_title
 from app.services.npa_search import expand_official_urls, extract_doc_code, find_candidate_urls
 from app.services.ollama_client import propose_documents, propose_documents_events
 from app.storage import store
@@ -145,12 +144,8 @@ def run_select(
 
 
 def _ensure_extra_document(state: CaseState, title: str) -> ProposedDocument:
-    needle = norm_title(title)
     for doc in state.documents:
-        existing = norm_title(doc.title)
-        if existing == needle:
-            return doc
-        if len(needle) >= 16 and (needle in existing or existing in needle):
+        if same_npa_title(doc.title, title):
             return doc
 
     doc = ProposedDocument(
@@ -195,17 +190,92 @@ def _on_disk(doc: ProposedDocument, lib_dir: Path) -> bool:
 
 
 def _should_redownload(doc: ProposedDocument) -> bool:
-    """Retry a cached file if it is a news stub, chrome link, or a better official URL is known."""
+    """Retry a cached file if it is a news stub or a better catalogued URL is known."""
     url = (doc.found_url or "").lower()
     if any(marker in url for marker in NEWS_MARKERS):
         return True
     known = lookup_known_url(doc.title)
-    if known:
-        return extract_doc_code(known) != extract_doc_code(doc.found_url)
-    significant = re.findall(r"[а-яёa-z]{5,}", (doc.title or "").lower())
-    if significant and not any(token in url for token in significant):
+    if not known:
+        return False
+    known_code = extract_doc_code(known)
+    found_code = extract_doc_code(doc.found_url)
+    if known_code and (found_code or "").lower() != known_code.lower():
         return True
     return False
+
+
+def _preview_text(result: dict) -> str:
+    extract = result.get("text_extract")
+    if extract and Path(extract).exists():
+        try:
+            return Path(extract).read_text(encoding="utf-8")[:8000]
+        except OSError:
+            pass
+    raw = result.get("text")
+    if isinstance(raw, str) and raw.strip():
+        return raw[:8000]
+    path = Path(result.get("local_path") or "")
+    if path.exists():
+        try:
+            from app.services.extract import extract_text
+
+            return extract_text(path)[:8000]
+        except Exception:  # noqa: BLE001
+            return ""
+    return ""
+
+
+def _discard_download(result: dict) -> None:
+    for key in ("local_path", "text_extract"):
+        raw = result.get(key)
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.is_file():
+            path.unlink(missing_ok=True)
+
+
+def _downloaded_matches(doc: ProposedDocument, result: dict) -> bool:
+    url = result.get("url") or doc.found_url or ""
+    code = extract_doc_code(url)
+    if code and url_code_conflicts_title(code, doc.title):
+        return False
+    text = _preview_text(result)
+    if not text.strip():
+        return False
+    return page_matches_title(doc.title, text)
+
+
+def _cached_matches(doc: ProposedDocument, lib_dir: Path) -> bool:
+    if not doc.local_path:
+        return False
+    path = lib_dir / Path(doc.local_path).name
+    result = {
+        "local_path": str(path) if path.exists() else "",
+        "text_extract": str(path.with_suffix(".txt")) if path.exists() else "",
+        "url": doc.found_url or "",
+    }
+    return _downloaded_matches(doc, result)
+
+
+def _keep_library_files(state: CaseState, lib_dir: Path) -> None:
+    """Drop leftover files from previous selections so they cannot enter RAG."""
+    keep: set[str] = set()
+    for doc in state.documents:
+        if not (doc.selected and doc.download_status == "ok" and doc.local_path):
+            continue
+        name = Path(doc.local_path).name
+        keep.add(name)
+        keep.add(Path(name).with_suffix(".txt").name)
+    for item in state.knowledge:
+        if item.source == "uploaded" and item.filename:
+            keep.add(item.filename)
+    for path in list(lib_dir.iterdir()):
+        if not path.is_file():
+            continue
+        if path.name in keep or path.name.startswith("U_"):
+            continue
+        path.unlink(missing_ok=True)
 
 
 def _record_download(
@@ -269,11 +339,13 @@ async def _download_selected(
     manifest_items: list[dict] = []
 
     for i, doc in enumerate(selected, start=1):
-        if (
+        cached_ok = (
             doc.download_status == "ok"
             and _on_disk(doc, lib_dir)
             and not _should_redownload(doc)
-        ):
+            and _cached_matches(doc, lib_dir)
+        )
+        if cached_ok:
             manifest_items.append(
                 {
                     "document_id": doc.id,
@@ -298,12 +370,28 @@ async def _download_selected(
             nonlocal last_error, saved
             if not url or url in tried:
                 return False
+            if url_code_conflicts_title(extract_doc_code(url), doc.title):
+                last_error = (
+                    "URL указывает на другой акт, не на "
+                    f"«{doc.title}»"
+                )
+                logger.warning(
+                    "download skip other-act case=%s title=%s source=%s url=%s",
+                    case_id,
+                    doc.title,
+                    source,
+                    url,
+                )
+                tried.add(url)
+                return False
             tried.add(url)
             doc.found_url = url
             doc.download_status = "downloading"
             store.save(state)
             try:
-                result = await download_url(url, lib_dir, doc.title, i)
+                result = await download_url(
+                    url, lib_dir, doc.title, i, doc_id=doc.id
+                )
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 logger.warning(
@@ -314,6 +402,20 @@ async def _download_selected(
                     url,
                     exc,
                 )
+                return False
+            if not _downloaded_matches(doc, result):
+                last_error = (
+                    "Скачанная страница не соответствует названию акта "
+                    f"«{doc.title}»"
+                )
+                logger.warning(
+                    "download mismatch case=%s title=%s source=%s url=%s",
+                    case_id,
+                    doc.title,
+                    source,
+                    url,
+                )
+                _discard_download(result)
                 return False
             _record_download(doc, result, source, manifest_items)
             saved = True
@@ -351,6 +453,8 @@ async def _download_selected(
     for doc in state.documents:
         if not doc.selected and not doc.download_status:
             doc.download_status = "skipped"
+
+    _keep_library_files(state, lib_dir)
 
     ok = sum(1 for d in selected if d.download_status == "ok")
     state.status = CaseStatus.ready if ok > 0 else CaseStatus.failed

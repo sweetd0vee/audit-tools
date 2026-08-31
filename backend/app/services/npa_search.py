@@ -20,6 +20,8 @@ from app.domains import host_allowed
 from app.services.allowlist_http import allowlisted_get
 from app.services.downloader import usable_url
 from app.services.http_constants import BROWSER_HEADERS, NEWS_MARKERS
+from app.services.known_sources import url_code_conflicts_title
+from app.services.npa_identity import stems, titles_compatible
 from app.services.searxng_client import search_searxng
 
 logger = logging.getLogger(__name__)
@@ -46,11 +48,6 @@ _STOP = {
     "национального",
 }
 
-FAMOUS_CODES = {
-    "hk9800218": "гражданский кодекс",
-    "hk0200166": "налоговый кодекс",
-    "hk0000441": "банковский кодекс",
-}
 MAX_CANDIDATES = 8
 MAX_QUERIES = 6
 _NUM_RE = re.compile(r"№\s*(\d{1,4})", re.I)
@@ -113,17 +110,18 @@ def score_url(url: str, title: str = "", hit_title: str = "") -> int:
     if not (hit_title or "").strip():
         score -= 40
     code = extract_doc_code(url)
-    if code:
-        famous = FAMOUS_CODES.get(code.lower())
-        if famous and famous not in (title or "").lower():
-            score -= 120
-    blob = f"{hit_title} {title}".lower()
-    score += _token_overlap(title, hit_title) * 8
-    if hit_title and "кодекс" in hit_title.lower() and _token_overlap(title, hit_title) == 0:
+    if code and url_code_conflicts_title(code, title or ""):
+        score -= 120
+    if hit_title and title and not titles_compatible(title, hit_title):
+        score -= 100
+    overlap = len(stems(title) & stems(hit_title))
+    score += overlap * 8
+    if hit_title and "кодекс" in hit_title.lower() and overlap == 0:
         score -= 100
     if title:
         significant = [t for t in _tokens(title) if len(t) >= 5]
-        if significant and sum(1 for t in significant if t in low or t in blob) >= 2:
+        hay = f"{hit_title} {low}".lower()
+        if significant and sum(1 for t in significant if t in hay) >= 2:
             score += 12
     return score
 
@@ -192,8 +190,8 @@ async def find_candidate_urls(
         hits.extend(found)
         strong = [
             url
-            for url, _source, _hit_title in hits
-            if score_url(url, title or "", "") >= 25
+            for url, _source, hit_title in hits
+            if score_url(url, title or "", hit_title) >= 40
         ]
         if len(dict.fromkeys(strong)) >= 3:
             break
@@ -407,11 +405,3 @@ def _quoted_name(title: str) -> str:
 def _tokens(text: str) -> list[str]:
     words = re.findall(r"[а-яёa-z0-9]{4,}", (text or "").lower())
     return [w for w in words if w not in _STOP]
-
-
-def _token_overlap(title: str, hit_title: str) -> int:
-    left = set(_tokens(title))
-    right = set(_tokens(hit_title))
-    if not left or not right:
-        return 0
-    return len(left & right)

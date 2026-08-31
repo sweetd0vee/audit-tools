@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import re
 
+from app.services.npa_identity import norm as _norm
+from app.services.npa_identity import stems as _stems
+
 # needles (lowercase) -> preferred official URL
 KNOWN_NPA: list[tuple[tuple[str, ...], str]] = [
     (
@@ -118,36 +121,48 @@ for needles, url in KNOWN_NPA:
         KNOWN_NPA_URLS.append((needle, url))
 KNOWN_NPA_URLS.sort(key=lambda row: len(row[0]), reverse=True)
 
-_QUOTE_RE = re.compile(r"[«»\"„“”'`]+")
-_SPACE_RE = re.compile(r"\s+")
-_WORD_RE = re.compile(r"[а-яёa-z0-9]{5,}")
-_STOP = {
-    "республики",
-    "беларусь",
-    "беларуси",
-    "утвержден",
-    "утверждено",
-    "утверждении",
-    "некоторых",
-    "вопросах",
-    "порядке",
-    "проведения",
-    "национальной",
-    "национального",
-    "инструкция",
-    "положение",
-    "постановление",
+_CODE_IN_URL = re.compile(
+    r"(?:[?&]p0=|[?&]regnum=|[?&]RN=|/op/)([A-Za-z][A-Za-z0-9]{5,24})",
+    re.I,
+)
+
+CODE_TO_URL: dict[str, str] = {}
+URL_TO_NEEDLES: dict[str, tuple[str, ...]] = {}
+for needles, url in KNOWN_NPA:
+    URL_TO_NEEDLES[url] = needles
+    match = _CODE_IN_URL.search(url)
+    if match:
+        CODE_TO_URL[match.group(1).lower()] = url
+
+# Short names auditors actually say. Checked before "this code belongs to another act".
+_SHORT_HINTS = {
+    "hk9800218": ("гражданск", " гк ", "гк рб"),
+    "hk0200166": ("налогов", " нк ", "нк рб"),
+    "hk0000441": ("банковск",),
 }
 
 
-def _norm(text: str) -> str:
-    text = _QUOTE_RE.sub(" ", (text or "").lower())
-    return _SPACE_RE.sub(" ", text).strip(" .,:;`")
+def _code_of(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = _CODE_IN_URL.search(url)
+    return match.group(1).lower() if match else None
 
 
-def _stems(text: str) -> set[str]:
-    words = _WORD_RE.findall(_norm(text))
-    return {w[:6] for w in words if w not in _STOP}
+def _needle_score(title_stems: set[str], needle: str) -> float:
+    needle_stems = _stems(needle)
+    if len(needle_stems) < 2:
+        return 0.0
+    overlap = title_stems & needle_stems
+    if not overlap:
+        return 0.0
+    precision = len(overlap) / len(needle_stems)
+    recall = len(overlap) / max(len(title_stems), 1)
+    if precision < 0.8:
+        return 0.0
+    if len(overlap) < min(3, len(needle_stems)):
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
 
 
 def lookup_known_url(title: str) -> str | None:
@@ -159,20 +174,46 @@ def lookup_known_url(title: str) -> str | None:
             return url
 
     title_stems = _stems(title)
-    if len(title_stems) < 3:
+    if len(title_stems) < 2:
         return None
-    ranked: list[tuple[int, int, str]] = []
+    ranked: list[tuple[float, int, str]] = []
     for needle, url in KNOWN_NPA_URLS:
-        needle_stems = _stems(needle)
-        if len(needle_stems) < 3:
+        score = _needle_score(title_stems, needle)
+        if score < 0.55:
             continue
-        overlap = title_stems & needle_stems
-        if len(overlap) < 3:
-            continue
-        if len(overlap) / len(needle_stems) < 0.7:
-            continue
-        ranked.append((len(overlap), len(needle), url))
+        ranked.append((score, len(needle), url))
     if not ranked:
         return None
     ranked.sort(reverse=True)
-    return ranked[0][2]
+    best_score, _best_len, best_url = ranked[0]
+    rival = next((row for row in ranked[1:] if row[2] != best_url), None)
+    if rival and best_score - rival[0] < 0.08:
+        return None
+    return best_url
+
+
+def url_code_conflicts_title(code: str | None, title: str) -> bool:
+    """True when `code` is a catalogued act that is not the one named by `title`."""
+    if not code:
+        return False
+    code = code.lower()
+    owned = CODE_TO_URL.get(code)
+    if not owned:
+        return False
+    blob = f" {_norm(title)} "
+    for hint in _SHORT_HINTS.get(code, ()):
+        if hint in blob or hint.strip() in blob:
+            return False
+    expected = lookup_known_url(title)
+    if expected:
+        exp = _code_of(expected)
+        return bool(exp) and exp != code
+    needles = URL_TO_NEEDLES.get(owned) or ()
+    t = _norm(title)
+    if any(needle in t for needle in needles):
+        return False
+    title_stems = _stems(title)
+    for needle in needles:
+        if _needle_score(title_stems, needle) >= 0.55:
+            return False
+    return True

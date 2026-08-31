@@ -126,6 +126,27 @@ class TestSelectExtraTitles(unittest.TestCase):
         self.assertIn("created", str(ctx.exception))
         self.assertNotIn("CaseStatus.", str(ctx.exception))
 
+    def test_generic_law_prefix_does_not_merge_with_civil_code(self):
+        first = self.state.documents[0].id
+        out = run_select(
+            self.state.case_id,
+            [first],
+            extra_titles=["Закон Республики Беларусь о валютном регулировании и валютном контроле"],
+        )
+        titles = [d.title for d in out.documents if d.selected]
+        self.assertEqual(len(titles), 2)
+        self.assertTrue(any("валютн" in t.lower() for t in titles))
+
+    def test_short_civil_code_selects_existing(self):
+        first = self.state.documents[0]
+        out = run_select(
+            self.state.case_id,
+            [],
+            extra_titles=["Гражданский кодекс"],
+        )
+        self.assertEqual(len(out.documents), 2)
+        self.assertTrue(any(d.id == first.id and d.selected for d in out.documents))
+
 
 if __name__ == "__main__":
     unittest.main()

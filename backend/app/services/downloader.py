@@ -97,7 +97,7 @@ def fulltext_links(content: bytes, page_url: str) -> list[str]:
     return found
 
 
-def _safe_filename(title: str, url: str, index: int) -> str:
+def _safe_filename(title: str, url: str, index: int, doc_id: str = "") -> str:
     path = urlparse(url).path.lower()
     ext = ".pdf"
     if path.endswith(".html") or path.endswith(".htm") or path.endswith(".asp"):
@@ -110,7 +110,8 @@ def _safe_filename(title: str, url: str, index: int) -> str:
         ext = ".pdf"
     elif "html" in path:
         ext = ".html"
-    return f"{index:02d}_{slugify(title)}{ext}"
+    suffix = f"_{doc_id[:8]}" if doc_id else ""
+    return f"{index:02d}_{slugify(title, limit=60)}{suffix}{ext}"
 
 
 async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, bytes, str]:
@@ -123,7 +124,14 @@ async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, bytes, str]:
     return final_url, resp.content, content_type
 
 
-async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict:
+async def download_url(
+    url: str,
+    dest_dir: Path,
+    title: str,
+    index: int,
+    *,
+    doc_id: str = "",
+) -> dict:
     """Download URL into dest_dir. HTML saved as .html (+ optional .txt extract)."""
     url = usable_url(url) or url
     if not host_allowed(url):
@@ -152,7 +160,7 @@ async def download_url(url: str, dest_dir: Path, title: str, index: int) -> dict
             if not followed:
                 raise ValueError(f"No usable NPA text at {url}")
 
-    filename = _safe_filename(title, final_url, index)
+    filename = _safe_filename(title, final_url, index, doc_id=doc_id)
     if "pdf" in content_type and not filename.endswith(".pdf"):
         filename = filename.rsplit(".", 1)[0] + ".pdf"
     elif "html" in content_type and not filename.endswith(".html"):

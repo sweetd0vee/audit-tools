@@ -39,9 +39,37 @@ def _title_for_file(path: Path, state: CaseState) -> str:
 
 def _origin_id(path: Path, state: CaseState) -> str | None:
     for doc in state.documents:
-        if doc.local_path and Path(doc.local_path).name == path.name:
+        if not doc.local_path:
+            continue
+        local = Path(doc.local_path)
+        if local.name == path.name:
+            return doc.id
+        if local.with_suffix(".txt").name == path.name:
             return doc.id
     return None
+
+
+def _wanted_library_names(state: CaseState) -> set[str] | None:
+    """Filenames that belong to the current selection (plus auditor uploads).
+
+    None means 'ingest everything' — no successful downloads recorded yet,
+    so we cannot tell leftovers from the first copy.
+    """
+    names: set[str] = set()
+    has_download = False
+    for doc in state.documents:
+        if not (doc.selected and doc.download_status == "ok" and doc.local_path):
+            continue
+        has_download = True
+        name = Path(doc.local_path).name
+        names.add(name)
+        names.add(Path(name).with_suffix(".txt").name)
+    for item in state.knowledge:
+        if item.source == "uploaded" and item.filename:
+            names.add(item.filename)
+    if not has_download and not names:
+        return None
+    return names
 
 
 def item_text(item: KnowledgeItem) -> str:
@@ -56,12 +84,25 @@ def ingest_library(case_id: str) -> CaseState:
     """Register files from knowledge_raw into knowledge items + extract text."""
     state = store.get(case_id)
     lib = store.library_dir(case_id)
-    existing = {item.filename: item for item in state.knowledge}
-    items = list(state.knowledge)
+    wanted = _wanted_library_names(state)
+    items = [
+        item
+        for item in state.knowledge
+        if item.source == "uploaded"
+        or wanted is None
+        or item.filename in wanted
+        or (item.origin_document_id and any(
+            d.id == item.origin_document_id and d.selected and d.download_status == "ok"
+            for d in state.documents
+        ))
+    ]
+    existing = {item.filename: item for item in items}
     extracted_dir = text_dir(case_id)
 
     for path in sorted(lib.iterdir()):
         if not path.is_file() or path.suffix.lower() not in TEXT_EXTS:
+            continue
+        if wanted is not None and path.name not in wanted:
             continue
         if _is_duplicate_html(path):
             continue
