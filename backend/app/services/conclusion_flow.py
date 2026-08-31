@@ -27,6 +27,7 @@ from app.services.document_artifact import (
     ArtifactSpec,
     ComposeNotice,
     artifact_download_name,
+    artifact_paths,
     artifact_stale,
     artifact_status,
     case_stale_extra,
@@ -47,6 +48,7 @@ from app.services.opinion_flow import (
 )
 from app.services.program_flow import resolve_program_file
 from app.services.total_flow import resolve_total_file
+from app.storage import store
 
 CONCLUSION_SCHEMA = 4
 CONCLUSION_SPEC = ArtifactSpec(
@@ -70,6 +72,43 @@ def conclusion_download_name(inspection_name: str, case_id: str = "", ext: str =
 
 def resolve_conclusion_file(case_id: str, kind: str) -> Path | None:
     return resolve_artifact_file(case_id, CONCLUSION_SPEC, kind)
+
+
+def _md_body(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            return "\n".join(lines[i:]).strip()
+    return text.strip()
+
+
+def refresh_conclusion_docx(case_id: str) -> Path | None:
+    """Re-render Word from stored markdown so spacing always matches current generator."""
+    md_path = resolve_conclusion_file(case_id, "md")
+    docx_path = resolve_conclusion_file(case_id, "docx")
+    if not md_path or not md_path.exists():
+        return docx_path
+    state = store.get(case_id)
+    name = (state.inspection_name or "").strip()
+    hypotheses = selected_hypothesis_rows(state)
+    font = (state.meta.get("conclusion") or {}).get("font") or DEFAULT_FONT
+    report = parse_conclusion_markdown(
+        _md_body(md_path),
+        hypotheses=hypotheses,
+        inspection_name=name,
+    )
+    if docx_path is None:
+        docx_path = artifact_paths(case_id, name, CONCLUSION_SPEC).primary
+    write_conclusion_docx(
+        docx_path,
+        inspection_name=name,
+        case_id=case_id,
+        opinion_body=load_opinion_body(case_id),
+        report=report,
+        font=font,
+    )
+    return docx_path
 
 
 def conclusion_status(case_id: str) -> dict:
@@ -111,7 +150,8 @@ def _conclusion_stale(state: CaseState, font: str) -> bool:
         extra=case_stale_extra(
             state,
             font=font,
-            selected_ns=list(selection.get("selected_ns") or []),
+            selected_ns=list(selection.get("selected_ns") or [])
+            + list(selection.get("extra_ns") or []),
             **upstream_built_at(
                 state, "hypotheses", "opinion", "program", "brief", "total"
             ),
@@ -166,7 +206,8 @@ def _observation_outline(hypotheses: list[dict[str, str]]) -> str:
             hyp = hyp[:177].rstrip() + "…"
         plan = (row.get("plan_sections") or "").strip()
         extra = f" (программа: {plan})" if plan else ""
-        lines.append(f"3.{i} ← гипотеза {n}{extra}: {hyp}")
+        origin = " (гипотеза аудитора)" if (row.get("origin") or "") == "auditor" else ""
+        lines.append(f"3.{i} ← гипотеза {n}{origin}{extra}: {hyp}")
     return "\n".join(lines) or "—"
 
 
@@ -332,6 +373,7 @@ def _require_conclusion_inputs(state: CaseState) -> None:
             "Сначала подтвердите гипотезы, которые войдут в заключение: "
             "`утверждаю гипотезы 1, 3, 5` или "
             "`утверждаю гипотезы все с приоритетом высокий`. "
+            "Свои гипотезы — приложите Excel к этой же команде. "
             "Если чеклиста ещё нет — напишите `гипотезы`."
         )
     if not load_opinion_body(state.case_id):

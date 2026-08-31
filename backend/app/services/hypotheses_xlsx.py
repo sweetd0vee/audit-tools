@@ -1,11 +1,13 @@
-"""Build Excel checklist of audit hypotheses for a case."""
+"""Build and parse Excel checklist of audit hypotheses for a case."""
 
 from __future__ import annotations
 
+import io
+import re
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -23,6 +25,25 @@ COLUMNS: list[tuple[str, str, int]] = [
     ("working_paper", "Рабочий документ", 24),
     ("basis", "Опора", 28),
 ]
+
+_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "n": ("n", "№", "номер", "no", "num"),
+    "hypothesis": ("hypothesis", "гипотеза", "формулировка", "title", "название"),
+    "assertion": ("assertion", "утверждение"),
+    "priority": ("priority", "приоритет"),
+    "risk": ("risk", "риск"),
+    "plan_sections": ("plan_sections", "разделы плана", "план", "программа"),
+    "npa_criteria": ("npa_criteria", "нпа / критерии", "нпа", "критерии"),
+    "why_risk": ("why_risk", "почему это риск", "почему риск"),
+    "how_to_test": ("how_to_test", "как проверить", "проверка"),
+    "evidence_request": ("evidence_request", "что запросить", "запрос"),
+    "working_paper": ("working_paper", "рабочий документ", "рд"),
+    "basis": ("basis", "опора"),
+}
+
+_SKIP_SHEETS = {"о проверке", "как читать"}
+_SPACE_RE = re.compile(r"\s+")
+_HEADER_STRIP_RE = re.compile(r"[«»\"'“”„#]")
 
 _PRIORITY_ORDER = {"высокий": 0, "средний": 1, "низкий": 2}
 
@@ -133,10 +154,95 @@ def write_hypotheses_xlsx(
     legend[f"A{note_row}"] = (
         "Черновик для планирования СВА. Цитаты и номера статей сверять с файлами "
         "библиотеки кейса. Клиентские факты в этот контур ещё не входят. "
-        "Строки отсортированы: высокий, средний, низкий приоритет."
+        "Строки отсортированы: высокий, средний, низкий приоритет. "
+        "Свои гипотезы можно дописать в этот лист (колонка «Гипотеза») и "
+        "приложить файл к команде «утверждаю гипотезы …»."
     )
     legend[f"A{note_row}"].alignment = _WRAP
     legend.column_dimensions["A"].width = 90
     legend.row_dimensions[note_row].height = 45
 
     wb.save(path)
+
+
+def _norm_header(value: Any) -> str:
+    text = _HEADER_STRIP_RE.sub("", str(value or "").strip().lower())
+    return _SPACE_RE.sub(" ", text).strip(" .,:;")
+
+
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return _SPACE_RE.sub(" ", str(value).strip())
+
+
+def _header_key(value: Any) -> str | None:
+    header = _norm_header(value)
+    if not header:
+        return None
+    for key, aliases in _HEADER_ALIASES.items():
+        if header in aliases:
+            return key
+    return None
+
+
+def _pick_sheet(wb) -> Any:
+    for name in wb.sheetnames:
+        if name.strip().lower() in _SKIP_SHEETS:
+            continue
+        if "гипотез" in name.strip().lower():
+            return wb[name]
+    for name in wb.sheetnames:
+        if name.strip().lower() not in _SKIP_SHEETS:
+            return wb[name]
+    return wb.active
+
+
+def _header_map(ws) -> tuple[int, dict[int, str]]:
+    for row_idx in range(1, min(6, (ws.max_row or 1) + 1)):
+        mapping: dict[int, str] = {}
+        for col_idx in range(1, (ws.max_column or 1) + 1):
+            key = _header_key(ws.cell(row_idx, col_idx).value)
+            if key and key not in mapping.values():
+                mapping[col_idx] = key
+        if "hypothesis" in mapping.values():
+            return row_idx, mapping
+    raise ValueError(
+        "В Excel нет колонки «Гипотеза». "
+        "Скачайте чеклист `гипотезы` и допишите строки, либо сделайте лист "
+        "с заголовком «Гипотеза»."
+    )
+
+
+def read_hypotheses_xlsx(data: bytes | Path) -> list[dict[str, str]]:
+    """Parse auditor-supplied hypothesis rows from .xlsx bytes or a path."""
+    if isinstance(data, Path):
+        raw = data.read_bytes()
+    else:
+        raw = data
+    if not raw:
+        raise ValueError("Пустой Excel с гипотезами.")
+    try:
+        wb = load_workbook(io.BytesIO(raw), data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Не удалось открыть Excel с гипотезами: {exc}") from exc
+    try:
+        ws = _pick_sheet(wb)
+        header_row, mapping = _header_map(ws)
+        rows: list[dict[str, str]] = []
+        for row in ws.iter_rows(min_row=header_row + 1, values_only=False):
+            item: dict[str, str] = {}
+            for cell in row:
+                key = mapping.get(cell.column)
+                if not key:
+                    continue
+                item[key] = _cell_text(cell.value)
+            if item.get("hypothesis"):
+                rows.append(item)
+    finally:
+        wb.close()
+    if not rows:
+        raise ValueError(
+            "В Excel нет строк с гипотезами. Заполните колонку «Гипотеза»."
+        )
+    return rows

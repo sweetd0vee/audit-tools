@@ -32,7 +32,7 @@ from app.services.document_artifact import (
     run_llm_artifact_events,
     upstream_built_at,
 )
-from app.services.hypotheses_xlsx import write_hypotheses_xlsx
+from app.services.hypotheses_xlsx import read_hypotheses_xlsx, write_hypotheses_xlsx
 from app.services.knowledge_ingest import ingest_library
 from app.services.ollama_client import chat_complete, extract_json_value
 from app.services.program_flow import resolve_program_file
@@ -40,6 +40,9 @@ from app.services.total_flow import resolve_total_file
 from app.storage import store
 
 HYPOTHESES_SCHEMA = 2
+EXTRA_HYPOTHESES_MAX = 20
+AUDITOR_ORIGIN = "auditor"
+AUDITOR_BASIS = "гипотеза аудитора — из приложенного Excel"
 HYPOTHESES_SPEC = ArtifactSpec(
     meta_key="hypotheses",
     directory="hypotheses",
@@ -82,6 +85,18 @@ _PRIORITY_MAP = {
 
 def _json_path(case_id: str) -> Path:
     return artifact_dir(case_id, HYPOTHESES_SPEC) / "hypotheses.json"
+
+
+def _extra_json_path(case_id: str) -> Path:
+    return artifact_dir(case_id, HYPOTHESES_SPEC) / "extra_hypotheses.json"
+
+
+def _extra_xlsx_path(case_id: str) -> Path:
+    return artifact_dir(case_id, HYPOTHESES_SPEC) / "auditor_gipotezy.xlsx"
+
+
+def _norm_hypothesis_text(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
 
 
 def hypotheses_download_name(
@@ -192,6 +207,113 @@ def load_hypotheses_rows(case_id: str) -> tuple[list[dict[str, str]], str]:
     return clean, notes
 
 
+def load_extra_hypothesis_rows(case_id: str) -> list[dict[str, str]]:
+    path = _extra_json_path(case_id)
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("hypotheses") or []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict) and (row.get("hypothesis") or "").strip()]
+
+
+def _clear_hypothesis_extras(case_id: str) -> None:
+    for path in (_extra_json_path(case_id), _extra_xlsx_path(case_id)):
+        if path.exists():
+            path.unlink()
+
+
+def _next_hypothesis_n(rows: list[dict[str, str]]) -> int:
+    highest = 0
+    for row in rows:
+        raw = str(row.get("n") or "").strip()
+        if raw.isdigit():
+            highest = max(highest, int(raw))
+    return highest + 1
+
+
+def _normalize_auditor_row(raw: dict[str, Any], index: int) -> dict[str, str]:
+    row = _normalize_row(raw, index)
+    row["origin"] = AUDITOR_ORIGIN
+    if not str(raw.get("basis") or "").strip():
+        row["basis"] = AUDITOR_BASIS
+    return row
+
+
+def _dedupe_extra_rows(
+    extras: list[dict[str, Any]],
+    generated: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    known = {_norm_hypothesis_text(str(row.get("hypothesis") or "")) for row in generated}
+    known.discard("")
+    seen = set(known)
+    out: list[dict[str, Any]] = []
+    for raw in extras:
+        if not isinstance(raw, dict):
+            continue
+        text = _norm_hypothesis_text(
+            str(raw.get("hypothesis") or raw.get("гипотеза") or raw.get("title") or "")
+        )
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(raw)
+    return out
+
+
+def parse_auditor_hypotheses(
+    *,
+    generated: list[dict[str, str]],
+    extra_rows: list[dict[str, Any]] | None = None,
+    extra_xlsx: bytes | None = None,
+) -> list[dict[str, str]]:
+    incoming: list[dict[str, Any]] = []
+    if extra_xlsx:
+        incoming.extend(read_hypotheses_xlsx(extra_xlsx))
+    for raw in extra_rows or []:
+        if isinstance(raw, dict):
+            incoming.append(raw)
+    incoming = _dedupe_extra_rows(incoming, generated)
+    if extra_xlsx is not None or extra_rows:
+        if not incoming:
+            raise ValueError(
+                "В файле нет новых гипотез — все строки совпадают с чеклистом. "
+                "Допишите свои формулировки в колонку «Гипотеза»."
+            )
+    if len(incoming) > EXTRA_HYPOTHESES_MAX:
+        raise ValueError(
+            f"Слишком много своих гипотез: {len(incoming)}. "
+            f"Максимум {EXTRA_HYPOTHESES_MAX}."
+        )
+    start = _next_hypothesis_n(generated)
+    return [_normalize_auditor_row(item, start + i) for i, item in enumerate(incoming)]
+
+
+def _store_extra_hypotheses(
+    case_id: str,
+    rows: list[dict[str, str]],
+    extra_xlsx: bytes | None = None,
+    extra_filename: str | None = None,
+) -> None:
+    if not rows:
+        _clear_hypothesis_extras(case_id)
+        return
+    _extra_json_path(case_id).write_text(
+        json.dumps(
+            {
+                "filename": extra_filename or "",
+                "hypotheses": rows,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    if extra_xlsx:
+        _extra_xlsx_path(case_id).write_bytes(extra_xlsx)
+
+
 def resolve_hypothesis_selection(
     rows: list[dict[str, str]],
     *,
@@ -245,37 +367,94 @@ def select_hypotheses(
     numbers: list[int] | None = None,
     all_high: bool = False,
     all_rows: bool = False,
+    keep_numbers: bool = False,
+    extra_xlsx: bytes | None = None,
+    extra_filename: str | None = None,
+    extra_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     state = store.get(case_id)
     rows, _ = load_hypotheses_rows(case_id)
-    selected_ns = resolve_hypothesis_selection(
-        rows,
-        numbers=numbers,
-        all_high=all_high,
-        all_rows=all_rows,
-    )
+    previous = state.meta.get("hypotheses_selection") or {}
+    built = (state.meta.get("hypotheses") or {}).get("built_at")
+    previous_ok = bool(previous) and previous.get("hypotheses_built_at") == built
+    has_picks = bool(numbers) or all_high or all_rows
+    replacing_extras = extra_xlsx is not None or extra_rows is not None
+
+    if has_picks:
+        selected_ns = resolve_hypothesis_selection(
+            rows,
+            numbers=numbers,
+            all_high=all_high,
+            all_rows=all_rows,
+        )
+    elif keep_numbers and previous_ok:
+        selected_ns = [int(n) for n in (previous.get("selected_ns") or [])]
+    elif keep_numbers:
+        selected_ns = []
+    else:
+        selected_ns = resolve_hypothesis_selection(
+            rows,
+            numbers=numbers,
+            all_high=all_high,
+            all_rows=all_rows,
+        )
+
+    if replacing_extras:
+        extras = parse_auditor_hypotheses(
+            generated=rows,
+            extra_rows=extra_rows,
+            extra_xlsx=extra_xlsx,
+        )
+        _store_extra_hypotheses(
+            case_id,
+            extras,
+            extra_xlsx=extra_xlsx,
+            extra_filename=extra_filename,
+        )
+    elif previous_ok:
+        extras = load_extra_hypothesis_rows(case_id)
+    else:
+        extras = []
+        _clear_hypothesis_extras(case_id)
+
+    if not selected_ns and not extras:
+        raise ValueError(
+            "Укажите номера гипотез, например: `утверждаю гипотезы 1, 3, 5`, "
+            "или приложите Excel со своими гипотезами."
+        )
+
     by_n = {int(row["n"]): row for row in rows if str(row.get("n") or "").strip().isdigit()}
-    selected = [by_n[n] for n in selected_ns]
+    selected = [by_n[n] for n in selected_ns if n in by_n]
     payload = {
         "selected_ns": selected_ns,
+        "extra_ns": [int(row["n"]) for row in extras if str(row.get("n") or "").strip().isdigit()],
+        "extra_count": len(extras),
+        "extra_filename": extra_filename or previous.get("extra_filename") or "",
         "selected_at": utc_now().isoformat(),
-        "hypotheses_built_at": (state.meta.get("hypotheses") or {}).get("built_at"),
-        "count": len(selected_ns),
+        "hypotheses_built_at": built,
+        "count": len(selected_ns) + len(extras),
     }
+    if replacing_extras:
+        payload["extra_filename"] = extra_filename or ""
     state.meta["hypotheses_selection"] = payload
     store.save(state)
+    combined = selected + extras
     return {
         "case_id": case_id,
         "selected_ns": selected_ns,
-        "count": len(selected_ns),
-        "hypotheses": [
-            {
-                "n": row.get("n"),
-                "hypothesis": row.get("hypothesis"),
-                "priority": row.get("priority"),
-            }
-            for row in selected
-        ],
+        "extra_ns": payload["extra_ns"],
+        "count": len(combined),
+        "extra_count": len(extras),
+        "hypotheses": [_preview_row(row) for row in combined],
+    }
+
+
+def _preview_row(row: dict[str, str]) -> dict[str, str]:
+    return {
+        "n": str(row.get("n") or ""),
+        "hypothesis": str(row.get("hypothesis") or ""),
+        "priority": str(row.get("priority") or ""),
+        "origin": str(row.get("origin") or ""),
     }
 
 
@@ -296,6 +475,12 @@ def selected_hypothesis_rows(state: CaseState) -> list[dict[str, str]]:
         row = by_n.get(int(n))
         if row:
             out.append(row)
+    extras = load_extra_hypothesis_rows(state.case_id)
+    wanted_extra = [str(n) for n in (selection.get("extra_ns") or [])]
+    if wanted_extra:
+        by_extra = {str(row.get("n") or ""): row for row in extras}
+        extras = [by_extra[n] for n in wanted_extra if n in by_extra]
+    out.extend(extras)
     return out
 
 
@@ -352,6 +537,7 @@ def _persist_hypotheses(
 ) -> ArtifactOutcome:
     rows, notes = parsed
     state.meta.pop("hypotheses_selection", None)
+    _clear_hypothesis_extras(state.case_id)
     _write_markdown(
         paths.md,
         inspection_name=state.inspection_name,

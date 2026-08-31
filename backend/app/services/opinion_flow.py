@@ -101,7 +101,9 @@ def format_hypotheses_block(rows: list[dict[str, str]]) -> str:
     for row in rows:
         n = row.get("n") or "?"
         priority = row.get("priority") or "средний"
-        lines.append(f"{n}. [{priority}] {row.get('hypothesis') or ''}")
+        origin = (row.get("origin") or "").strip()
+        tag = " [гипотеза аудитора]" if origin == "auditor" else ""
+        lines.append(f"{n}. [{priority}] {row.get('hypothesis') or ''}{tag}")
         for label, key in (
             ("Утверждение", "assertion"),
             ("Риск", "risk"),
@@ -155,7 +157,8 @@ def _opinion_stale(state: CaseState, font: str) -> bool:
         extra=case_stale_extra(
             state,
             font=font,
-            selected_ns=list(selection.get("selected_ns") or []),
+            selected_ns=list(selection.get("selected_ns") or [])
+            + list(selection.get("extra_ns") or []),
             **upstream_built_at(state, "hypotheses", "program", "brief", "total"),
         ),
     )
@@ -195,6 +198,7 @@ def _require_selected_hypotheses(state: CaseState) -> None:
         "Сначала подтвердите гипотезы, которые войдут в мнение: "
         "`утверждаю гипотезы 1, 3, 5` или "
         "`утверждаю гипотезы все с приоритетом высокий`. "
+        "Свои гипотезы — приложите Excel к этой же команде. "
         "Если чеклиста ещё нет — напишите `гипотезы`."
     )
 

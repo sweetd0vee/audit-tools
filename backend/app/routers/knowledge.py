@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
+import re
 import traceback
 import zipfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import ValidationError
 
 from app.config import settings
 from app.http import locked_events, require_case, sse_response
@@ -34,6 +37,7 @@ from app.services.conclusion_flow import (
     build_conclusion_events,
     conclusion_download_name,
     conclusion_status,
+    refresh_conclusion_docx,
     resolve_conclusion_file,
 )
 from app.services.extract import TEXT_EXTS
@@ -125,6 +129,10 @@ def _download_artifact(
         path,
         media_type=media_type,
         filename=filename_builder(state.inspection_name, case_id, kind),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
     )
 
 
@@ -427,20 +435,82 @@ def download_hypotheses_md(case_id: str):
 
 
 @router.post("/cases/{case_id}/knowledge/hypotheses/select")
-async def post_select_hypotheses(case_id: str, body: SelectHypothesesRequest):
+async def post_select_hypotheses(case_id: str, request: Request):
     require_case(case_id)
     try:
+        body, extra_xlsx, extra_filename = await _parse_select_hypotheses_request(request)
+        extra_rows = body.extra_hypotheses or None
         async with async_lock(case_id):
             return select_hypotheses(
                 case_id,
                 numbers=body.numbers,
                 all_high=body.all_high,
                 all_rows=body.all_rows,
+                keep_numbers=body.keep_numbers,
+                extra_xlsx=extra_xlsx,
+                extra_filename=extra_filename,
+                extra_rows=extra_rows,
             )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, ValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _form_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on", "да"}
+
+
+def _form_numbers(value: object) -> list[int]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [int(n) for n in value]
+    text = str(value).strip()
+    if text.startswith("["):
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            return []
+        return [int(n) for n in parsed]
+    return [int(n) for n in re.findall(r"\d+", text)]
+
+
+async def _parse_select_hypotheses_request(
+    request: Request,
+) -> tuple[SelectHypothesesRequest, bytes | None, str | None]:
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        extra = form.get("extra") or form.get("file")
+        extra_xlsx: bytes | None = None
+        extra_filename: str | None = None
+        if extra is not None and hasattr(extra, "read"):
+            extra_xlsx = await extra.read()
+            extra_filename = getattr(extra, "filename", None) or "auditor.xlsx"
+            if extra_xlsx and len(extra_xlsx) > settings.max_upload_bytes:
+                raise ValueError(f"файл больше {settings.max_upload_bytes} байт")
+            suffix = Path(extra_filename).suffix.lower()
+            if suffix not in {".xlsx", ".xlsm"}:
+                raise ValueError("Свои гипотезы принимаются только как .xlsx")
+        extra_rows_raw = form.get("extra_hypotheses")
+        extra_rows: list[dict] = []
+        if extra_rows_raw:
+            parsed = json.loads(str(extra_rows_raw))
+            if isinstance(parsed, list):
+                extra_rows = [row for row in parsed if isinstance(row, dict)]
+        body = SelectHypothesesRequest(
+            numbers=_form_numbers(form.get("numbers")),
+            all_high=_form_bool(form.get("all_high")),
+            all_rows=_form_bool(form.get("all_rows")),
+            keep_numbers=_form_bool(form.get("keep_numbers")),
+            extra_hypotheses=extra_rows,
+        )
+        return body, extra_xlsx, extra_filename
+    payload = await request.json()
+    return SelectHypothesesRequest.model_validate(payload), None, None
 
 
 @router.get("/cases/{case_id}/knowledge/opinion")
@@ -525,6 +595,7 @@ async def conclusion_stream(
 
 @router.get("/cases/{case_id}/knowledge/conclusion.docx")
 def download_conclusion_docx(case_id: str):
+    refresh_conclusion_docx(case_id)
     return _download_artifact(
         case_id,
         kind="docx",

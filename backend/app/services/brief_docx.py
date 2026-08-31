@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -668,8 +670,17 @@ def _force_spacing_xml(p_pr, *, before_twips: int = 0, after_twips: int = 0) -> 
         p_pr.append(spacing)
     spacing.set(qn("w:before"), str(before_twips))
     spacing.set(qn("w:after"), str(after_twips))
+    spacing.set(qn("w:beforeLines"), "0")
+    spacing.set(qn("w:afterLines"), "0")
+    spacing.set(qn("w:beforeAutospacing"), "0")
+    spacing.set(qn("w:afterAutospacing"), "0")
     spacing.set(qn("w:line"), "240")
     spacing.set(qn("w:lineRule"), "auto")
+    snap = p_pr.find(qn("w:snapToGrid"))
+    if snap is None:
+        snap = OxmlElement("w:snapToGrid")
+        p_pr.append(snap)
+    snap.set(qn("w:val"), "0")
     if p_pr.find(qn("w:contextualSpacing")) is None:
         p_pr.append(OxmlElement("w:contextualSpacing"))
 
@@ -739,12 +750,56 @@ def _iter_all_paragraphs(doc: Document):
             yield from _iter_table_paragraphs(table)
 
 
+def _flatten_to_normal(paragraph) -> None:
+    style = paragraph.style
+    name = str(getattr(style, "name", "") or "") if style is not None else ""
+    if name.startswith("Heading") or name.startswith("List"):
+        paragraph.style = "Normal"
+
+
+def _clear_document_grid(doc: Document) -> None:
+    for grid in list(doc.element.iter(qn("w:docGrid"))):
+        parent = grid.getparent()
+        if parent is not None:
+            parent.remove(grid)
+
+
 def _tighten_document(doc: Document) -> None:
     _set_doc_default_tight_spacing(doc)
+    _clear_document_grid(doc)
     for style in doc.styles:
         _set_style_tight_spacing(style)
     for paragraph in _iter_all_paragraphs(doc):
+        _flatten_to_normal(paragraph)
         _apply_tight_spacing(paragraph)
+
+
+def _sync_word_styles_with_effects(path: Path) -> None:
+    """Word 2010+ reads stylesWithEffects.xml; python-docx only patches styles.xml.
+
+    The default template keeps after=10pt and line=1.15 in stylesWithEffects, and
+    that is what the Paragraph dialog shows for аудиторское заключение.
+    """
+    original = path.read_bytes()
+    buf = BytesIO()
+    with zipfile.ZipFile(BytesIO(original), "r") as zin:
+        styles = zin.read("word/styles.xml")
+        with zipfile.ZipFile(buf, "w") as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == "word/stylesWithEffects.xml":
+                    data = styles
+                info = zipfile.ZipInfo(filename=item.filename, date_time=item.date_time)
+                info.compress_type = item.compress_type
+                zout.writestr(info, data)
+    path.write_bytes(buf.getvalue())
+
+
+def _save_tight_docx(doc: Document, path: Path) -> None:
+    _tighten_document(doc)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+    _sync_word_styles_with_effects(path)
 
 
 def _set_document_base_font(doc: Document, font: str, size: int) -> None:
@@ -779,7 +834,7 @@ def _add_opinion_paragraph(
     space_after: int = 0,
     bullet: bool = False,
 ) -> None:
-    paragraph = doc.add_paragraph(style="List Bullet" if bullet else "Normal")
+    paragraph = doc.add_paragraph(style="Normal")
     fmt = paragraph.paragraph_format
     _apply_tight_spacing(paragraph, space_before=space_before, space_after=space_after)
     if align == "center":
@@ -798,6 +853,8 @@ def _add_opinion_paragraph(
     cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned).strip()
     if not cleaned:
         return
+    if bullet:
+        cleaned = f"• {cleaned}"
     run = paragraph.add_run(cleaned)
     _set_run_font(run, size=size, bold=bold, italic=italic, font=font)
 
@@ -806,11 +863,15 @@ def _add_opinion_heading(doc: Document, text: str, *, font: str, level: int) -> 
     title = _strip_md(text)
     if not title:
         return
-    paragraph = doc.add_heading(title, level=level)
-    size = 16 if level <= 1 else 14
-    for run in paragraph.runs:
-        _set_run_font(run, size=size, bold=True, font=font)
-    _apply_tight_spacing(paragraph)
+    _add_opinion_paragraph(
+        doc,
+        title,
+        font=font,
+        size=16 if level <= 1 else 14,
+        bold=True,
+        first_line=False,
+        align="left",
+    )
 
 
 def add_opinion_markdown(
@@ -936,7 +997,5 @@ def write_opinion_docx(
     _write_opinion_header(doc, inspection_name=name, font=font)
     add_opinion_markdown(doc, body, font=font, inspection_name=name)
 
-    _tighten_document(doc)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(str(path))
+    _save_tight_docx(doc, path)
     return path

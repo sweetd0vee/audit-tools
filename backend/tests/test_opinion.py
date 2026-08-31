@@ -17,7 +17,9 @@ from app.services.opinion_flow import (
 )
 
 
-def _assert_tight_spacing(test: unittest.TestCase, doc, xml: str, styles: str) -> None:
+def _assert_tight_spacing(
+    test: unittest.TestCase, doc, xml: str, styles: str, effects: str = ""
+) -> None:
     paragraphs = list(doc.paragraphs)
     for table in doc.tables:
         for row in table.rows:
@@ -32,9 +34,14 @@ def _assert_tight_spacing(test: unittest.TestCase, doc, xml: str, styles: str) -
         if fmt.line_spacing_rule is not None:
             test.assertEqual(fmt.line_spacing_rule, WD_LINE_SPACING.SINGLE, paragraph.text[:80])
     test.assertNotIn('w:line="360"', xml)
-    test.assertNotIn('w:line="276"', styles)
-    test.assertIn('w:line="240"', styles)
-    test.assertIn("contextualSpacing", styles)
+    test.assertNotIn("w:docGrid", xml)
+    for blob, label in ((styles, "styles"), (effects, "stylesWithEffects")):
+        if not blob:
+            continue
+        test.assertNotIn('w:line="276"', blob, label)
+        test.assertNotIn('w:after="200"', blob, label)
+        test.assertIn('w:line="240"', blob, label)
+        test.assertIn("contextualSpacing", blob, label)
 
 
 def _row(n: int, priority: str = "средний") -> dict:
@@ -146,9 +153,10 @@ class TestOpinionDocx(unittest.TestCase):
             with zipfile.ZipFile(path) as zf:
                 xml = zf.read("word/document.xml").decode("utf-8")
                 styles = zf.read("word/styles.xml").decode("utf-8")
+                effects = zf.read("word/stylesWithEffects.xml").decode("utf-8")
             self.assertIn("Calibri", xml)
             self.assertNotIn("w:tbl", xml)
-            _assert_tight_spacing(self, doc, xml, styles)
+            _assert_tight_spacing(self, doc, xml, styles, effects)
 
     def test_keeps_case_title_and_drops_model_title_section(self):
         body = """

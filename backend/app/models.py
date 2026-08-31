@@ -178,6 +178,11 @@ class SelectHypothesesRequest(BaseModel):
     numbers: list[int] = Field(default_factory=list)
     all_high: bool = False
     all_rows: bool = False
+    keep_numbers: bool = False
+    extra_hypotheses: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Свои гипотезы аудитора (поля как в Excel-чеклисте). Опционально.",
+    )
 
 
 class CaseSummary(BaseModel):

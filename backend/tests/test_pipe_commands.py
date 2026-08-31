@@ -81,6 +81,11 @@ class TestPipeClassify(unittest.TestCase):
             self.Cmd.SELECT_HYPOTHESES,
         )
         self.assertEqual(self.cmd("утверждаю все гипотезы"), self.Cmd.SELECT_HYPOTHESES)
+        self.assertEqual(self.cmd("добавить гипотезы"), self.Cmd.SELECT_HYPOTHESES)
+        self.assertEqual(
+            self.cmd("утверждаю гипотезы 1, 2, 3, 4 добавить"),
+            self.Cmd.SELECT_HYPOTHESES,
+        )
         self.assertEqual(self.cmd("гипотезы"), self.Cmd.HYPOTHESES)
         self.assertEqual(self.cmd("чеклист гипотез"), self.Cmd.HYPOTHESES)
 
@@ -202,6 +207,11 @@ class TestPipeClassify(unittest.TestCase):
         self.assertTrue(
             picks("утверждаю гипотезы все с приоритетом высокий")["all_high"]
         )
+        self.assertTrue(self.intent._wants_extra_hypotheses("добавить гипотезы"))
+        self.assertTrue(
+            self.intent._wants_extra_hypotheses("утверждаю гипотезы 1, 2, 3, 4 добавить")
+        )
+        self.assertFalse(self.intent._wants_extra_hypotheses("утверждаю гипотезы 1, 3"))
 
     def test_resolve_approval_numbers(self):
         docs = [

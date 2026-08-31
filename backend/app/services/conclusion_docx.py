@@ -24,7 +24,7 @@ from app.services.brief_docx import (
     _set_table_borders,
     _set_tbl_grid,
     _strip_md,
-    _tighten_document,
+    _save_tight_docx,
     _write_opinion_header,
     add_bookmark,
     add_opinion_markdown,
@@ -719,7 +719,7 @@ def _add_styled_paragraph(
     first_line: bool = False,
 ) -> object:
     _ = font
-    paragraph = doc.add_paragraph()
+    paragraph = doc.add_paragraph(style="Normal")
     fmt = paragraph.paragraph_format
     _apply_tight_spacing(paragraph, space_before=space_before, space_after=space_after)
     if align == "center":
@@ -732,12 +732,6 @@ def _add_styled_paragraph(
         paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         fmt.first_line_indent = Cm(1.25) if first_line else Cm(0)
     return paragraph
-
-
-def _blank(doc: Document, *, font: str, after: int = 0) -> None:
-    p = _add_styled_paragraph(doc, font=font, align="left", space_after=after)
-    run = p.add_run("")
-    _set_run_font(run, size=_FONT_SIZE, font=font)
 
 
 def _add_body_markdown(doc: Document, md: str, *, font: str) -> None:
@@ -843,7 +837,6 @@ def _add_markdown_table(doc: Document, lines: list[str], *, font: str) -> None:
             _apply_tight_spacing(paragraph)
             run = paragraph.add_run(value)
             _set_run_font(run, size=12, bold=(r == 0), font=font)
-    _blank(doc, font=font)
 
 
 def _add_scheme_block(doc: Document, lines: list[str], *, font: str) -> None:
@@ -854,7 +847,6 @@ def _add_scheme_block(doc: Document, lines: list[str], *, font: str) -> None:
         _add_opinion_paragraph(
             doc, line, font=font, size=_FONT_SIZE, first_line=False
         )
-    _blank(doc, font=font)
 
 
 def _set_row_height(row, twips: int) -> None:
@@ -981,7 +973,6 @@ def _add_observation_summary(doc: Document, observation: Observation, *, font: s
 
     deadline = _add_boxed_paragraph(doc, font=font, first_line=True)
     _add_runs(deadline, [("Срок – ", {"bold": True})], font=font)
-    _blank(doc, font=font)
 
 
 def _add_roman_heading(
@@ -1132,7 +1123,10 @@ def _add_cover_textbox(
         f'<a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln>'
         "</wps:spPr><wps:txbx><w:txbxContent><w:p>"
-        f'<w:pPr><w:jc w:val="{align}"/><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
+        f'<w:pPr><w:jc w:val="{align}"/>'
+        '<w:spacing w:before="0" w:after="0" w:beforeLines="0" w:afterLines="0"'
+        ' w:beforeAutospacing="0" w:afterAutospacing="0" w:line="240" w:lineRule="auto"/>'
+        "<w:contextualSpacing/><w:snapToGrid w:val=\"0\"/></w:pPr>"
         "<w:r><w:rPr>"
         f'<w:rFonts w:ascii="{_xml_escape(font)}" w:hAnsi="{_xml_escape(font)}"'
         f' w:cs="{_xml_escape(font)}"/>{bold_xml}'
@@ -1310,7 +1304,6 @@ def _write_toc(
             bold_label=False,
         )
     _write_toc_line(doc, "IV", _SECTION_LAST, font=font, page=pages.get("IV"))
-    _blank(doc, font=font, after=0)
     doc.add_page_break()
 
 
@@ -1387,7 +1380,5 @@ def write_conclusion_docx(
                 _add_body_markdown(doc, observation.body, font=font)
             _add_observation_summary(doc, observation, font=font)
 
-    _tighten_document(doc)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(str(path))
+    _save_tight_docx(doc, path)
     return path
