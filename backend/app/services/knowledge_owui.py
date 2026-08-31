@@ -19,10 +19,26 @@ from app.storage import store
 
 logger = logging.getLogger(__name__)
 
+_COLLECTION_NAME_LIMIT = 80
+
+
+def collection_display_name(inspection_name: str, case_id: str) -> str:
+    """Имя коллекции Knowledge: одно на кейс, даже если название проверки совпадает."""
+    suffix = f" · {case_id}"
+    prefix = "Аудит: "
+    title = (inspection_name or "проверка").strip() or "проверка"
+    budget = _COLLECTION_NAME_LIMIT - len(prefix) - len(suffix)
+    if budget < 1:
+        return case_id[:_COLLECTION_NAME_LIMIT]
+    if len(title) > budget:
+        title = title[:budget].rstrip()
+    return f"{prefix}{title}{suffix}"
+
 
 def export_pack_files(case_id: str) -> list[tuple[str, bytes]]:
     """Files for Open WebUI / zip pack: clean texts + summaries + howto."""
     state = store.get(case_id)
+    collection_name = collection_display_name(state.inspection_name, case_id)
     files: list[tuple[str, bytes]] = []
     for item in state.knowledge:
         if item.text_path and Path(item.text_path).exists():
@@ -35,12 +51,12 @@ def export_pack_files(case_id: str) -> list[tuple[str, bytes]]:
 
     howto = f"""# Как подключить базу НПА в Open WebUI
 
-Коллекция: {state.inspection_name}
+Коллекция: {collection_name}
 Кейс: {case_id}
 
 1. Откройте http://localhost:3000
 2. Workspace → Knowledge → New Knowledge
-3. Имя: «{state.inspection_name}»
+3. Имя: «{collection_name}»
 4. Загрузите файлы из папки docs/ (чистый текст НПА)
 5. По желанию добавьте summaries/
 6. В чате с моделью нажмите # и выберите эту коллекцию
@@ -58,7 +74,7 @@ async def sync_openwebui(case_id: str, api_key: str | None = None) -> dict:
     if not key:
         raise OpenWebUIError("Нет API ключа Open WebUI. Укажите ключ или скачайте пакет вручную.")
     state = store.get(case_id)
-    name = f"Аудит: {state.inspection_name}"[:80]
+    name = collection_display_name(state.inspection_name, case_id)
     desc = f"НПА кейса {case_id}. Ключевые слова: {', '.join(state.keywords)}"
     collection = await ensure_collection(name, desc, key)
     kid = collection.get("id") if isinstance(collection, dict) else collection

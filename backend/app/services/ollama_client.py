@@ -13,6 +13,13 @@ import httpx
 
 from app.config import settings
 from app.prompts import prompt
+from app.services.extra_titles import search_queries_for_title
+from app.services.known_sources import (
+    catalog_act_by_number,
+    catalog_entries,
+    catalog_prompt_block,
+    match_catalog_act,
+)
 
 logger = logging.getLogger(__name__)
 _CLIENTS: dict[float, httpx.AsyncClient] = {}
@@ -66,15 +73,63 @@ def build_user_prompt(
     keywords: list[str],
     max_docs: int | None = None,
 ) -> str:
-    max_docs = max_docs or settings.max_docs_to_propose
+    n_catalog = len(catalog_entries())
+    max_docs = min(max_docs or settings.max_docs_to_propose, n_catalog)
+    min_docs = min(4, max_docs)
     keywords_str = ", ".join(keywords) if keywords else "(не указаны)"
     return prompt(
         "propose_user",
         inspection_name=inspection_name,
         keywords_str=keywords_str,
-        min_docs=max(8, max_docs - 3),
+        catalog=catalog_prompt_block(),
+        min_docs=min_docs,
         max_docs=max_docs,
     )
+
+
+def _priority(value: object) -> int:
+    try:
+        priority = int(value or 2)
+    except (TypeError, ValueError):
+        priority = 2
+    return min(3, max(1, priority))
+
+
+def _search_queries(raw: object, title: str) -> list[str]:
+    queries = raw if isinstance(raw, list) else [raw] if raw else []
+    queries = [str(q).strip() for q in queries if str(q).strip()]
+    return queries or search_queries_for_title(title) or [f"site:pravo.gov.by {title}"]
+
+
+def bind_documents_to_catalog(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only catalogued acts and attach their official URLs."""
+    bound: dict[str, dict[str, Any]] = {}
+    for doc in documents:
+        act = catalog_act_by_number(doc.get("n") or doc.get("catalog_n"))
+        if act is None:
+            act = match_catalog_act(str(doc.get("title") or ""))
+        if act is None:
+            continue
+        why = str(doc.get("why_needed") or "").strip()
+        priority = _priority(doc.get("priority"))
+        current = bound.get(act.url)
+        if current is not None:
+            if priority < current["priority"]:
+                current["priority"] = priority
+                if why:
+                    current["why_needed"] = why
+            elif why and not current["why_needed"]:
+                current["why_needed"] = why
+            continue
+        bound[act.url] = {
+            "title": act.title,
+            "doc_type": act.doc_type,
+            "why_needed": why,
+            "search_queries": _search_queries(doc.get("search_queries"), act.title),
+            "priority": priority,
+            "found_url": act.url,
+        }
+    return list(bound.values())
 
 
 def normalize_documents(parsed: dict[str, Any], max_docs: int) -> tuple[list[str], list[dict[str, Any]]]:
@@ -84,34 +139,31 @@ def normalize_documents(parsed: dict[str, Any], max_docs: int) -> tuple[list[str
         raise ValueError("LLM returned empty documents list")
 
     clean_docs: list[dict[str, Any]] = []
-    for doc in documents[:max_docs]:
+    for doc in documents[: max(max_docs * 2, max_docs)]:
         if not isinstance(doc, dict):
             continue
         title = str(doc.get("title") or "").strip()
-        if not title:
+        n = doc.get("n") if doc.get("n") is not None else doc.get("catalog_n")
+        if not title and n is None:
             continue
-        queries = doc.get("search_queries") or []
-        if isinstance(queries, str):
-            queries = [queries]
-        queries = [str(q).strip() for q in queries if str(q).strip()]
-        if not queries:
-            queries = [f"site:pravo.gov.by {title}"]
-        priority = int(doc.get("priority") or 2)
-        priority = min(3, max(1, priority))
         clean_docs.append(
             {
+                "n": n,
                 "title": title,
-                "doc_type": str(doc.get("doc_type") or "иное").strip().lower(),
                 "why_needed": str(doc.get("why_needed") or "").strip(),
-                "search_queries": queries,
-                "priority": priority,
+                "search_queries": doc.get("search_queries") or [],
+                "priority": _priority(doc.get("priority")),
             }
         )
 
-    if not clean_docs:
-        raise ValueError("No valid documents after normalization")
+    bound = bind_documents_to_catalog(clean_docs)[:max_docs]
+    if not bound:
+        raise ValueError(
+            "LLM did not pick any act from the official catalog; "
+            "proposed titles must match known_sources"
+        )
 
-    return [str(t).strip() for t in topics if str(t).strip()], clean_docs
+    return [str(t).strip() for t in topics if str(t).strip()], bound
 
 
 async def propose_documents_events(

@@ -32,6 +32,7 @@ def _persist_propose(state: CaseState, result: dict) -> CaseState:
             search_queries=d["search_queries"],
             priority=d["priority"],
             selected=False,
+            found_url=d.get("found_url"),
         )
         for d in result["documents"]
     ]

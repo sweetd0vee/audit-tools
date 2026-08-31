@@ -239,6 +239,14 @@ class TestPipePaste(unittest.TestCase):
         self.assertIn("NEW_CASE_START_RE", source)
         self.assertIn("def _format_elapsed(", source)
         self.assertIn("Сгенерировано за", source)
+        self.assertIn('self.name = "Аудитор"', source)
+
+    def test_legacy_npa_function_is_renamed_on_seed(self):
+        seed = _load(SEED_PIPE, "seed_pipe")
+        self.assertEqual(seed.PIPE_NAME, "Аудитор")
+        self.assertEqual(seed.target_function_ids(set()), ["auditor"])
+        self.assertEqual(seed.target_function_ids({"npa"}), ["npa"])
+        self.assertEqual(seed.target_function_ids({"auditor", "npa"}), ["auditor"])
 
 
 class TestPipeElapsed(unittest.TestCase):
