@@ -835,27 +835,19 @@ def write_opinion_docx(
     )
     _set_run_font(fr, size=9, italic=True, font=font)
 
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _apply_tight_spacing(title)
-    tr = title.add_run(_OPINION_TITLE)
-    _set_run_font(tr, size=16, bold=True, font=font)
+    name = (inspection_name or "").strip()
+    if name:
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _apply_tight_spacing(title)
+        tr = title.add_run(name)
+        _set_run_font(tr, size=16, bold=True, font=font)
 
-    if (inspection_name or "").strip():
-        sub = doc.add_paragraph()
-        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _apply_tight_spacing(sub)
-        sr = sub.add_run(inspection_name.strip())
-        _set_run_font(sr, size=_OPINION_FONT_SIZE, bold=True, font=font)
-
-    note = doc.add_paragraph()
-    note.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    _apply_tight_spacing(note)
-    nr = note.add_run(
-        "Черновик раздела I аудиторского заключения для руководства банка. "
-        "Не утверждённый акт службы внутреннего аудита и не подпись руководителя СВА."
-    )
-    _set_run_font(nr, size=11, italic=True, font=font)
+    section_title = doc.add_paragraph()
+    section_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _apply_tight_spacing(section_title)
+    sr = section_title.add_run(_OPINION_TITLE)
+    _set_run_font(sr, size=_OPINION_FONT_SIZE, bold=True, font=font)
 
     add_opinion_markdown(doc, body, font=font)
 

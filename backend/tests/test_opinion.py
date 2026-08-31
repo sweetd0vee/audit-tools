@@ -120,7 +120,13 @@ class TestOpinionDocx(unittest.TestCase):
             from docx import Document
 
             doc = Document(str(path))
+            paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            self.assertGreaterEqual(len(paras), 2)
+            self.assertEqual(paras[0], "Проверка аренды коммерческой недвижимости")
+            self.assertEqual(paras[1], "I. Аудиторское мнение по итогам проверки")
             texts = "\n".join(p.text for p in doc.paragraphs)
+            self.assertNotIn("Не утверждённый акт", texts)
+            self.assertNotIn("для руководства банка", texts)
             self.assertIn("I. Аудиторское мнение по итогам проверки", texts)
             self.assertIn("Проверка аренды коммерческой недвижимости", texts)
             self.assertIn("Анализ ЛПА", texts)
