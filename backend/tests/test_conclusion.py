@@ -35,6 +35,8 @@ def _assert_tight_spacing(test: unittest.TestCase, doc, xml: str, styles: str) -
         if fmt.line_spacing_rule is not None:
             test.assertEqual(fmt.line_spacing_rule, WD_LINE_SPACING.SINGLE, paragraph.text[:80])
     test.assertNotIn('w:line="360"', xml)
+    test.assertNotIn('w:line="276"', styles)
+    test.assertIn('w:line="240"', styles)
     test.assertIn("contextualSpacing", styles)
 
 
@@ -260,7 +262,11 @@ class TestConclusionDocx(unittest.TestCase):
             SAMPLE_MD,
             hypotheses=[_row(1, "высокий"), _row(3, "средний")],
         )
-        opinion = "## Аудиторское мнение\nПо подтверждённым гипотезам отмечается риск учёта аренды."
+        opinion = (
+            "## Проверка аренды коммерческой недвижимости\n"
+            "## Аудиторское мнение\n"
+            "По подтверждённым гипотезам отмечается риск учёта аренды."
+        )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "zakluchenie.docx"
             write_conclusion_docx(
@@ -354,6 +360,16 @@ class TestConclusionDocx(unittest.TestCase):
             self.assertGreaterEqual(int(toc_i.group(1)), 3)
             self.assertGreater(int(toc_iv.group(1)), int(toc_i.group(1)))
             self.assertIn("3.1.  Неполная сверка договоров аренды.", texts)
+            paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            iv = next(i for i, t in enumerate(paras) if t.startswith("IV."))
+            self.assertEqual(paras[iv + 1], "Проверка аренды коммерческой недвижимости")
+            self.assertEqual(paras[iv + 2], "I. Аудиторское мнение по итогам проверки")
+            heading_names = [
+                p.text.strip()
+                for p in doc.paragraphs
+                if p.style is not None and str(p.style.name).startswith("Heading")
+            ]
+            self.assertNotIn("Проверка аренды коммерческой недвижимости", heading_names)
 
     def test_markdown_table_and_scheme_in_observation(self):
         md = """

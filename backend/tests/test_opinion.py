@@ -32,6 +32,8 @@ def _assert_tight_spacing(test: unittest.TestCase, doc, xml: str, styles: str) -
         if fmt.line_spacing_rule is not None:
             test.assertEqual(fmt.line_spacing_rule, WD_LINE_SPACING.SINGLE, paragraph.text[:80])
     test.assertNotIn('w:line="360"', xml)
+    test.assertNotIn('w:line="276"', styles)
+    test.assertIn('w:line="240"', styles)
     test.assertIn("contextualSpacing", styles)
 
 
@@ -89,6 +91,8 @@ class TestOpinionDocx(unittest.TestCase):
 ## Название проверки
 Проверка аренды коммерческой недвижимости.
 
+## Проверка аренды коммерческой недвижимости
+
 ## Цели и задачи аудита
 Цели аудита:
 - Оценка учёта аренды.
@@ -124,6 +128,12 @@ class TestOpinionDocx(unittest.TestCase):
             self.assertGreaterEqual(len(paras), 2)
             self.assertEqual(paras[0], "Проверка аренды коммерческой недвижимости")
             self.assertEqual(paras[1], "I. Аудиторское мнение по итогам проверки")
+            heading_names = [
+                p.text.strip()
+                for p in doc.paragraphs
+                if p.style is not None and str(p.style.name).startswith("Heading")
+            ]
+            self.assertNotIn("Проверка аренды коммерческой недвижимости", heading_names)
             texts = "\n".join(p.text for p in doc.paragraphs)
             self.assertNotIn("Не утверждённый акт", texts)
             self.assertNotIn("для руководства банка", texts)

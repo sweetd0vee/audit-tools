@@ -659,7 +659,19 @@ def write_brief_docx(
 _OPINION_FONT_SIZE = 14
 _OPINION_TITLE = "I. Аудиторское мнение по итогам проверки"
 _NUMBERED_LINE_RE = re.compile(r"^(\d{1,2})[.)]\s+(.*)$")
-_TIGHT_STYLES = ("Normal", "List Bullet", "Heading 1", "Heading 2")
+
+
+def _force_spacing_xml(p_pr, *, before_twips: int = 0, after_twips: int = 0) -> None:
+    spacing = p_pr.find(qn("w:spacing"))
+    if spacing is None:
+        spacing = OxmlElement("w:spacing")
+        p_pr.append(spacing)
+    spacing.set(qn("w:before"), str(before_twips))
+    spacing.set(qn("w:after"), str(after_twips))
+    spacing.set(qn("w:line"), "240")
+    spacing.set(qn("w:lineRule"), "auto")
+    if p_pr.find(qn("w:contextualSpacing")) is None:
+        p_pr.append(OxmlElement("w:contextualSpacing"))
 
 
 def _apply_tight_spacing(paragraph, *, space_before: int = 0, space_after: int = 0) -> None:
@@ -669,14 +681,13 @@ def _apply_tight_spacing(paragraph, *, space_before: int = 0, space_after: int =
     fmt.space_after = Pt(space_after)
     fmt.line_spacing_rule = WD_LINE_SPACING.SINGLE
     p_pr = paragraph._p.get_or_add_pPr()
-    if p_pr.find(qn("w:contextualSpacing")) is None:
-        p_pr.append(OxmlElement("w:contextualSpacing"))
+    _force_spacing_xml(p_pr, before_twips=int(space_before) * 20, after_twips=int(space_after) * 20)
 
 
 def _set_style_tight_spacing(style) -> None:
     try:
         pf = style.paragraph_format
-    except ValueError:
+    except (ValueError, AttributeError):
         return
     pf.space_before = Pt(0)
     pf.space_after = Pt(0)
@@ -685,8 +696,55 @@ def _set_style_tight_spacing(style) -> None:
     if p_pr is None:
         p_pr = OxmlElement("w:pPr")
         style.element.append(p_pr)
-    if p_pr.find(qn("w:contextualSpacing")) is None:
-        p_pr.append(OxmlElement("w:contextualSpacing"))
+    _force_spacing_xml(p_pr)
+
+
+def _set_doc_default_tight_spacing(doc: Document) -> None:
+    styles_el = doc.styles.element
+    doc_defaults = styles_el.find(qn("w:docDefaults"))
+    if doc_defaults is None:
+        doc_defaults = OxmlElement("w:docDefaults")
+        styles_el.insert(0, doc_defaults)
+    p_pr_default = doc_defaults.find(qn("w:pPrDefault"))
+    if p_pr_default is None:
+        p_pr_default = OxmlElement("w:pPrDefault")
+        doc_defaults.append(p_pr_default)
+    p_pr = p_pr_default.find(qn("w:pPr"))
+    if p_pr is None:
+        p_pr = OxmlElement("w:pPr")
+        p_pr_default.append(p_pr)
+    _force_spacing_xml(p_pr)
+
+
+def _iter_table_paragraphs(table):
+    for row in table.rows:
+        for cell in row.cells:
+            yield from cell.paragraphs
+            for nested in cell.tables:
+                yield from _iter_table_paragraphs(nested)
+
+
+def _iter_all_paragraphs(doc: Document):
+    yield from doc.paragraphs
+    for table in doc.tables:
+        yield from _iter_table_paragraphs(table)
+    for section in doc.sections:
+        yield from section.footer.paragraphs
+        for table in section.footer.tables:
+            yield from _iter_table_paragraphs(table)
+        if not section.different_first_page_header_footer:
+            continue
+        yield from section.first_page_footer.paragraphs
+        for table in section.first_page_footer.tables:
+            yield from _iter_table_paragraphs(table)
+
+
+def _tighten_document(doc: Document) -> None:
+    _set_doc_default_tight_spacing(doc)
+    for style in doc.styles:
+        _set_style_tight_spacing(style)
+    for paragraph in _iter_all_paragraphs(doc):
+        _apply_tight_spacing(paragraph)
 
 
 def _set_document_base_font(doc: Document, font: str, size: int) -> None:
@@ -702,11 +760,9 @@ def _set_document_base_font(doc: Document, font: str, size: int) -> None:
     r_fonts.set(qn("w:hAnsi"), font)
     r_fonts.set(qn("w:eastAsia"), font)
     r_fonts.set(qn("w:cs"), font)
-    for name in _TIGHT_STYLES:
-        try:
-            _set_style_tight_spacing(doc.styles[name])
-        except KeyError:
-            continue
+    _set_doc_default_tight_spacing(doc)
+    for item in doc.styles:
+        _set_style_tight_spacing(item)
 
 
 def _add_opinion_paragraph(
@@ -757,10 +813,24 @@ def _add_opinion_heading(doc: Document, text: str, *, font: str, level: int) -> 
     _apply_tight_spacing(paragraph)
 
 
-def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
+def add_opinion_markdown(
+    doc: Document,
+    md: str,
+    *,
+    font: str,
+    inspection_name: str = "",
+) -> None:
     """Narrative-only renderer: headings, paragraphs, bullets. No tables."""
     size = _OPINION_FONT_SIZE
     skip_title_section = False
+    name_low = (inspection_name or "").strip().lower()
+    skip_headings = {
+        "название проверки",
+        "название",
+        "i. аудиторское мнение по итогам проверки",
+        name_low,
+    }
+    skip_headings.discard("")
     for raw in (md or "").splitlines():
         line = raw.rstrip()
         stripped = line.strip()
@@ -771,12 +841,15 @@ def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
         if stripped.startswith("```"):
             continue
         if stripped.startswith("### "):
+            if skip_title_section:
+                continue
             _add_opinion_heading(doc, stripped[4:], font=font, level=2)
             continue
         if stripped.startswith("## "):
             heading = _strip_md(stripped[3:])
-            skip_title_section = heading.lower() in {"название проверки", "название"}
-            if skip_title_section:
+            low = heading.lower()
+            skip_title_section = low in {"название проверки", "название"}
+            if skip_title_section or low in skip_headings:
                 continue
             _add_opinion_heading(doc, heading, font=font, level=1)
             continue
@@ -808,6 +881,30 @@ def add_opinion_markdown(doc: Document, md: str, *, font: str) -> None:
         _add_opinion_paragraph(doc, stripped, font=font, size=size)
 
 
+def _write_opinion_header(
+    doc: Document,
+    *,
+    inspection_name: str,
+    font: str,
+    bookmark: str = "",
+) -> None:
+    name = (inspection_name or "").strip()
+    if name:
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _apply_tight_spacing(title)
+        tr = title.add_run(name)
+        _set_run_font(tr, size=16, bold=True, font=font)
+
+    section_title = doc.add_paragraph()
+    section_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _apply_tight_spacing(section_title)
+    sr = section_title.add_run(_OPINION_TITLE)
+    _set_run_font(sr, size=_OPINION_FONT_SIZE, bold=True, font=font)
+    if bookmark:
+        add_bookmark(section_title, bookmark)
+
+
 def write_opinion_docx(
     path: Path,
     *,
@@ -836,21 +933,10 @@ def write_opinion_docx(
     _set_run_font(fr, size=9, italic=True, font=font)
 
     name = (inspection_name or "").strip()
-    if name:
-        title = doc.add_paragraph()
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _apply_tight_spacing(title)
-        tr = title.add_run(name)
-        _set_run_font(tr, size=16, bold=True, font=font)
+    _write_opinion_header(doc, inspection_name=name, font=font)
+    add_opinion_markdown(doc, body, font=font, inspection_name=name)
 
-    section_title = doc.add_paragraph()
-    section_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _apply_tight_spacing(section_title)
-    sr = section_title.add_run(_OPINION_TITLE)
-    _set_run_font(sr, size=_OPINION_FONT_SIZE, bold=True, font=font)
-
-    add_opinion_markdown(doc, body, font=font)
-
+    _tighten_document(doc)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
     return path

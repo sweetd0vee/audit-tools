@@ -24,6 +24,8 @@ from app.services.brief_docx import (
     _set_table_borders,
     _set_tbl_grid,
     _strip_md,
+    _tighten_document,
+    _write_opinion_header,
     add_bookmark,
     add_opinion_markdown,
 )
@@ -1130,7 +1132,7 @@ def _add_cover_textbox(
         f'<a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln>'
         "</wps:spPr><wps:txbx><w:txbxContent><w:p>"
-        f'<w:pPr><w:jc w:val="{align}"/><w:spacing w:before="0" w:after="0"/></w:pPr>'
+        f'<w:pPr><w:jc w:val="{align}"/><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
         "<w:r><w:rPr>"
         f'<w:rFonts w:ascii="{_xml_escape(font)}" w:hAnsi="{_xml_escape(font)}"'
         f' w:cs="{_xml_escape(font)}"/>{bold_xml}'
@@ -1362,8 +1364,12 @@ def write_conclusion_docx(
     _write_title_page(doc, inspection_name=inspection_name, font=font)
     _write_toc(doc, report, font=font, opinion_body=opinion_body or "")
 
-    _add_roman_heading(doc, "I", _SECTION_I, font=font, bookmark="sec_I")
-    add_opinion_markdown(doc, opinion_body or "", font=font)
+    _write_opinion_header(
+        doc, inspection_name=inspection_name, font=font, bookmark="sec_I"
+    )
+    add_opinion_markdown(
+        doc, opinion_body or "", font=font, inspection_name=inspection_name
+    )
     doc.add_page_break()
 
     for block in report.sections:
@@ -1381,6 +1387,7 @@ def write_conclusion_docx(
                 _add_body_markdown(doc, observation.body, font=font)
             _add_observation_summary(doc, observation, font=font)
 
+    _tighten_document(doc)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
     return path
