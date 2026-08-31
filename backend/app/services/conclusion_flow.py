@@ -27,7 +27,6 @@ from app.services.document_artifact import (
     ArtifactPaths,
     ArtifactSpec,
     ComposeNotice,
-    artifact_download_name,
     artifact_paths,
     artifact_stale,
     artifact_status,

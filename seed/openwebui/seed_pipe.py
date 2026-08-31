@@ -22,6 +22,9 @@ HERE = Path(__file__).resolve().parent
 FUNCTIONS_DIR = HERE / "functions"
 PIPE_ID = "auditor"
 PIPE_NAME = "Аудитор"
+# Старый Function ID: в чате Open WebUI рисует name из этой записи.
+# Если функцию создали как `npa`, подпись остаётся «npa», пока не обновим name.
+LEGACY_PIPE_IDS = ("npa",)
 INTENT_START = "# INTENT_INLINE_START"
 INTENT_END = "# INTENT_INLINE_END"
 
@@ -107,17 +110,27 @@ def wait_openwebui(base: str, attempts: int = 60, delay: float = 2.0) -> None:
     raise SystemExit(f"Open WebUI не отвечает на {base}: {last}")
 
 
-def upsert_pipe(
-    *,
-    base: str,
-    token: str,
-    content: str,
-    audit_api: str,
-    public_api: str,
-    owui_key: str = "",
-) -> None:
-    form = {
-        "id": PIPE_ID,
+def _function_rows(listing: object) -> list[dict]:
+    rows: list = listing if isinstance(listing, list) else []
+    if isinstance(listing, dict):
+        maybe = listing.get("items") or listing.get("functions") or []
+        rows = list(maybe.values()) if isinstance(maybe, dict) else maybe
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def target_function_ids(existing_ids: set[str]) -> list[str]:
+    """Канонический id, иначе уже существующий legacy (`npa`) — без второй копии."""
+    if PIPE_ID in existing_ids:
+        return [PIPE_ID]
+    for legacy in LEGACY_PIPE_IDS:
+        if legacy in existing_ids:
+            return [legacy]
+    return [PIPE_ID]
+
+
+def _pipe_form(function_id: str, content: str) -> dict:
+    return {
+        "id": function_id,
         "name": PIPE_NAME,
         "content": content,
         "meta": {
@@ -128,6 +141,93 @@ def upsert_pipe(
             "manifest": {},
         },
     }
+
+
+def _upsert_function(
+    *,
+    root: str,
+    token: str,
+    function_id: str,
+    content: str,
+    existing_ids: set[str],
+    listed_active: bool,
+    create: bool,
+) -> None:
+    form = _pipe_form(function_id, content)
+    if function_id in existing_ids:
+        up_status, up_body = _json_request(
+            "POST", f"{root}/api/v1/functions/id/{function_id}/update", token, form
+        )
+        if up_status >= 400:
+            raise SystemExit(
+                f"Обновление Pipe `{function_id}` не удалось ({up_status}): {up_body}"
+            )
+        print(f"Pipe `{function_id}` обновлён, имя «{PIPE_NAME}».")
+        info = up_body if isinstance(up_body, dict) else {}
+        is_active = info["is_active"] if "is_active" in info else listed_active
+    elif create:
+        cr_status, cr_body = _json_request(
+            "POST", f"{root}/api/v1/functions/create", token, form
+        )
+        if cr_status >= 400:
+            raise SystemExit(f"Создание Pipe не удалось ({cr_status}): {cr_body}")
+        print(f"Pipe `{function_id}` создан.")
+        info = cr_body if isinstance(cr_body, dict) else {}
+        is_active = bool(info.get("is_active"))
+    else:
+        return
+
+    if not is_active:
+        tog_status, tog_body = _json_request(
+            "POST", f"{root}/api/v1/functions/id/{function_id}/toggle", token
+        )
+        if tog_status >= 400:
+            raise SystemExit(
+                f"Включить Pipe `{function_id}` не удалось ({tog_status}): {tog_body}"
+            )
+        print(f"Pipe `{function_id}` включён.")
+
+
+def _rename_workspace_models(root: str, token: str) -> None:
+    status, listing = _json_request("GET", f"{root}/api/v1/models/", token)
+    if status >= 400:
+        return
+    rows = listing if isinstance(listing, list) else []
+    if isinstance(listing, dict):
+        maybe = listing.get("items") or listing.get("models") or listing.get("data") or []
+        rows = list(maybe.values()) if isinstance(maybe, dict) else maybe
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get("id") or "")
+        name = str(row.get("name") or "")
+        if model_id not in LEGACY_PIPE_IDS and name not in LEGACY_PIPE_IDS:
+            continue
+        if name == PIPE_NAME:
+            continue
+        payload = dict(row)
+        payload["name"] = PIPE_NAME
+        up_status, up_body = _json_request(
+            "POST",
+            f"{root}/api/v1/models/model/update?id={model_id}",
+            token,
+            payload,
+        )
+        if up_status >= 400:
+            print(f"Модель `{model_id}` не переименовалась ({up_status}): {up_body}")
+        else:
+            print(f"Модель `{model_id}` переименована в «{PIPE_NAME}».")
+
+
+def upsert_pipe(
+    *,
+    base: str,
+    token: str,
+    content: str,
+    audit_api: str,
+    public_api: str,
+    owui_key: str = "",
+) -> None:
     root = base.rstrip("/")
     list_status, listing = _json_request("GET", f"{root}/api/v1/functions/", token)
     if list_status in (401, 403):
@@ -139,43 +239,24 @@ def upsert_pipe(
         raise SystemExit(f"GET /functions → {list_status}: {listing}")
 
     existing_ids: set[str] = set()
-    rows: list = listing if isinstance(listing, list) else []
-    if isinstance(listing, dict):
-        maybe = listing.get("items") or listing.get("functions") or []
-        rows = list(maybe.values()) if isinstance(maybe, dict) else maybe
-    listed_active = False
-    for row in rows:
-        if isinstance(row, dict) and row.get("id"):
-            existing_ids.add(str(row["id"]))
-            if str(row["id"]) == PIPE_ID:
-                listed_active = bool(row.get("is_active"))
+    active_by_id: dict[str, bool] = {}
+    for row in _function_rows(listing):
+        if not row.get("id"):
+            continue
+        fid = str(row["id"])
+        existing_ids.add(fid)
+        active_by_id[fid] = bool(row.get("is_active"))
 
-    if PIPE_ID in existing_ids:
-        up_status, up_body = _json_request(
-            "POST", f"{root}/api/v1/functions/id/{PIPE_ID}/update", token, form
+    for function_id in target_function_ids(existing_ids):
+        _upsert_function(
+            root=root,
+            token=token,
+            function_id=function_id,
+            content=content,
+            existing_ids=existing_ids,
+            listed_active=active_by_id.get(function_id, False),
+            create=True,
         )
-        if up_status >= 400:
-            raise SystemExit(f"Обновление Pipe не удалось ({up_status}): {up_body}")
-        print(f"Pipe `{PIPE_ID}` обновлён из git.")
-        info = up_body if isinstance(up_body, dict) else {}
-        is_active = info["is_active"] if "is_active" in info else listed_active
-    else:
-        cr_status, cr_body = _json_request(
-            "POST", f"{root}/api/v1/functions/create", token, form
-        )
-        if cr_status >= 400:
-            raise SystemExit(f"Создание Pipe не удалось ({cr_status}): {cr_body}")
-        print(f"Pipe `{PIPE_ID}` создан.")
-        info = cr_body if isinstance(cr_body, dict) else {}
-        is_active = bool(info.get("is_active"))
-
-    if not is_active:
-        tog_status, tog_body = _json_request(
-            "POST", f"{root}/api/v1/functions/id/{PIPE_ID}/toggle", token
-        )
-        if tog_status >= 400:
-            raise SystemExit(f"Включить Pipe не удалось ({tog_status}): {tog_body}")
-        print(f"Pipe `{PIPE_ID}` включён.")
 
     valves = {
         "AUDIT_API": audit_api,
@@ -185,17 +266,19 @@ def upsert_pipe(
     }
     if owui_key:
         valves["OPENWEBUI_API_KEY"] = owui_key
-    v_status, v_body = _json_request(
-        "POST",
-        f"{root}/api/v1/functions/id/{PIPE_ID}/valves/update",
-        token,
-        valves,
-    )
-    if v_status >= 400:
-        raise SystemExit(f"Valves Pipe не записались ({v_status}): {v_body}")
-    print(
-        f"Valves: AUDIT_API={audit_api} PUBLIC_API={public_api}"
-    )
+    for function_id in target_function_ids(existing_ids):
+        v_status, v_body = _json_request(
+            "POST",
+            f"{root}/api/v1/functions/id/{function_id}/valves/update",
+            token,
+            valves,
+        )
+        if v_status >= 400:
+            raise SystemExit(
+                f"Valves Pipe `{function_id}` не записались ({v_status}): {v_body}"
+            )
+    print(f"Valves: AUDIT_API={audit_api} PUBLIC_API={public_api}")
+    _rename_workspace_models(root, token)
 
 
 def main(argv: list[str] | None = None) -> int:

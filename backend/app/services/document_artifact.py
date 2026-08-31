@@ -391,7 +391,10 @@ async def _await_compose_with_heartbeat(
     message: str,
     heartbeat_sec: float,
 ) -> AsyncIterator[dict[str, Any]]:
-    task = asyncio.create_task(coro)
+    async def _run() -> Any:
+        return await coro
+
+    task: asyncio.Task[Any] = asyncio.create_task(_run())
     try:
         while not task.done():
             timeout = heartbeat_sec if heartbeat_sec > 0 else None

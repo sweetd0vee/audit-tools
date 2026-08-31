@@ -198,7 +198,13 @@ def _is_select_hypotheses(text: str) -> bool:
         return False
     if REJECT_APPROVE_RE.search(t):
         return False
-    return bool(re.search(r"утвержд\w*|подтвержд\w*|выбираю", t))
+    return bool(
+        re.search(
+            r"утвержд\w*|подтвержд\w*|выбираю|"
+            r"добав\w*|прикреп\w*|свои\s+гипотез|(?:^|\s)\+?\s*плюс\s+",
+            t,
+        )
+    )
 
 
 def _is_opinion(text: str) -> bool:
@@ -232,6 +238,17 @@ def _parse_hypothesis_picks(text: str) -> dict[str, Any]:
     numbers = [int(n) for n in re.findall(r"\b(\d{1,2})\b", t)]
     numbers = [n for n in numbers if 1 <= n <= 20]
     return {"numbers": numbers, "all_high": False, "all_rows": False}
+
+
+def _wants_extra_hypotheses(text: str) -> bool:
+    t = text.strip().lower()
+    return bool(
+        re.search(
+            r"добав\w*|прикреп\w*|свои\s+гипотез|(?:^|\s)\+?\s*плюс\s+|"
+            r"дополнительн\w*\s+гипотез",
+            t,
+        )
+    )
 
 
 def _parse_opinion_font(text: str) -> str:

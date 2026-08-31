@@ -88,16 +88,20 @@ def build_user_prompt(
 
 
 def _priority(value: object) -> int:
+    candidate: object = value if value else 2
     try:
-        priority = int(value or 2)
+        if isinstance(candidate, (int, float, str)):
+            priority = int(candidate)
+        else:
+            priority = 2
     except (TypeError, ValueError):
         priority = 2
     return min(3, max(1, priority))
 
 
 def _search_queries(raw: object, title: str) -> list[str]:
-    queries = raw if isinstance(raw, list) else [raw] if raw else []
-    queries = [str(q).strip() for q in queries if str(q).strip()]
+    items: list[object] = list(raw) if isinstance(raw, list) else ([raw] if raw else [])
+    queries = [str(q).strip() for q in items if str(q).strip()]
     return queries or search_queries_for_title(title) or [f"site:pravo.gov.by {title}"]
 
 

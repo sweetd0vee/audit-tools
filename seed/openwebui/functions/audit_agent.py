@@ -9,8 +9,10 @@ requirements: httpx
 
 from __future__ import annotations
 
+import base64
 import json
 import re
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 import httpx
@@ -38,6 +40,7 @@ from intent import (  # noqa: E402
     _parse_opinion_font,
     _parse_program_items_spec,
     _resolve_approval,
+    _wants_extra_hypotheses,
 )
 # INTENT_INLINE_END
 
@@ -50,7 +53,7 @@ NEXT_STEPS = (
     "— `саммари` — основная информация по теме из базы знаний в Word;\n"
     "— `саммари total` — основная информация по теме из знаний модели;\n"
     "— `гипотезы` — чеклист гипотез для проверки в Excel;\n"
-    "— `аудиторское мнение` — черновик раздела I в Word после `утверждаю гипотезы …` (`-c` Calibri, `-t` Times New Roman);\n"
+    "— `аудиторское мнение` — черновик раздела I в Word после `утверждаю гипотезы …` (`-c` Calibri, `-t` Times New Roman). Свои гипотезы — приложите .xlsx к утверждению;\n"
     "— `аудиторское заключение` — черновик заключения в Word после `аудиторское мнение` (`-c` Calibri, `-t` Times New Roman);\n"
     "— `вопрос` — вопрос по базе знаний;\n"
     "— `документы` — посмотреть список документов в базе знаний;\n"
@@ -128,6 +131,7 @@ _FONT_ARTIFACTS = {
         "error_label": "аудиторское мнение",
         "retry_hint": (
             "Сначала `гипотезы`, затем `утверждаю гипотезы 1, 3, 5`. "
+            "Свои гипотезы можно дописать в Excel и приложить к этой команде. "
             "Шрифт: `аудиторское мнение -c` (Calibri) или `-t` (Times New Roman)."
         ),
         "empty_message": "Аудиторское мнение не получилось. Напишите ещё раз: `аудиторское мнение`.",
@@ -142,7 +146,8 @@ _FONT_ARTIFACTS = {
         "fallback_status": "Готовлю аудиторское заключение…",
         "error_label": "аудиторское заключение",
         "retry_hint": (
-            "Сначала `гипотезы`, `утверждаю гипотезы 1, 3, 5`, затем `аудиторское мнение`. "
+            "Сначала `гипотезы`, `утверждаю гипотезы 1, 3, 5` (свои — приложите .xlsx), "
+            "затем `аудиторское мнение`. "
             "Шрифт: `аудиторское заключение -c` (Calibri) или `-t` (Times New Roman)."
         ),
         "empty_message": (
@@ -175,6 +180,7 @@ class Pipe:
         )
 
     def __init__(self) -> None:
+        self.name = "Аудитор"
         self.valves = self.Valves()
 
     async def pipe(
@@ -226,7 +232,7 @@ class Pipe:
                     return missing
                 assert case_id is not None
                 selected, confirmed = await self._select_hypotheses(
-                    api, timeout, case_id, text
+                    api, timeout, case_id, text, body, __request__, owui_key, kwargs
                 )
                 if _is_opinion(text) and confirmed:
                     opinion = await self._opinion(
@@ -616,6 +622,8 @@ class Pipe:
             parts.append(footer)
         parts.append(_download_links(public, case_id, name, with_archive=False, **link_flags))
         parts.append(f"<!--audit-case:{case_id}-->")
+        if link_flags.get("with_conclusion") and emitter:
+            await _attach_conclusion_docx(api, case_id, name, timeout, emitter)
         return "\n".join(parts)
 
     def _brief_timeout(self, timeout: float) -> float:
@@ -776,6 +784,10 @@ class Pipe:
         timeout: float,
         case_id: str,
         text: str,
+        body: dict,
+        request: Any,
+        token: str,
+        kwargs: dict,
     ) -> tuple[str, bool]:
         try:
             status = await _req(
@@ -793,44 +805,95 @@ class Pipe:
             return (
                 "Чеклиста гипотез ещё нет. Сначала напишите `гипотезы`, "
                 "затем: `утверждаю гипотезы 1, 3, 5`.\n"
+                "Свои гипотезы — допишите в Excel и приложите к утверждению.\n"
                 f"<!--audit-case:{case_id}-->"
             ), False
         picks = _parse_hypothesis_picks(text)
-        if (
-            not picks.get("numbers")
-            and not picks.get("all_high")
-            and not picks.get("all_rows")
-        ):
+        has_picks = bool(
+            picks.get("numbers") or picks.get("all_high") or picks.get("all_rows")
+        )
+        attachments = await _xlsx_attachments(
+            body, kwargs.get("__files__"), request, token, timeout
+        )
+        wants_extra = _wants_extra_hypotheses(text)
+        if wants_extra and not attachments and not has_picks:
+            return (
+                "Приложите Excel со своими гипотезами к сообщению "
+                "`утверждаю гипотезы 1, 2, 3, 4` "
+                "или отдельно: `добавить гипотезы` + файл.\n"
+                f"<!--audit-case:{case_id}-->"
+            ), False
+        if not has_picks and not attachments:
             return (
                 "Укажите номера гипотез, которые подтвердились на проверке, например:\n"
                 "`утверждаю гипотезы 1, 3, 5`\n"
                 "или: `утверждаю гипотезы все с приоритетом высокий`\n"
                 "или: `утверждаю все гипотезы`.\n"
+                "Свои гипотезы — приложите .xlsx к этой же команде "
+                "(колонка «Гипотеза»; можно дописать строки в скачанный чеклист).\n"
                 f"<!--audit-case:{case_id}-->"
             ), False
+        payload = dict(picks)
+        if not has_picks:
+            payload["keep_numbers"] = True
         try:
-            data = await _req(
-                "POST",
-                f"{api}/api/v1/cases/{case_id}/knowledge/hypotheses/select",
-                timeout,
-                json=picks,
-            )
+            if attachments:
+                name, raw = attachments[0]
+                data = await _req(
+                    "POST",
+                    f"{api}/api/v1/cases/{case_id}/knowledge/hypotheses/select",
+                    timeout,
+                    data={
+                        "numbers": json.dumps(payload.get("numbers") or []),
+                        "all_high": str(bool(payload.get("all_high"))).lower(),
+                        "all_rows": str(bool(payload.get("all_rows"))).lower(),
+                        "keep_numbers": str(bool(payload.get("keep_numbers"))).lower(),
+                    },
+                    files={
+                        "extra": (
+                            name,
+                            raw,
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                    },
+                )
+            else:
+                data = await _req(
+                    "POST",
+                    f"{api}/api/v1/cases/{case_id}/knowledge/hypotheses/select",
+                    timeout,
+                    json=payload,
+                )
         except Exception as extra:  # noqa: BLE001
             return (
                 f"Не получилось сохранить выбор гипотез: {extra}\n"
                 f"<!--audit-case:{case_id}-->"
             ), False
         rows = data.get("hypotheses") or []
+        extra_count = int(data.get("extra_count") or 0)
+        generated = int(data.get("count") or len(rows)) - extra_count
+        if extra_count:
+            head = (
+                f"Подтвердил гипотезы: {generated} из чеклиста, "
+                f"плюс {extra_count} ваших из Excel."
+            )
+        else:
+            head = f"Подтвердил гипотезы: {data.get('count') or len(rows)}."
         lines = [
-            f"Подтвердил гипотезы: {data.get('count') or len(rows)}.",
-            "В аудиторское мнение пойдут только они.",
+            head,
+            "В аудиторское мнение и в наблюдения заключения пойдут все они.",
             "",
         ]
         for row in rows:
+            mark = " (ваша)" if (row.get("origin") or "") == "auditor" else ""
             lines.append(
-                f"- {row.get('n')}. [{row.get('priority')}] {row.get('hypothesis')}"
+                f"- {row.get('n')}. [{row.get('priority')}] {row.get('hypothesis')}{mark}"
             )
         lines.append("")
+        if extra_count == 0:
+            lines.append(
+                "Свои гипотезы можно добавить: `добавить гипотезы` и приложить .xlsx."
+            )
         lines.append(
             "Дальше: `аудиторское мнение`, затем `аудиторское заключение` "
             "(шрифт: `-c` Calibri или `-t` Times New Roman)."
@@ -991,6 +1054,46 @@ def _file_stem(inspection_name: str) -> str:
     return base.strip("_")[:60] or "proverka"
 
 
+async def _attach_conclusion_docx(
+    api: str,
+    case_id: str,
+    inspection_name: str,
+    timeout: float,
+    emitter: Emitter,
+) -> None:
+    """Put the generated Word file on the chat message so an old Downloads copy is not opened."""
+    if not emitter:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                f"{api}/api/v1/cases/{case_id}/knowledge/conclusion.docx"
+            )
+        if response.status_code >= 400 or not response.content:
+            return
+        name = f"{_file_stem(inspection_name)}_zakluchenie.docx"
+        await emitter(
+            {
+                "type": "files",
+                "data": {
+                    "files": [
+                        {
+                            "type": "file",
+                            "name": name,
+                            "url": (
+                                "data:application/vnd.openxmlformats-officedocument"
+                                ".wordprocessingml.document;base64,"
+                                + base64.b64encode(response.content).decode("ascii")
+                            ),
+                        }
+                    ]
+                },
+            }
+        )
+    except Exception:
+        return
+
+
 def _download_links(
     public: str,
     case_id: str,
@@ -1033,7 +1136,7 @@ def _download_links(
         )
     if with_conclusion:
         lines.append(
-            f"- аудиторское заключение (`{stem}_zakluchenie.docx`): {base}/knowledge/conclusion.docx"
+            f"- аудиторское заключение (`{stem}_zakluchenie.docx`): {base}/knowledge/conclusion.docx?t={int(time.time())}"
         )
     return "\n".join(lines)
 
@@ -1105,14 +1208,175 @@ async def _status(emitter: Emitter, description: str, done: bool = False) -> Non
     await emitter({"type": "status", "data": {"description": description, "done": done}})
 
 
+def _is_xlsx_name(name: str) -> bool:
+    lower = (name or "").strip().lower()
+    return lower.endswith(".xlsx") or lower.endswith(".xlsm")
+
+
+def _file_name(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    nested = item.get("file") if isinstance(item.get("file"), dict) else {}
+    return str(
+        item.get("filename")
+        or item.get("name")
+        or nested.get("filename")
+        or nested.get("name")
+        or ""
+    )
+
+
+def _inline_xlsx_bytes(item: Any) -> Optional[bytes]:
+    if not isinstance(item, dict):
+        return None
+    for key in ("bytes", "content", "blob"):
+        value = item.get(key)
+        raw = _as_xlsx_bytes(value)
+        if raw:
+            return raw
+    data = item.get("data")
+    if isinstance(data, dict):
+        raw = _inline_xlsx_bytes(data)
+        if raw:
+            return raw
+        raw = _as_xlsx_bytes(data.get("content"))
+        if raw:
+            return raw
+    nested = item.get("file")
+    if isinstance(nested, dict):
+        return _inline_xlsx_bytes(nested)
+    return None
+
+
+def _as_xlsx_bytes(value: Any) -> Optional[bytes]:
+    if isinstance(value, (bytes, bytearray)) and bytes(value[:2]) == b"PK":
+        return bytes(value)
+    if isinstance(value, str) and len(value) > 80:
+        try:
+            raw = base64.b64decode(value, validate=False)
+        except Exception:
+            return None
+        if raw[:2] == b"PK":
+            return raw
+    return None
+
+
+def _file_id(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    nested = item.get("file") if isinstance(item.get("file"), dict) else {}
+    for key in ("id", "file_id"):
+        value = item.get(key) or nested.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    url = str(item.get("url") or nested.get("url") or "")
+    match = re.search(r"/files/([^/?#]+)", url)
+    return match.group(1) if match else ""
+
+
+def _owui_bases(request: Any) -> list[str]:
+    bases: list[str] = []
+    url = getattr(request, "base_url", None)
+    if url:
+        bases.append(str(url).rstrip("/"))
+    headers = getattr(request, "headers", None)
+    if headers:
+        host = headers.get("x-forwarded-host") or headers.get("host")
+        proto = headers.get("x-forwarded-proto") or "http"
+        if host:
+            bases.append(f"{proto}://{host}")
+    bases.extend(["http://127.0.0.1:8080", "http://open-webui:8080"])
+    out: list[str] = []
+    seen: set[str] = set()
+    for base in bases:
+        key = base.rstrip("/")
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def _iter_attached_files(body: dict, files_kw: Any) -> list[dict]:
+    items: list[dict] = []
+    for blob in (files_kw, body.get("files") if isinstance(body, dict) else None):
+        if isinstance(blob, list):
+            items.extend(x for x in blob if isinstance(x, dict))
+    messages = (body or {}).get("messages") or []
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        attached = message.get("files")
+        if isinstance(attached, list):
+            items.extend(x for x in attached if isinstance(x, dict))
+        break
+    return items
+
+
+async def _xlsx_attachments(
+    body: dict,
+    files_kw: Any,
+    request: Any,
+    token: str,
+    timeout: float,
+) -> list[tuple[str, bytes]]:
+    found: list[tuple[str, bytes]] = []
+    for item in _iter_attached_files(body, files_kw):
+        name = _file_name(item) or "auditor.xlsx"
+        if not _is_xlsx_name(name) and not _inline_xlsx_bytes(item):
+            continue
+        raw = _inline_xlsx_bytes(item)
+        if raw is None:
+            path = item.get("path") or item.get("local_path")
+            nested = item.get("file") if isinstance(item.get("file"), dict) else {}
+            path = path or nested.get("path") or nested.get("local_path")
+            if isinstance(path, str):
+                try:
+                    with open(path, "rb") as handle:
+                        raw = handle.read()
+                except OSError:
+                    raw = None
+        if raw is None:
+            file_id = _file_id(item)
+            if file_id:
+                raw = await _download_owui_file(file_id, request, token, timeout)
+        if raw and raw[:2] == b"PK":
+            found.append((name if _is_xlsx_name(name) else "auditor.xlsx", raw))
+    return found
+
+
+async def _download_owui_file(
+    file_id: str,
+    request: Any,
+    token: str,
+    timeout: float,
+) -> Optional[bytes]:
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    for base in _owui_bases(request):
+        url = f"{base}/api/v1/files/{file_id}/content"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(url, headers=headers)
+            if response.status_code < 400 and response.content[:2] == b"PK":
+                return response.content
+        except Exception:
+            continue
+    return None
+
+
 async def _req(
     method: str,
     url: str,
     timeout: float,
     json: Optional[dict] = None,
+    data: Optional[dict] = None,
+    files: Optional[dict] = None,
 ) -> Any:
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.request(method, url, json=json)
+        response = await client.request(
+            method, url, json=json, data=data, files=files
+        )
         if response.status_code >= 400:
             detail = response.text[:400]
             try:

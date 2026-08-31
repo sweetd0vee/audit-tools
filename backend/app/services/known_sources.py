@@ -211,6 +211,8 @@ def match_catalog_act(title: str) -> KnownAct | None:
 
 def catalog_act_by_number(n: object) -> KnownAct | None:
     try:
+        if isinstance(n, bool) or not isinstance(n, (int, float, str)):
+            return None
         idx = int(n) - 1
     except (TypeError, ValueError):
         return None
