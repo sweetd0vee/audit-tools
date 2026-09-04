@@ -75,6 +75,7 @@ class Cmd:
     LIBRARY = "library"
     STATUS = "status"
     NEW_CASE = "new_case"
+    UPLOAD = "upload"
     CHAT = "chat"
 
 
@@ -403,6 +404,43 @@ def _is_approve(text: str, *, has_case: bool = False) -> bool:
     return bool(has_case and _is_download_retry(text))
 
 
+def _is_upload(text: str) -> bool:
+    """Локальные акты в базу знаний: скрепка или папка inbox."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if t in {
+        "загрузи",
+        "загрузить",
+        "загрузка",
+        "/upload",
+        "inbox",
+        "мои документы",
+        "свои файлы",
+        "свои документы",
+        "локальные документы",
+        "локальные файлы",
+        "из папки",
+    }:
+        return True
+    return bool(
+        re.search(
+            r"("
+            r"загруз\w+\s+(?:файл|документ|акт)|"
+            r"загруз\w+\s+(?:свои|мои|локальн)|"
+            r"^\s*загруз\w+\s*$|"
+            r"/upload|"
+            r"из\s+папк|"
+            r"положи(?:те)?\s+(?:в\s+)?(?:папк|баз|inbox)|"
+            r"прилож\w*\s+(?:файл|документ|акт)|"
+            r"прикреп\w*\s+(?:файл|документ|акт)|"
+            r"добавь(?:те)?\s+(?:свой\s+|свои\s+)?файл"
+            r")",
+            t,
+        )
+    )
+
+
 def _is_library(text: str) -> bool:
     """Команда списка/архива, не любой текст со словом «документ»."""
     t = text.strip().lower()
@@ -414,6 +452,7 @@ def _is_library(text: str) -> bool:
         or _is_opinion(t)
         or _is_conclusion(t)
         or _is_select_hypotheses(t)
+        or _is_upload(t)
     ):
         return False
     if _is_download_retry(t) or re.search(r"скачай|скачать|скачивай", t):
@@ -477,6 +516,7 @@ def _parse_new_case(text: str) -> Optional[dict[str, Any]]:
         or _is_opinion(raw)
         or _is_conclusion(raw)
         or _is_select_hypotheses(raw)
+        or _is_upload(raw)
     ):
         return None
     parts = [p.strip(" .;") for p in re.split(r"[,;\n]", raw) if p.strip()]
@@ -517,6 +557,8 @@ def classify(text: str, *, has_case: bool = False) -> str:
         return Cmd.HYPOTHESES
     if _is_brief(text):
         return Cmd.BRIEF
+    if _is_upload(text):
+        return Cmd.UPLOAD
     if _is_approve(text, has_case=has_case):
         return Cmd.APPROVE
     if _is_library(text):

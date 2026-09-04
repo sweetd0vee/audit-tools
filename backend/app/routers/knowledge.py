@@ -52,7 +52,12 @@ from app.services.hypotheses_flow import (
 from app.services.knowledge_ask import ask
 from app.services.knowledge_flow import build_knowledge_events
 from app.services.knowledge_index import rebuild_index
-from app.services.knowledge_ingest import add_uploaded_file, ingest_library
+from app.services.knowledge_ingest import (
+    add_uploaded_file,
+    inbox_hint,
+    ingest_inbox,
+    ingest_library,
+)
 from app.services.knowledge_owui import export_pack_files, openwebui_status, sync_openwebui
 from app.services.ollama_client import chat_messages
 from app.services.openwebui_client import OpenWebUIError
@@ -136,61 +141,79 @@ def _download_artifact(
     )
 
 
-@router.get("/cases/{case_id}/knowledge")
-def get_knowledge(case_id: str):
-    state = require_case(case_id)
-    return {
+def _knowledge_payload(case_id: str, extra: Optional[dict] = None) -> dict:
+    state = store.get(case_id)
+    body = {
         "case_id": case_id,
         "status": state.status,
         "inspection_name": state.inspection_name,
         "keywords": state.keywords,
         "openwebui_knowledge_id": state.meta.get("openwebui_knowledge_id"),
         "openwebui_knowledge_name": state.meta.get("openwebui_knowledge_name"),
+        "inbox_dir": inbox_hint(case_id),
         "items": [k.model_dump() for k in state.knowledge],
     }
+    if extra:
+        body.update(extra)
+    return body
+
+
+@router.get("/cases/{case_id}/knowledge")
+def get_knowledge(case_id: str):
+    require_case(case_id)
+    return _knowledge_payload(case_id)
 
 
 @router.post("/cases/{case_id}/knowledge/upload")
-async def upload_knowledge(case_id: str, files: list[UploadFile] = File(...)):
+async def upload_knowledge(
+    case_id: str,
+    files: Optional[list[UploadFile]] = File(default=None),
+):
     require_case(case_id)
     added = []
     errors = []
     async with async_lock(case_id):
-        for f in files:
+        incoming = files if isinstance(files, list) else ([files] if files else [])
+        for f in incoming:
             raw = await f.read()
+            filename = f.filename or "document.bin"
             if not raw:
-                errors.append({"filename": f.filename, "error": "empty file"})
+                errors.append({"filename": filename, "error": "empty file"})
                 continue
             if len(raw) > settings.max_upload_bytes:
                 errors.append(
                     {
-                        "filename": f.filename,
+                        "filename": filename,
                         "error": f"файл больше {settings.max_upload_bytes} байт",
                     }
                 )
                 continue
-            suffix = Path(f.filename or "document.bin").suffix.lower() or ".bin"
+            suffix = Path(filename).suffix.lower() or ".bin"
             if suffix not in TEXT_EXTS:
                 errors.append(
                     {
-                        "filename": f.filename,
+                        "filename": filename,
                         "error": f"Неподдерживаемый тип файла: {suffix}",
                     }
                 )
                 continue
             try:
-                item = add_uploaded_file(case_id, f.filename or "document.bin", raw)
+                item = add_uploaded_file(case_id, filename, raw)
                 added.append(item.model_dump())
             except Exception as exc:  # noqa: BLE001
-                errors.append({"filename": f.filename, "error": str(exc)})
+                errors.append({"filename": filename, "error": str(exc)})
+        inbox_added = ingest_inbox(case_id)
+        added.extend(item.model_dump() for item in inbox_added)
+        payload = rebuild_index(case_id)
 
-    state = store.get(case_id)
-    return {
-        "case_id": case_id,
-        "added": added,
-        "errors": errors,
-        "items": [k.model_dump() for k in state.knowledge],
-    }
+    return _knowledge_payload(
+        case_id,
+        extra={
+            "added": added,
+            "errors": errors,
+            "chunks": len(payload.get("chunks") or []),
+        },
+    )
 
 
 @router.post("/cases/{case_id}/knowledge/ingest")
@@ -209,13 +232,15 @@ async def index_knowledge(case_id: str):
     """Collect chunks from downloaded txt without summaries or Open WebUI."""
     require_case(case_id)
     async with async_lock(case_id):
+        inbox_added = ingest_inbox(case_id)
         payload = rebuild_index(case_id)
-        state = store.get(case_id)
-    return {
-        "case_id": case_id,
-        "chunks": len(payload.get("chunks") or []),
-        "items": [k.model_dump() for k in state.knowledge],
-    }
+    return _knowledge_payload(
+        case_id,
+        extra={
+            "chunks": len(payload.get("chunks") or []),
+            "added": [item.model_dump() for item in inbox_added],
+        },
+    )
 
 
 @router.get("/cases/{case_id}/knowledge/build/stream")

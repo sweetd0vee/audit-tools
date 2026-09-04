@@ -193,6 +193,7 @@ Pipe «Аудитор» 0.0.1 закрывает библиотеку, самм�
 backend/data/audit_cases/{case_id}/
   case.json
   manifest.json
+  inbox/              свои файлы аудитора (PDF/DOCX/TXT)
   knowledge_raw/      скачанные акты
   knowledge_text/     очищенный текст
   summaries/          карточки актов + Word-обзор

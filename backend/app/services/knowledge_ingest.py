@@ -2,11 +2,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.config import settings
 from app.filenames import safe_stem
 from app.models import CaseState, KnowledgeItem
 from app.services.chunker import normalize_npa_text
 from app.services.extract import TEXT_EXTS, extract_text
 from app.storage import store
+
+INBOX_SKIP_NAMES = {
+    "readme.txt",
+    "readme.md",
+    ".gitkeep",
+    ".ds_store",
+    "thumbs.db",
+    "desktop.ini",
+}
+INBOX_README_NAME = "README.txt"
+INBOX_README = (
+    "Положите сюда внутренние акты, которых нет в открытом доступе:\n"
+    "PDF, DOCX, TXT, HTML, RTF, MD.\n\n"
+    "Затем в чате напишите: загрузи\n\n"
+    "Не кладите Excel и выгрузки клиента — это не база знаний по норме.\n"
+)
+INBOX_IMPORTED = "imported"
 
 
 def text_dir(case_id: str) -> Path:
@@ -19,6 +37,23 @@ def summaries_dir(case_id: str) -> Path:
     path = store.case_dir(case_id) / "summaries"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def inbox_dir(case_id: str) -> Path:
+    path = store.inbox_dir(case_id)
+    readme = path / INBOX_README_NAME
+    if not readme.exists():
+        readme.write_text(INBOX_README, encoding="utf-8")
+    return path
+
+
+def inbox_hint(case_id: str) -> str:
+    path = inbox_dir(case_id)
+    try:
+        rel = path.relative_to(settings.data_root)
+        return f"backend/data/audit_cases/{rel.as_posix()}"
+    except ValueError:
+        return str(path)
 
 
 def _is_duplicate_html(path: Path) -> bool:
@@ -80,8 +115,45 @@ def item_text(item: KnowledgeItem) -> str:
     return ""
 
 
+def _skip_inbox_file(path: Path, inbox: Path) -> bool:
+    name = path.name.lower()
+    if name in INBOX_SKIP_NAMES or name.startswith("~$") or name.endswith(".tmp"):
+        return True
+    try:
+        rel = path.relative_to(inbox)
+    except ValueError:
+        return True
+    return INBOX_IMPORTED in rel.parts
+
+
+def ingest_inbox(case_id: str) -> list[KnowledgeItem]:
+    """Copy files from case inbox/ into the knowledge library."""
+    inbox = inbox_dir(case_id)
+    added: list[KnowledgeItem] = []
+    for path in sorted(p for p in inbox.rglob("*") if p.is_file()):
+        if _skip_inbox_file(path, inbox):
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in TEXT_EXTS:
+            continue
+        raw = path.read_bytes()
+        if not raw:
+            continue
+        if len(raw) > settings.max_upload_bytes:
+            continue
+        item = add_uploaded_file(case_id, path.name, raw)
+        added.append(item)
+        dest = inbox / INBOX_IMPORTED / path.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest = dest.with_name(f"{dest.stem}_{item.id}{dest.suffix}")
+        path.replace(dest)
+    return added
+
+
 def ingest_library(case_id: str) -> CaseState:
     """Register files from knowledge_raw into knowledge items + extract text."""
+    ingest_inbox(case_id)
     state = store.get(case_id)
     lib = store.library_dir(case_id)
     wanted = _wanted_library_names(state)

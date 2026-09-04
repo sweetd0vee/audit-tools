@@ -155,6 +155,26 @@ class TestPipeClassify(unittest.TestCase):
         self.assertEqual(self.cmd("кейсы"), self.Cmd.STATUS)
         self.assertEqual(self.cmd("проверки"), self.Cmd.STATUS)
 
+    def test_upload_local_documents(self):
+        for phrase in (
+            "загрузи",
+            "загрузить",
+            "загрузи файлы",
+            "мои документы",
+            "свои файлы",
+            "из папки",
+            "прикрепи файл",
+            "добавь файлы",
+            "/upload",
+        ):
+            self.assertEqual(self.cmd(phrase), self.Cmd.UPLOAD, phrase)
+        self.assertEqual(
+            self.cmd("добавь Инструкция о порядке проведения валютных операций"),
+            self.Cmd.APPROVE,
+        )
+        self.assertEqual(self.cmd("документы"), self.Cmd.LIBRARY)
+        self.assertEqual(self.cmd("добавить гипотезы"), self.Cmd.SELECT_HYPOTHESES)
+
     def test_new_case_explicit_start_only(self):
         text = "Проверка аренды коммерческой недвижимости, аренда, НДС"
         self.assertEqual(self.cmd(text, has_case=False), self.Cmd.NEW_CASE)
@@ -419,6 +439,43 @@ class TestPipeElapsed(unittest.TestCase):
             )
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0][1][:2], b"PK")
+
+    def test_knowledge_attachments_reads_txt_and_skips_xlsx(self):
+        import asyncio
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.txt"
+            path.write_text("Внутреннее положение банка", encoding="utf-8")
+            txt_item = {
+                "type": "file",
+                "file": {"id": "file-txt", "filename": "policy.txt", "path": str(path)},
+                "name": "policy.txt",
+            }
+            xlsx_item = {
+                "type": "file",
+                "file": {"id": "file-xlsx", "filename": "hypotheses.xlsx"},
+                "name": "hypotheses.xlsx",
+            }
+            found = asyncio.run(
+                self.agent._knowledge_attachments(
+                    {},
+                    [txt_item, xlsx_item],
+                    None,
+                    "",
+                    5.0,
+                )
+            )
+            names = self.agent._knowledge_attachment_names(
+                {}, [txt_item, xlsx_item], None
+            )
+            skipped = self.agent._skipped_attachment_names(
+                {}, [txt_item, xlsx_item], None
+            )
+        self.assertEqual([name for name, _ in found], ["policy.txt"])
+        self.assertIn("Внутреннее положение", found[0][1].decode("utf-8"))
+        self.assertEqual(names, ["policy.txt"])
+        self.assertEqual(skipped, ["hypotheses.xlsx"])
 
 
 if __name__ == "__main__":

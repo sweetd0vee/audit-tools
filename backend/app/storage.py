@@ -88,6 +88,11 @@ class CaseStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def inbox_dir(self, case_id: str) -> Path:
+        path = self.case_dir(case_id) / "inbox"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def archive_path(self, case_id: str) -> Path:
         return self.case_dir(case_id) / "library.zip"
 
@@ -125,6 +130,9 @@ class CaseStore:
         case_dir = self.case_dir(case_id)
         case_dir.mkdir(parents=True, exist_ok=True)
         (case_dir / "knowledge_raw").mkdir(exist_ok=True)
+        from app.services.knowledge_ingest import inbox_dir as ensure_inbox
+
+        ensure_inbox(case_id)
 
         state = CaseState(
             case_id=case_id,

@@ -13,7 +13,12 @@ from app.clock import utc_now
 from app.services.document_artifact import ElapsedTimer, sse_status
 from app.services.knowledge_ask import ask
 from app.services.knowledge_index import embed_index, rebuild_index
-from app.services.knowledge_ingest import add_uploaded_file, ingest_library
+from app.services.knowledge_ingest import (
+    add_uploaded_file,
+    inbox_hint,
+    ingest_inbox,
+    ingest_library,
+)
 from app.services.knowledge_owui import export_pack_files, openwebui_status, sync_openwebui
 from app.services.knowledge_summarize import (
     FRAGMENTS_PER_ITEM,
@@ -31,6 +36,8 @@ __all__ = [
     "embed_index",
     "export_pack_files",
     "fragments_from_item",
+    "inbox_hint",
+    "ingest_inbox",
     "ingest_library",
     "openwebui_status",
     "rebuild_index",

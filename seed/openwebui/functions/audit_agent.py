@@ -3,7 +3,7 @@ title: Аудитор
 author: audit-tools
 version: 0.0.1
 license: MIT
-description: Агент проверки. Документы, саммари, total, программа, гипотезы, мнение, заключение. Вопрос по базе — «вопрос …»; иначе обычный чат.
+description: Агент проверки. Документы, саммари, total, программа, гипотезы, мнение, заключение. Свои файлы — «загрузи»; вопрос по базе — «вопрос …»; иначе обычный чат.
 requirements: httpx
 """
 
@@ -57,6 +57,7 @@ NEXT_STEPS = (
     "— `аудиторское заключение` — черновик заключения в Word после `аудиторское мнение` (`-c` Calibri, `-t` Times New Roman);\n"
     "— `вопрос` — вопрос по базе знаний;\n"
     "— `документы` — посмотреть список документов в базе знаний;\n"
+    "— `загрузи` — свои PDF/DOCX/TXT в базу (скрепка или папка inbox);\n"
     "— обычный диалог — пишите без префикса."
 )
 NO_CASE = "В этом чате ещё нет проверки. Сначала напишите, что проверяете."
@@ -72,6 +73,10 @@ HELP = f"""Я помогаю собрать документы для прове
 Нет нужного акта в списке — допишите название:
 утверждаю 1, 2 плюс Инструкция НБРБ № 38; Положение о внутреннем контроле
 или отдельно: добавь Инструкция о порядке проведения валютных операций
+
+Свои документы, которых нет в открытом доступе (внутренние положения, PDF с диска):
+приложите файл скрепкой и напишите `загрузи`
+или положите файлы в папку inbox проверки и напишите `загрузи`
 
 Когда документы скачаются:
 {NEXT_STEPS}
@@ -206,6 +211,11 @@ class Pipe:
         metadata = __metadata__ if __metadata__ is not None else kwargs.get("__metadata__")
 
         command = classify(text, has_case=bool(case_id))
+        attached = _knowledge_attachment_names(body, files_kw, metadata)
+        if attached and command == Cmd.CHAT:
+            command = Cmd.UPLOAD
+        if attached and command == Cmd.HELP and not (text or "").strip():
+            command = Cmd.UPLOAD
         if command == Cmd.HELP:
             return HELP
 
@@ -280,7 +290,35 @@ class Pipe:
                     return missing
                 assert case_id is not None
                 return await self._approve(
-                    api, public, timeout, case_id, text, __event_emitter__, owui_key
+                    api,
+                    public,
+                    timeout,
+                    case_id,
+                    text,
+                    __event_emitter__,
+                    owui_key,
+                    body,
+                    __request__,
+                    files_kw,
+                    metadata,
+                )
+
+            if command == Cmd.UPLOAD:
+                missing = _need_case(case_id)
+                if missing:
+                    return missing
+                assert case_id is not None
+                return await self._upload(
+                    api,
+                    public,
+                    timeout,
+                    case_id,
+                    body,
+                    __request__,
+                    owui_key,
+                    files_kw,
+                    metadata,
+                    __event_emitter__,
                 )
 
             if command == Cmd.LIBRARY:
@@ -347,6 +385,8 @@ class Pipe:
             "Или: `утверждаю все обязательные`.",
             "Нет в списке — допишите названия: `утверждаю 1, 2 плюс Инструкция НБРБ № 38; Положение о внутреннем контроле`.",
             "Если знаете ссылку на документ: `к 3 url https://pravo.by/document/?guid=…` (вставьте адрес целиком, без многоточия).",
+            "Свои документы, которых нет в открытом доступе: приложите PDF/DOCX/TXT скрепкой и напишите `загрузи`.",
+            "Или положите файлы в папку inbox проверки — путь скажу по команде `документы`.",
             f"<!--audit-case:{case_id}-->",
         ]
         return "\n".join(lines)
@@ -360,6 +400,10 @@ class Pipe:
         text: str,
         emitter: Emitter,
         owui_key: str = "",
+        body: Optional[dict] = None,
+        request: Any = None,
+        files_kw: Any = None,
+        metadata: Any = None,
     ) -> str:
         state = await _req("GET", f"{api}/api/v1/cases/{case_id}", timeout)
         docs = state.get("documents") or []
@@ -421,9 +465,23 @@ class Pipe:
         await _status(emitter, "Готовлю базу знаний из скачанных документов…")
         n_items = 0
         try:
-            indexed = await _req(
-                "POST", f"{api}/api/v1/cases/{case_id}/knowledge/index", timeout
+            attachments = await _knowledge_attachments(
+                body or {},
+                files_kw,
+                request,
+                owui_key,
+                timeout,
+                metadata=metadata,
             )
+            if attachments:
+                await _status(emitter, "Добавляю ваши файлы в базу знаний…")
+                indexed = await _upload_knowledge_files(
+                    api, timeout, case_id, attachments
+                )
+            else:
+                indexed = await _req(
+                    "POST", f"{api}/api/v1/cases/{case_id}/knowledge/index", timeout
+                )
             n_items = len(indexed.get("items") or [])
         except Exception:
             pass
@@ -472,6 +530,8 @@ class Pipe:
             + (f", не скачалось: {failed}" if failed else "")
             + f". {kb}\n"
             f"{added}{extra}\n"
+            "Свои внутренние акты, которых нет на pravo.by: приложите файл и напишите `загрузи` "
+            "или положите в папку inbox (путь — команда `документы`).\n\n"
             f"{_download_links(public, case_id, name, with_summary=False)}\n\n"
             f"Дальше:\n{NEXT_STEPS}\n"
             f"<!--audit-case:{case_id}-->"
@@ -980,6 +1040,98 @@ class Pipe:
             "conclusion", api, public, timeout, case_id, text, emitter
         )
 
+    async def _upload(
+        self,
+        api: str,
+        public: str,
+        timeout: float,
+        case_id: str,
+        body: dict,
+        request: Any,
+        token: str,
+        files_kw: Any,
+        metadata: Any,
+        emitter: Emitter,
+    ) -> str:
+        await _status(emitter, "Добавляю ваши документы в базу знаний…")
+        attachments = await _knowledge_attachments(
+            body, files_kw, request, token, timeout, metadata=metadata
+        )
+        skipped = _skipped_attachment_names(body, files_kw, metadata)
+        try:
+            if attachments:
+                result = await _upload_knowledge_files(
+                    api, timeout, case_id, attachments
+                )
+            else:
+                result = await _req(
+                    "POST", f"{api}/api/v1/cases/{case_id}/knowledge/index", timeout
+                )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                f"Не получилось загрузить документы: {exc}\n"
+                f"<!--audit-case:{case_id}-->"
+            )
+        if token:
+            await _status(emitter, "Добавляю документы в базу знаний чата…")
+            try:
+                await _req(
+                    "POST",
+                    f"{api}/api/v1/cases/{case_id}/knowledge/openwebui/sync",
+                    timeout,
+                    json={"api_key": token},
+                )
+            except Exception:
+                pass
+        added = result.get("added") or []
+        errors = result.get("errors") or []
+        items = result.get("items") or []
+        inbox = (result.get("inbox_dir") or "").strip()
+        uploaded = [it for it in items if (it.get("source") or "") == "uploaded"]
+        lines = []
+        if added:
+            lines.append(f"Добавила в базу знаний: {len(added)} файл(ов).")
+            for item in added:
+                title = item.get("title") or item.get("filename") or "файл"
+                status = item.get("extract_status") or ""
+                mark = " — текст не извлечён" if status and status != "ok" else ""
+                lines.append(f"- {title}{mark}")
+        elif uploaded:
+            lines.append(
+                f"В базе знаний уже есть ваши файлы: {len(uploaded)}. Новых не добавилось."
+            )
+        else:
+            lines.append("Новых файлов не нашла.")
+            lines.append(
+                "Приложите PDF, DOCX, TXT, HTML или RTF скрепкой к сообщению `загрузи`."
+            )
+            if inbox:
+                lines.append(f"Или положите файлы в папку `{inbox}` и напишите `загрузи` ещё раз.")
+        if skipped:
+            lines.append("")
+            lines.append(
+                "Не беру в базу знаний: "
+                + ", ".join(skipped)
+                + ". Excel клиента сюда не кладём — для своих гипотез приложите .xlsx к `утверждаю гипотезы …`."
+            )
+        if errors:
+            lines.append("")
+            lines.append("Не загрузились:")
+            for err in errors:
+                lines.append(f"- {err.get('filename')}: {err.get('error')}")
+        n_items = len(items)
+        if n_items:
+            lines.append("")
+            lines.append(f"Всего в базе знаний: {n_items} документов.")
+        name = result.get("inspection_name") or "proverka"
+        lines.append("")
+        lines.append(_download_links(public, case_id, name, with_summary=False))
+        lines.append("")
+        lines.append("Дальше:")
+        lines.extend(NEXT_STEPS.splitlines())
+        lines.append(f"<!--audit-case:{case_id}-->")
+        return "\n".join(lines)
+
     async def _library(self, api: str, public: str, timeout: float, case_id: str) -> str:
         data = await _req("GET", f"{api}/api/v1/cases/{case_id}/library", timeout)
         name = data.get("inspection_name") or "proverka"
@@ -992,6 +1144,18 @@ class Pipe:
                 continue
             status = "скачан" if doc.get("download_status") == "ok" else "не скачался"
             lines.append(f"- {doc.get('title')} — {status}")
+        uploaded = data.get("uploaded") or []
+        if uploaded:
+            lines.append("")
+            lines.append("Ваши файлы (не из открытого доступа):")
+            for item in uploaded:
+                lines.append(f"- {item.get('title') or item.get('filename')}")
+        inbox = (data.get("inbox_dir") or "").strip()
+        if inbox:
+            lines.append("")
+            lines.append(
+                f"Папка для своих документов: `{inbox}`. Положите PDF/DOCX/TXT и напишите `загрузи`."
+            )
         lines.append("")
         lines.append(_download_links(public, case_id, name, with_summary=False))
         lines.append("")
@@ -1255,15 +1419,60 @@ def _format_case(state: dict) -> str:
     )
 
 
+KNOWLEDGE_EXTS = {".txt", ".md", ".html", ".htm", ".pdf", ".docx", ".rtf"}
+MAX_ATTACH_BYTES = 32 * 1024 * 1024
+
+
 async def _status(emitter: Emitter, description: str, done: bool = False) -> None:
     if not emitter:
         return
     await emitter({"type": "status", "data": {"description": description, "done": done}})
 
 
+def _file_suffix(name: str) -> str:
+    lower = (name or "").strip().lower()
+    if "." not in lower:
+        return ""
+    return "." + lower.rsplit(".", 1)[-1]
+
+
 def _is_xlsx_name(name: str) -> bool:
     lower = (name or "").strip().lower()
     return lower.endswith(".xlsx") or lower.endswith(".xlsm")
+
+
+def _is_knowledge_name(name: str) -> bool:
+    return _file_suffix(name) in KNOWLEDGE_EXTS
+
+
+def _knowledge_mime(name: str) -> str:
+    return {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".html": "text/html",
+        ".htm": "text/html",
+        ".rtf": "application/rtf",
+    }.get(_file_suffix(name), "application/octet-stream")
+
+
+def _knowledge_attachment_names(body: dict, files_kw: Any, metadata: Any) -> list[str]:
+    names = []
+    for item in _iter_attached_files(body, files_kw, metadata):
+        name = _file_name(item)
+        if _is_knowledge_name(name):
+            names.append(name)
+    return names
+
+
+def _skipped_attachment_names(body: dict, files_kw: Any, metadata: Any) -> list[str]:
+    names = []
+    for item in _iter_attached_files(body, files_kw, metadata):
+        name = _file_name(item) or "файл"
+        if name and not _is_knowledge_name(name):
+            names.append(name)
+    return names
 
 
 def _file_name(item: Any) -> str:
@@ -1383,13 +1592,20 @@ def _file_paths(item: Any) -> list[str]:
     return found
 
 
-def _read_path_bytes(path: str) -> Optional[bytes]:
+def _read_file_bytes(path: str, limit: int = MAX_ATTACH_BYTES) -> Optional[bytes]:
     try:
         with open(path, "rb") as handle:
-            raw = handle.read()
+            raw = handle.read(limit + 1)
     except OSError:
         return None
-    return raw if raw[:2] == b"PK" else None
+    if not raw or len(raw) > limit:
+        return None
+    return raw
+
+
+def _read_path_bytes(path: str) -> Optional[bytes]:
+    raw = _read_file_bytes(path)
+    return raw if raw and raw[:2] == b"PK" else None
 
 
 def _owui_bases(request: Any) -> list[str]:
@@ -1513,18 +1729,100 @@ async def _download_owui_file(
                     payload = meta.json()
                     if isinstance(payload, dict):
                         for path in _file_paths(payload):
-                            raw = _read_path_bytes(path)
+                            raw = _read_file_bytes(path)
                             if raw:
                                 return raw
                 response = await client.get(
                     f"{base}/api/v1/files/{file_id}/content",
                     headers=headers,
                 )
-            if response.status_code < 400 and response.content[:2] == b"PK":
+            if response.status_code < 400 and response.content:
                 return response.content
         except Exception:
             continue
     return None
+
+
+async def _knowledge_attachments(
+    body: dict,
+    files_kw: Any,
+    request: Any,
+    token: str,
+    timeout: float,
+    *,
+    metadata: Any = None,
+) -> list[tuple[str, bytes]]:
+    found: list[tuple[str, bytes]] = []
+    for item in _iter_attached_files(body, files_kw, metadata):
+        name = _file_name(item) or "document.bin"
+        if not _is_knowledge_name(name):
+            continue
+        raw = _inline_file_bytes(item)
+        if raw is None:
+            for path in _file_paths(item):
+                raw = _read_file_bytes(path)
+                if raw:
+                    break
+        if raw is None:
+            file_id = _file_id(item)
+            if file_id:
+                raw = await _download_owui_file(file_id, request, token, timeout)
+        if raw:
+            found.append((name, raw))
+    return found
+
+
+def _inline_file_bytes(item: Any) -> Optional[bytes]:
+    if not isinstance(item, dict):
+        return None
+    for key in ("bytes", "content", "blob"):
+        value = item.get(key)
+        raw = _as_file_bytes(value)
+        if raw:
+            return raw
+    data = item.get("data")
+    if isinstance(data, dict):
+        nested = _inline_file_bytes(data)
+        if nested:
+            return nested
+        raw = _as_file_bytes(data.get("content"))
+        if raw:
+            return raw
+    nested = item.get("file")
+    if isinstance(nested, dict):
+        return _inline_file_bytes(nested)
+    return None
+
+
+def _as_file_bytes(value: Any) -> Optional[bytes]:
+    if isinstance(value, (bytes, bytearray)) and value:
+        raw = bytes(value)
+        return raw if len(raw) <= MAX_ATTACH_BYTES else None
+    if isinstance(value, str) and len(value) > 40:
+        try:
+            raw = base64.b64decode(value, validate=False)
+        except Exception:
+            return None
+        if raw and len(raw) <= MAX_ATTACH_BYTES:
+            return raw
+    return None
+
+
+async def _upload_knowledge_files(
+    api: str,
+    timeout: float,
+    case_id: str,
+    attachments: list[tuple[str, bytes]],
+) -> Any:
+    files = [
+        ("files", (name, raw, _knowledge_mime(name))) for name, raw in attachments
+    ]
+    return await _req(
+        "POST",
+        f"{api}/api/v1/cases/{case_id}/knowledge/upload",
+        timeout,
+        files=files,
+    )
 
 
 async def _req(
@@ -1533,7 +1831,7 @@ async def _req(
     timeout: float,
     json: Optional[dict] = None,
     data: Optional[dict] = None,
-    files: Optional[dict] = None,
+    files: Any = None,
 ) -> Any:
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.request(

@@ -16,6 +16,7 @@ from app.models import (
     SelectDocumentsRequest,
     SelectDocumentsResponse,
 )
+from app.services.knowledge_ingest import inbox_hint
 from app.services.library_flow import run_download, run_propose, run_propose_events, run_select
 from app.storage import async_lock, store
 
@@ -152,14 +153,27 @@ def library(case_id: str):
     lib = store.library_dir(case_id)
     files = sorted(p.name for p in lib.iterdir() if p.is_file())
     archive_name = state.meta.get("archive_name")
+    uploaded = [
+        {
+            "id": item.id,
+            "title": item.title,
+            "filename": item.filename,
+            "extract_status": item.extract_status,
+            "source": item.source,
+        }
+        for item in state.knowledge
+        if item.source == "uploaded"
+    ]
     return {
         "case_id": case_id,
         "status": state.status,
         "inspection_name": state.inspection_name,
         "library_dir": str(lib),
+        "inbox_dir": inbox_hint(case_id),
         "archive_name": archive_name,
         "archive_url": f"/api/v1/cases/{case_id}/library/archive" if archive_name else None,
         "files": files,
+        "uploaded": uploaded,
         "documents": [
             {
                 "id": d.id,

@@ -15,6 +15,7 @@
 data/audit_cases/{case_id}/
   case.json
   manifest.json
+  inbox/              свои файлы аудитора (PDF/DOCX/TXT)
   knowledge_raw/      скачанные файлы
   knowledge_text/     очищенный текст
   summaries/          саммари по актам
@@ -136,7 +137,7 @@ POST /api/v1/chat
 { "messages": [ { "role": "user", "content": "…" } ] }
 ```
 
-Индекс после скачивания: `POST …/knowledge/index`. Загрузка файла акта (не Excel клиента): `POST …/knowledge/upload`.
+Индекс после скачивания: `POST …/knowledge/index`. Загрузка файла акта (не Excel клиента): `POST …/knowledge/upload` (скрепка в чате — команда `загрузи`). Свои файлы с диска — папка `inbox/` кейса, затем тот же `загрузи` / `POST …/knowledge/index`.
 
 Дополнительно для tools/отладки:
 
